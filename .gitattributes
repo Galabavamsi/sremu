@@ -1,6 +1,10 @@
-* text=auto
-*.csv text eol=lf
-*.json text eol=lf
+# Source and docs: normalize to LF in the repository.
+* text=auto eol=lf
+# Hash-pinned data must stay byte-exact: no line-ending conversion at all.
+data/validation/** -text
+tests/golden/** -text
 *.sigmf-data binary
 *.npz binary
 *.parquet binary
+*.pdf binary
+*.png binary
