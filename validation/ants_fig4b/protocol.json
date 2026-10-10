@@ -1,0 +1,683 @@
+{
+  "schema": "sremu.vlab.protocol/1",
+  "protocol_id": "V-LAB-ANTS-Fig4b",
+  "protocol_version": "1.0",
+  "title": "Prior-predictive consistency check of the sremu K1 model against the digitized ANTS Fig. 4(b) received-power map",
+  "design_reference": "sremu docs/DESIGN.md section 10.9 (v1.0 with lead amendments v1.1 and decisions v1.2)",
+  "naming": {
+    "geometry_supplied_by_lab": false,
+    "label": "consistency check under geometric uncertainty",
+    "label_if_lab_geometry_supplied": "validation",
+    "rule": "The word 'validation' is used only if the lab supplies the geometry (human gate H-1); then a single geometry is used with sigma_geom from the supplied tolerances, which requires a protocol amendment before unblinding. Otherwise the study is called a 'consistency check under geometric uncertainty'."
+  },
+  "seed": 20261010,
+  "rng": {
+    "scheme": "philox4x32-10/blake2b-v1",
+    "generator": "sremu.rng.generator(seed, purpose, name, counter=counter)",
+    "prior_draw": {
+      "purpose": "trial",
+      "name": "vlab_prior/{k}",
+      "counter": 0
+    },
+    "decoy_truth": {
+      "purpose": "decoy",
+      "name": "vlab/{i}",
+      "counter": 0
+    },
+    "decoy_noise": {
+      "purpose": "decoy",
+      "name": "vlab/{i}",
+      "counter": 1
+    },
+    "decoy_bootstrap": {
+      "purpose": "decoy",
+      "name": "vlab/{i}",
+      "counter": 2
+    },
+    "analysis_bootstrap": {
+      "purpose": "trial",
+      "name": "vlab_bootstrap/{analysis}",
+      "counter": 0
+    }
+  },
+  "data": {
+    "file_name": "fig4b_measured_rx_power.csv",
+    "env_var": "SREMU_PRIVATE_DATA",
+    "search_paths": [
+      "{root}/fig4b_measured_rx_power.csv",
+      "{root}/fig4b_measured/fig4b_measured_rx_power.csv"
+    ],
+    "format": "CSV, one row per cell: polar angle (deg), radius (m), received power (dBm), per-cell digitization uncertainty (dB); header names matched by keyword",
+    "data_class": "DIG",
+    "quantity": "received power at the Rx, dBm",
+    "fc_hz": 3500000000.0,
+    "theta_deg": [
+      0.0,
+      5.0,
+      15.0,
+      25.0,
+      35.0,
+      45.0
+    ],
+    "r_m": [
+      0.6,
+      0.9,
+      1.2,
+      1.5,
+      1.8
+    ],
+    "n_cells": 30,
+    "theta_centres_inferred": true,
+    "cell_order": "ring-major: cell i = 6*ir + it, ir indexes r_m, it indexes theta_deg",
+    "match_tolerance": {
+      "theta_deg": 2.5,
+      "r_m": 0.075
+    },
+    "sigma_dig_db": {
+      "source": "per-cell column of the CSV",
+      "disclosed_range": [
+        0.045,
+        0.22
+      ],
+      "disclosed_typical": 0.07
+    },
+    "colorbar_pinned_dbm": [
+      -10.06,
+      -33.2
+    ],
+    "pinned_match_tol_db": 0.005,
+    "pinned_rule": "a cell is colorbar-pinned if its value is within pinned_match_tol_db of a pinned value; if no cell matches a pinned value, the maximum (for -10.06) or minimum (for -33.20) cell is used and the fallback is reported",
+    "reference_unknown": "the physical reference of r and of theta = 0 is unknown",
+    "disclosed_descriptive_statistics": {
+      "ring_means_dbm": [
+        -11.42,
+        -15.21,
+        -19.07,
+        -22.8,
+        -23.09
+      ],
+      "ring_sd_db": [
+        0.97,
+        1.82,
+        1.13,
+        5.24,
+        3.27
+      ],
+      "log_distance_n": 2.63,
+      "log_distance_rmse_db": 2.78,
+      "ring_mean_removed_sd_db": 2.74
+    }
+  },
+  "split": {
+    "primary": {
+      "train_rings_m": [
+        0.6,
+        1.2,
+        1.8
+      ],
+      "test_rings_m": [
+        0.9,
+        1.5
+      ]
+    },
+    "leave_one_ring_out": {
+      "folds": 5,
+      "test": "one ring (6 cells)",
+      "train": "the other 24 cells"
+    },
+    "leave_one_wedge_out": {
+      "folds": 6,
+      "test": "one theta wedge (5 cells)",
+      "train": "the other 25 cells"
+    }
+  },
+  "frame": {
+    "units": "m, deg; z up; ground plane z = 0 (used by M3 only)",
+    "measurement_plane": "z = h + dz, h = antenna_height_m, dz = plane_height error (common to all points)",
+    "points": "p_i = (r_i cos(theta_i) + dx_i, r_i sin(theta_i) + dy_i, h + dz) with polar origin O = (0, 0)",
+    "hypotheses": {
+      "O_R/normal": {
+        "ris_center": "(0, 0, h)",
+        "normal": "(1, 0, 0)",
+        "tx": "(d cos a, d sin a, h)"
+      },
+      "O_R/plane": {
+        "ris_center": "(0, 0, h)",
+        "normal": "(0, 1, 0)",
+        "tx": "(d sin a, d cos a, h)"
+      },
+      "O_T/normal": {
+        "tx": "(0, 0, h)",
+        "ris_center": "(d cos a, d sin a, h)",
+        "normal": "(-1, 0, 0)"
+      },
+      "O_T/plane": {
+        "tx": "(0, 0, h)",
+        "ris_center": "(d cos a, d sin a, h)",
+        "normal": "(0, 1, 0)"
+      }
+    },
+    "angle_a_meaning": "O_R: incidence angle of the Tx from the panel normal, negative = opposite side of the normal from the measurement sector; O_T: polar angle of the RIS centre in the measurement grid frame (roles of Tx and RIS centre swapped)",
+    "u_axis": "u = z x n (horizontal); v = n x u = (0, 0, 1); cells n = iv*n_u + iu (D17)",
+    "panel_center_height": "the RIS centre is at the antenna height h"
+  },
+  "prior": {
+    "fc_hz": 3500000000.0,
+    "polar_origin": {
+      "values": [
+        "O_R",
+        "O_T"
+      ],
+      "weights": [
+        0.7,
+        0.3
+      ]
+    },
+    "theta0_direction": {
+      "values": [
+        "normal",
+        "plane"
+      ],
+      "weights": [
+        0.5,
+        0.5
+      ]
+    },
+    "placement": {
+      "d_m": [
+        1.0,
+        3.0
+      ],
+      "a_deg": [
+        -45.0,
+        0.0
+      ],
+      "distribution": "independent uniform"
+    },
+    "layout": {
+      "values": [
+        "A",
+        "B",
+        "C"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tiles_u_v": {
+        "A": [
+          3,
+          1
+        ],
+        "B": [
+          6,
+          1
+        ],
+        "C": [
+          3,
+          2
+        ]
+      },
+      "tile_column_states": {
+        "A": [
+          0,
+          1,
+          0
+        ],
+        "B": [
+          0,
+          0,
+          1,
+          1,
+          0,
+          0
+        ],
+        "C": [
+          0,
+          1,
+          0
+        ]
+      },
+      "state_labels": [
+        "sigma1",
+        "sigma2"
+      ],
+      "rule": "every cell of tile column tu takes state tile_column_states[layout][tu]; layout C has two tile rows with the same column pattern"
+    },
+    "tile_cells": {
+      "n_u": 8,
+      "n_v": 5
+    },
+    "pitch": {
+      "values": [
+        "square_42p8mm",
+        "indicon_38x25p98mm"
+      ],
+      "weights": [
+        0.5,
+        0.5
+      ],
+      "pitch_u_m": [
+        0.0428,
+        0.038
+      ],
+      "pitch_v_m": [
+        0.0428,
+        0.02598
+      ]
+    },
+    "tile_gap_m": [
+      0.0,
+      0.005
+    ],
+    "cell_model": {
+      "values": [
+        "point",
+        "po_patch"
+      ],
+      "weights": [
+        0.5,
+        0.5
+      ]
+    },
+    "gamma": {
+      "table": "lab_binary_3p5ghz",
+      "nominal_phase_deg": [
+        49.64,
+        -153.77
+      ],
+      "mag": [
+        0.6,
+        1.0
+      ],
+      "phase_offset_deg": [
+        -15.0,
+        15.0
+      ],
+      "rule": "Gamma_s = mag_s exp(j(nominal_phase_s + offset_s)), mag_s and offset_s independent uniform per state s"
+    },
+    "antenna": {
+      "values": [
+        "isotropic",
+        "patch_6dbi",
+        "patch_9dbi"
+      ],
+      "weights": [
+        0.5,
+        0.25,
+        0.25
+      ],
+      "g0_dbi": [
+        null,
+        6.0,
+        9.0
+      ],
+      "pattern": "G(psi) = G0 max(cos(psi)^alpha, 10^(-front_to_back_db/10)) with alpha = G0/2 - 1 (sremu CosPower in the front hemisphere), tabulated every 0.5 deg (sremu Tabulated, bilinear in dBi)",
+      "front_to_back_db": 20.0,
+      "table_step_deg": 0.5,
+      "aim": "boresight from the antenna toward the RIS centre",
+      "applies_to": "the Tx and every Rx point use the same drawn option"
+    },
+    "point_error": {
+      "xy_half_width_m": 0.02,
+      "plane_height_half_width_m": 0.05
+    },
+    "floor": {
+      "used_by": [
+        "M3"
+      ],
+      "material": "concrete",
+      "source": "ITU-R P.2040-3 Table 3 via sremu.physics.walls.p2040_material (UNVERIFIED until the PDF is spot-checked)",
+      "eps_r": 5.24,
+      "sigma_s_per_m": 0.12308694702706031,
+      "polarization": {
+        "values": [
+          "H",
+          "V"
+        ],
+        "weights": [
+          0.5,
+          0.5
+        ]
+      },
+      "antenna_height_m": [
+        0.8,
+        1.5
+      ]
+    },
+    "feasibility": {
+      "min_node_panel_distance_wavelengths": 1.0,
+      "los_must_not_cross_panel": true,
+      "max_attempts": 10000,
+      "rule": "a candidate draw is rejected and redrawn from the same keyed stream if the Tx or any point is closer than one wavelength to the panel rectangle (the K1 validity limit) or if any Tx-point segment crosses the panel rectangle"
+    },
+    "draw_order": [
+      "polar_origin",
+      "theta0_direction",
+      "d_m",
+      "a_deg",
+      "layout",
+      "pitch",
+      "tile_gap_m",
+      "cell_model",
+      "gamma_mag[2]",
+      "gamma_phase_offset_deg[2]",
+      "antenna",
+      "point_dxy_m[30, 2] (dx, dy per cell in cell order)",
+      "plane_dz_m",
+      "antenna_height_m",
+      "floor_polarization"
+    ],
+    "categorical_rule": "u = rng.random(); index = searchsorted(cumsum(w)/sum(w), u, side='right')",
+    "uniform_rule": "rng.uniform(lo, hi)"
+  },
+  "models": {
+    "tensor_order": [
+      "M0",
+      "M1",
+      "M2",
+      "M3"
+    ],
+    "M0": "LOS only (Friis and antenna patterns); RIS absent",
+    "M0n": "log-distance y = C - n 10 log10(d), d = 3-D distance from the drawn Tx to the drawn point; (C, n) fitted by OLS on the training cells",
+    "M1": "LOS + K1 RIS path with every cell in state sigma1 (a mirror)",
+    "M2": "LOS + K1 RIS path with the lab configuration (layout)",
+    "M3": "M2 + concrete floor: ground image path and RIS hop variants 1-3 (sremu ground mechanism)",
+    "evaluation": "sremu.physics.propagation.from_scenario per draw, snapshot at t = 0; narrowband channel h = sum amp exp(-j 2 pi fc tau); the drawn Gamma is applied to the separable RIS coefficients C[r, n] of the snapshot",
+    "offset_fit": "C = mean over the training cells of (y - p) (one offset per model and draw; unweighted least squares)",
+    "power_floor_db": -300.0,
+    "po_patch_quadrature": {
+      "subcell_max_wavelengths": [
+        0.2,
+        0.1,
+        0.05
+      ],
+      "richardson_tol_db": 0.05,
+      "max_halvings": 2,
+      "rule": "sremu's po_patch Richardson check (tolerance 0.05 dB, at most two halvings) starts at the default sub-cell size lambda/5; if sremu raises RefinementNotConverged the scene is rebuilt with lambda/10, then lambda/20; a candidate that still does not converge is rejected (reason po_patch_not_converged) and redrawn from the same keyed stream"
+    },
+    "same_draws": "every model uses the same K prior draws"
+  },
+  "primary_analysis": {
+    "K": 2000,
+    "error_sign": "e = measured - predicted (fitted)",
+    "metrics": [
+      "rmse",
+      "bias",
+      "mae",
+      "max_abs"
+    ],
+    "report_quantiles": [
+      0.05,
+      0.5,
+      0.95
+    ],
+    "delta_rmse": {
+      "C2": "RMSE(M0) - RMSE(M2)",
+      "C3": "RMSE(M1) - RMSE(M2)"
+    },
+    "spearman": {
+      "model": "M2",
+      "definition": "Spearman rho between the ring-mean-removed measured test values and the ring-mean-removed prior-median M2 prediction (median over draws of the per-draw ring-mean-removed fitted prediction); ring means over the test cells of each ring",
+      "ci": "fieller",
+      "confidence": 0.95,
+      "also_reported": "per-draw rho: median and 5-95 %"
+    }
+  },
+  "secondary_analysis": {
+    "label": "optimistic",
+    "sigma_tot_db": 2.0,
+    "weights": "w_k proportional to exp(-SSE_train,k / (2 sigma_tot^2)) per model, SSE with the fitted offset",
+    "prediction": "weighted mean over draws of the fitted prediction; test metrics of that prediction",
+    "also_reported": "Kish effective sample size 1/sum(w^2)",
+    "selection_by_calibration_rmse": "not used",
+    "ess_note": "with sigma_tot = 2.0 dB and 18 training cells the weights can concentrate on very few draws (ESS near 1), so the analysis approaches calibration-based selection; the ESS is reported next to every weighted number and the analysis has no decision role"
+  },
+  "uncertainty_budget": {
+    "sigma_dig": "per cell, from the CSV",
+    "sigma_pos": {
+      "xy_half_width_m": 0.02,
+      "z_half_width_m": 0.05,
+      "method": "central differences of the M2 prediction at fixed quadrature (external trajectories), step fd_step_m, propagated with the uniform standard deviations half_width/sqrt(3)",
+      "fd_step_m": 0.001,
+      "n_draws": 200,
+      "note": "point errors are also sampled in the prior, so sigma_pos is contained in sigma_geom; it is reported for reference"
+    },
+    "sigma_rep_db": 1.0,
+    "sigma_rep_sensitivity_db": [
+      0.5,
+      2.0
+    ],
+    "sigma_geom": "standard deviation over draws of the fitted M2 prediction per cell",
+    "total": "sigma_tot_i = sqrt(sigma_dig_i^2 + sigma_rep^2 + sigma_geom_i^2)",
+    "coverage": {
+      "nominal": 0.9,
+      "z": 1.6448536269514722,
+      "cells": "test",
+      "center": "prior-median fitted M2 prediction"
+    }
+  },
+  "bootstrap": {
+    "n_resamples_primary": 10000,
+    "n_resamples_decoy": 2000,
+    "confidence": 0.95,
+    "method": "percentile",
+    "resample": "test cells with replacement (indices rng.integers(0, n_test, size=(B, n_test))), paired across models and shared by all draws; offsets C are not refitted",
+    "excludes_zero": "the lower percentile bound is > 0 (the claim direction)",
+    "implementation": "semantics of sremu.analysis.stats.paired_bootstrap with statistic rmse_difference"
+  },
+  "decision_rules": {
+    "C1": {
+      "claim": "absolute level consistent",
+      "median_abs_bias_max_db": 1.5,
+      "rmse_margin_vs_m0n_db": 0.5,
+      "condition": "median over draws of |bias(M2)| <= 1.5 dB and median RMSE(M2) <= median RMSE(M0n) + 0.5 dB (test cells)",
+      "interpretation": "every model's offset C is fitted on the training rings and absorbs the unknown Tx power, cable losses and antenna gains; C1 therefore tests the level of the held-out rings relative to the training rings (the range trend), not the absolute received power, and must not be described as a check of absolute power unless the lab supplies the Tx power and losses (H-1) and the protocol is amended before unblinding"
+    },
+    "C2": {
+      "claim": "RIS model explains spatial structure",
+      "baseline": "M0",
+      "median_delta_rmse_min_db": 1.0,
+      "ci_excludes_zero_min_fraction": 0.8,
+      "spearman_rho_min": 0.3,
+      "condition": "all of: median Delta RMSE = RMSE(M0) - RMSE(M2) >= 1.0 dB; the paired-bootstrap 95 % CI of Delta RMSE excludes 0 in >= 80 % of the draws; Spearman rho >= 0.3 with its 95 % CI excluding 0"
+    },
+    "C3": {
+      "claim": "configuration-specific",
+      "baseline": "M1",
+      "condition": "C2 holds with M1 in place of M0 (same thresholds; the Spearman condition is the one of C2)"
+    },
+    "null_statement": "If C2 fails, the paper states the null result: the digitized map does not discriminate the RIS model from LOS-only at the available geometric knowledge.",
+    "m3": "M3 is reported with the same metrics; no decision rule uses it"
+  },
+  "sensitivity_runs": [
+    {
+      "id": "S1",
+      "description": "primary analysis and decisions without the (35 deg, 1.5 m) cell",
+      "drop_cells_theta_r": [
+        [
+          35.0,
+          1.5
+        ]
+      ]
+    },
+    {
+      "id": "S2",
+      "description": "primary analysis and decisions without both colorbar-pinned cells",
+      "drop": "colorbar_pinned"
+    },
+    {
+      "id": "S3",
+      "description": "sigma_rep in {0.5, 2.0} dB: decoy detection rates and test-cell coverage",
+      "sigma_rep_db": [
+        0.5,
+        2.0
+      ]
+    },
+    {
+      "id": "S4",
+      "description": "descriptive breakdown by discrete hypothesis (origin, theta0, layout, pitch, cell_model, antenna): median test RMSE(M2) and Delta RMSE; no decisions"
+    }
+  ],
+  "primary_keeps_all_cells": true,
+  "power_analysis": {
+    "n_decoys": 500,
+    "truth_model": "M2",
+    "truth_geometry": "a fresh prior draw per decoy (rng decoy_truth), not one of the K cached draws",
+    "sigma_rep_db": 1.0,
+    "sigma_dig_db_range": [
+      0.045,
+      0.22
+    ],
+    "sigma_dig_rule": "per decoy and cell, sigma_dig ~ U[0.045, 0.22] dB",
+    "noise": "y_i = p_i + c + sigma_rep z1_i + sigma_dig_i z2_i, z1, z2 ~ N(0, 1) from rng decoy_noise (the same z for every sigma_rep)",
+    "offset_rule": "c chosen so that the noiseless decoy mean equals the mean of the disclosed ring means (-18.318 dBm)",
+    "n_bootstrap": 2000,
+    "pipeline": "primary and secondary analyses with the cached tensor; decisions C1-C3",
+    "detection": "C2 holds",
+    "underpowered_if_c2_rate_below": 0.5,
+    "rate_ci": "Clopper-Pearson 95 %",
+    "sensitivity_sigma_rep_db": [
+      0.5,
+      2.0
+    ],
+    "null_decoys": {
+      "truth_model": "M0",
+      "purpose": "informational specificity check: rate at which C2 fires when the truth has no RIS path",
+      "decision_use": "none"
+    }
+  },
+  "validity_domain": {
+    "rule": "feasibility uses sremu's error limit (one wavelength from the panel); draws with a node between one and three wavelengths from a cell are kept, and sremu emits a ValidityWarning (point-scatterer approximation marginal, DESIGN 5.3); no draw is dropped or reweighted for it",
+    "reported_in": "tensor summary.json: draws_with_validity_warnings, fraction_draws_with_validity_warnings"
+  },
+  "lock": {
+    "digest": "sha256(PROTOCOL.md bytes with CRLF replaced by LF, immediately followed by the canonical JSON bytes of protocol.json)",
+    "code_binding": "the digest covers PROTOCOL.md and protocol.json only; the analysis code is pinned by the commit recorded in the run manifest, and run.py refuses a dirty sremu work tree unless --allow-dirty is passed (recorded in results.json and meta.json)",
+    "canonical_json": "json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False) encoded as UTF-8",
+    "constant": "validation/ants_fig4b/protocol_lock.py::PREREGISTERED_SHA256 (set by the lead in a separate commit)",
+    "deposit": "PROTOCOL.md and the digest are deposited on Zenodo or OSF before unblinding (human gate H-6)"
+  },
+  "paper_wording": {
+    "timestamp": "The analysis plan was fixed and time-stamped (commit {X}, {date}; deposited at {DOI}) after descriptive inspection of the digitized map but before any model-data comparison.",
+    "result": "Under geometric uncertainty (K = {K} prior draws), the lab-configuration model gives a median test RMSE of {rmse_m2} dB (5-95 %: {rmse_m2_lo}-{rmse_m2_hi} dB) against {rmse_m0} dB for LOS only (C1 {c1}, C2 {c2}, C3 {c3}); a decoy power analysis gives a C2 detection rate of {rate}.",
+    "null": "The digitized map does not discriminate the RIS model from LOS-only at the available geometric knowledge.",
+    "underpowered": "The comparison is underpowered (decoy C2 detection rate {rate} < 0.5), so this outcome is not evidence for or against the model.",
+    "underpowered_rates": "the decoy rates of C1 and C3 under the simulated true model ({rate_c1}, {rate_c3}) are reported with the underpowered statement",
+    "data_classes": "measured: DIG; predictions: SIM-sremu; Gamma magnitudes and geometry: ASSUMED (prior)"
+  },
+  "power_analysis_result": {
+    "computed_utc": "2026-10-10T17:13:02.012279Z",
+    "run_directory": "runs\\vlab\\20261010T165335Z_vlab_power",
+    "sremu_commit": "2a016a65efe156db33380abaf0bf5b76d9699979",
+    "sremu_dirty": true,
+    "tensor_content_sha256": "71d31b58fb9c4906fc59b3de38580aee301d541a944c2f8a647ccfc3e33a3355",
+    "decoy_truth_content_sha256": "c1b2bd02a899ea051d6af8e4d3ca7bd0734aa331461431b6406276db71229d9c",
+    "prediction_spec_sha256": "9266db8680968ed8737d25d8dbf97a1fe709b58c946a38c74927eeec7df048ec",
+    "n_decoys": 500,
+    "n_bootstrap_per_decoy": 2000,
+    "c2_detection_rate": 0.0,
+    "c2_detection_ci95": [
+      0.0,
+      0.007350610051907784
+    ],
+    "underpowered": true,
+    "rates": {
+      "M2/sigma_rep_0.5": {
+        "C1": 0.046,
+        "C2": 0.0,
+        "C3": 0.0
+      },
+      "M2/sigma_rep_1": {
+        "C1": 0.048,
+        "C2": 0.0,
+        "C3": 0.0
+      },
+      "M2/sigma_rep_2": {
+        "C1": 0.056,
+        "C2": 0.0,
+        "C3": 0.0
+      },
+      "M0/sigma_rep_0.5": {
+        "C1": 0.004,
+        "C2": 0.0,
+        "C3": 0.0
+      },
+      "M0/sigma_rep_1": {
+        "C1": 0.006,
+        "C2": 0.0,
+        "C3": 0.0
+      },
+      "M0/sigma_rep_2": {
+        "C1": 0.01,
+        "C2": 0.0,
+        "C3": 0.0
+      }
+    },
+    "c2_subcondition_rates": {
+      "M2/sigma_rep_0.5": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.288
+      },
+      "M2/sigma_rep_1": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.264
+      },
+      "M2/sigma_rep_2": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.22
+      },
+      "M0/sigma_rep_0.5": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.462
+      },
+      "M0/sigma_rep_1": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.448
+      },
+      "M0/sigma_rep_2": {
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.38
+      }
+    },
+    "median_over_decoys": {
+      "M2/sigma_rep_0.5": {
+        "c2_median_delta_db": -0.2562630887979066,
+        "secondary_delta_m0_m2_db": -0.017709406616567835,
+        "median_rmse_m2_db": 4.717138971697736
+      },
+      "M2/sigma_rep_1": {
+        "c2_median_delta_db": -0.24163483019642928,
+        "secondary_delta_m0_m2_db": -0.00882588592173128,
+        "median_rmse_m2_db": 4.796960555061626
+      },
+      "M2/sigma_rep_2": {
+        "c2_median_delta_db": -0.20871607482824617,
+        "secondary_delta_m0_m2_db": -0.02910314579163642,
+        "median_rmse_m2_db": 5.087612655283496
+      },
+      "M0/sigma_rep_0.5": {
+        "c2_median_delta_db": -0.3340270514070336,
+        "secondary_delta_m0_m2_db": -0.22746958567975706,
+        "median_rmse_m2_db": 3.9800567089611745
+      },
+      "M0/sigma_rep_1": {
+        "c2_median_delta_db": -0.31867399301957056,
+        "secondary_delta_m0_m2_db": -0.18814567361307766,
+        "median_rmse_m2_db": 4.087996560390081
+      },
+      "M0/sigma_rep_2": {
+        "c2_median_delta_db": -0.2817057865848749,
+        "secondary_delta_m0_m2_db": -0.18405785877915726,
+        "median_rmse_m2_db": 4.491611252232191
+      }
+    }
+  }
+}
