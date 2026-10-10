@@ -16,6 +16,32 @@ This is the single spec the agents implement. It merges `physics_validation.md`,
 - **A5. Interpreter.** Always use `D:\projects\ris\sremu\.venv\Scripts\python.exe` (Python 3.12, numpy 2.5.3, scipy 1.18.1, numba 0.68.0, pydantic 2.14, pyzmq 27.2, hypothesis 6.168 **installed**, ruff, mypy, pytest-xdist). hypothesis is available, so property tests may use it directly; `tests/_prop.py` remains the fallback for environments without it.
 - **A6. Reproduce figures only from code.** Agents must not copy numbers from this spec into code as expected values unless the spec labels them as oracle values (PH/RT/ST/G tables). [PILOT] and [DERIVED] numbers are sizing aids, not test targets, unless a test row cites them.
 
+### Lead decisions v1.2 (10 Oct 2026, after Stage A review; override the text below)
+
+- **D1 PH-18 budget split.** The chord (curvature) and tile-residual rules each get half the budget: `ε_chord = ε_tile = ε_rel/2`, so `T_curv = √(8(ε_rel/2) r_min/(k v⊥²))` and `Δφ_res ≤ √(8·ε_rel/2) = 0.0632` rad. PH-18 keeps the total limit 1e-3; the two strict xfails must pass.
+- **D2 Kirchhoff obliquity.** Stays a non-default option, emits a `ValidityWarning` ("not energy-bounded for anomalous reflection; measured excess up to about +0.9 dB"), and is documented in the model card. PH-23 applies to the default obliquity √(cos θi cos θs); the xfail becomes a test that asserts the warning and records the excess.
+- **D3 Message cap** = 2^20 bytes (1 MiB). IO-04 reads "1 MiB".
+- **D4 Legacy v1 constant.** `units.C_LEGACY_V1 = 3.0e8` (documented; used only by `physics/legacy.py`); the literal grep test allows it in `units.py` only. `legacy_v1` teeth: +24.39 ± 0.05 dB vs K1 in the v1 default geometry.
+- **D5 PH-04 near anomalous** is evaluated with Richardson-converged `po_patch`; oracle −88.128 dB (Δ = λ/40) ± 0.10 dB. Single-level values are not asserted.
+- **D6 PH-26** regression value: 8.11 dB point-minus-patch at 45° retro with Δ ≤ λ/5 (3×3 sub-cells), ±0.1 dB; the Δ→0 sinc limit 8.92 dB is documented.
+- **D7 PH-17 teeth** uses the T9 window (0.2 s at 10 kS/s): −148.3 ± 1 Hz.
+- **D8 PH-16.** Phases are reduced modulo 2π before Γ is formed; the 1e-15|h| tolerance applies.
+- **D9 Energy diagnostic** is not part of `Snapshot.diag`. `ris_kernel.energy_budget()` is an on-demand diagnostic (PH-23, `sremu validate --energy`).
+- **D10 `PathKind.RIS_GAP = 6`** for structural gap reflections. `RIS_TILE` paths always carry tile ≥ 0.
+- **D11 PropagationModel protocol additions** (CONTRACT_VERSION 1.1): `link_fc_hz(link)`, `panel_geometry(panel)`, `ris_delay_s(panel, rx, t, tile=None)`; ScenePropagation's `with_render_tiles`, `set_node_position`, `set_node_trajectory` are adopted. `LinkJob.rot_state` is optional and may be ignored by backends. `RISCoefficients` may carry both `B` and `C`.
+- **D12 CLI.** `src/sremu/commands/` is accepted (cli layer). Platform probes move to layer-0 `src/sremu/sysinfo.py`, shared by `cli.py` and `record/manifest.py`.
+- **D13 Offline install** documented as `uv pip install --offline --no-deps -e .`.
+- **D14 RNG.** Every keyed generator (mobility legs, failure maps, controllers) uses `sremu.rng` derivation (§6.1). WP2's private blake2b(digest_size=8) helper is replaced.
+- **D15 Numba cache and SVML.** In deterministic mode the CLI sets `NUMBA_CACHE_DIR` to a separate `-nosvml` directory before numba is imported.
+- **D16** `ResponseTable.from_state_library` accepts `angle_mapping: None` and per-entry σ values.
+- **D17 Geometry conventions** (document in contracts and §9): `PanelConfig.state` index `n = iv·n_u + iu` (iu along `u_axis`, iv along `n̂ × û`); `tiles.gap_m` is an extra inert gap, so spacing across a tile boundary is pitch + gap; cells are centred on `pose.center_m`; quadrature area is the pitch area.
+- **D18** Module-level `sremu.physics.propagation.from_scenario(scenario)` builds the full model and attaches ground/walls/diffraction/diffuse when the scenario enables them.
+- **D19 Diffuse API.** `sremu.physics.diffuse.sos_gain(key, t_s, max_doppler_hz, n_sinusoids=48) -> complex128`, unit mean power, pure in absolute time.
+- **D20 Render contract.** Backends expose module-level `render(job, out)`; `noise(rx_key, k0, n, sigma)` lives in `sremu.impair.noise`; `sigma² = E|w|²` (total complex variance); `lo_offset_hz` rotates at RX sample rate from absolute index 0.
+- **D21 Tooling.** `tools/tasks.py ci` uses `-n 8` (a 16-worker xdist crash was seen); a `paper-junit` task writes the junit plus `{sremu_commit, sremu_dirty}` sidecar.
+- **D22 Paper sources.** `build_paper.py` strips TeX comments into an `arxiv/` export directory; `check_arxiv.py` fails on internal notes (DRAFT, TODO, H-gates, co-author agreement notes) in the export.
+- **D23** PH-18 and PH-21 tests are parametrized over both backends with `[numpy_ref]`/`[numba_cpu]` in their node ids, so gate accounting sees both.
+
 ---
 
 ## 0. How to read this document
