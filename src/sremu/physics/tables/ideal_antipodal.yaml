@@ -1,0 +1,24 @@
+# Built-in RIS state library (DESIGN.md section 5.5): the ideal antipodal alphabet {+1, -1}.
+schema_version: "1.0"
+kind: ris_state_library
+name: ideal_antipodal
+provenance:
+  source_kind: analytic
+  description: "Ideal lossless antipodal (1-bit) alphabet {+1, -1}"
+  reference: "analytic"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 0.0
+  raw_sha256: null
+  license: "analytic (no data)"
+  created: {date: "2026-10-10", tool: "manual", version: null}
+frequency_hz: any              # frequency independent
+validity_bw_hz: null           # no bandwidth limit
+angle_grid: none
+reciprocal: true
+reconfiguration_time_s: null
+states:
+  - {id: 0, label: plus1, gamma: [{f_hz: null, mag: 1.0, phase_deg: 0.0}]}
+  - {id: 1, label: minus1, gamma: [{f_hz: null, mag: 1.0, phase_deg: 180.0}]}

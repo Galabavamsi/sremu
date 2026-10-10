@@ -1,0 +1,27 @@
+# Quickstart: one AP, one user, one ideal 1-bit RIS (SIM geometry). Static, no controller,
+# 100 ms of a 1 MS/s tone. Panel: 16 x 16 cells at 42.8 mm (just under lambda/2 at
+# 3.5 GHz) at the origin facing +x, u axis +y. AP 5 m at -30 deg, user 5 m at +20 deg
+# (angles from the panel normal, signed by the u component), coordinates to 1e-9 m.
+schema_version: "1.0"
+name: quickstart
+seed: 1
+description: "Minimal static LOS + RIS scenario for the README quickstart"
+nodes:
+  - id: ap
+    position_m: [4.330127019, -2.5, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 1.0e4}
+  - id: mu
+    position_m: [4.698463104, 1.710100717, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}
+ris:
+  - id: ris0
+    pose: {center_m: [0, 0, 0], normal: [1, 0, 0], u_axis: [0, 1, 0]}
+    grid: {n_u: 16, n_v: 16, pitch_u_m: 0.0428, pitch_v_m: 0.0428}
+    states: {library: ideal_antipodal}
+    initial: {fill: 0}
+run: {duration_s: "0.1"}
+traffic: [{stream: ap.tx0, generator: tone, params: {freq_hz: 1.0e3}}]

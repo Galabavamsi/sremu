@@ -1,0 +1,590 @@
+{
+ "T1_friis_dB_fc3500MHz_d10.00m": -63.329,
+ "T1_friis_dB_fc2400MHz_d11.66m": -61.387,
+ "T1_friis_dB_fc100MHz_d52000.00m": -106.768,
+ "T17_ANTS_eq1_missing_factor_(4pi/lam)^2_dB_fc3500MHz": 43.33,
+ "T17_ANTS_eq1_missing_factor_(4pi/lam)^2_dB_fc2400MHz": 40.05,
+ "T17_ANTS_eq1_missing_factor_(4pi/lam)^2_dB_fc100MHz": 12.45,
+ "T2_refinement_uniformGamma_near_specular_5m": [
+  {
+   "N": 16,
+   "cell_over_lambda": 2.919,
+   "aperture_dB": -57.79,
+   "v2_dB": -98.382,
+   "ellingson_q0_area_free_dB": -87.897
+  },
+  {
+   "N": 64,
+   "cell_over_lambda": 1.459,
+   "aperture_dB": -59.485,
+   "v2_dB": -88.035,
+   "ellingson_q0_area_free_dB": -77.554
+  },
+  {
+   "N": 256,
+   "cell_over_lambda": 0.73,
+   "aperture_dB": -59.76,
+   "v2_dB": -76.269,
+   "ellingson_q0_area_free_dB": -65.788
+  },
+  {
+   "N": 1024,
+   "cell_over_lambda": 0.365,
+   "aperture_dB": -59.821,
+   "v2_dB": -64.289,
+   "ellingson_q0_area_free_dB": -53.808
+  },
+  {
+   "N": 4096,
+   "cell_over_lambda": 0.182,
+   "aperture_dB": -59.836,
+   "v2_dB": -52.262,
+   "ellingson_q0_area_free_dB": -41.782
+  },
+  {
+   "N": 16384,
+   "cell_over_lambda": 0.091,
+   "aperture_dB": -59.839,
+   "v2_dB": -40.225,
+   "ellingson_q0_area_free_dB": -29.744
+  }
+ ],
+ "T2_refinement_uniformGamma_far_specular_200m": [
+  {
+   "N": 16,
+   "cell_over_lambda": 2.919,
+   "aperture_dB": -115.278,
+   "v2_dB": -155.87,
+   "ellingson_q0_area_free_dB": -145.394
+  },
+  {
+   "N": 64,
+   "cell_over_lambda": 1.459,
+   "aperture_dB": -115.28,
+   "v2_dB": -143.83,
+   "ellingson_q0_area_free_dB": -133.354
+  },
+  {
+   "N": 256,
+   "cell_over_lambda": 0.73,
+   "aperture_dB": -115.28,
+   "v2_dB": -131.789,
+   "ellingson_q0_area_free_dB": -121.313
+  },
+  {
+   "N": 1024,
+   "cell_over_lambda": 0.365,
+   "aperture_dB": -115.28,
+   "v2_dB": -119.748,
+   "ellingson_q0_area_free_dB": -109.272
+  },
+  {
+   "N": 4096,
+   "cell_over_lambda": 0.182,
+   "aperture_dB": -115.28,
+   "v2_dB": -107.707,
+   "ellingson_q0_area_free_dB": -97.231
+  },
+  {
+   "N": 16384,
+   "cell_over_lambda": 0.091,
+   "aperture_dB": -115.28,
+   "v2_dB": -95.666,
+   "ellingson_q0_area_free_dB": -85.19
+  }
+ ],
+ "T2_refinement_uniformGamma_near_anomalous_5m": [
+  {
+   "N": 16,
+   "cell_over_lambda": 2.919,
+   "aperture_dB": -58.449,
+   "v2_dB": -99.041,
+   "ellingson_q0_area_free_dB": -88.78
+  },
+  {
+   "N": 64,
+   "cell_over_lambda": 1.459,
+   "aperture_dB": -60.205,
+   "v2_dB": -88.755,
+   "ellingson_q0_area_free_dB": -78.494
+  },
+  {
+   "N": 256,
+   "cell_over_lambda": 0.73,
+   "aperture_dB": -85.364,
+   "v2_dB": -101.874,
+   "ellingson_q0_area_free_dB": -91.648
+  },
+  {
+   "N": 1024,
+   "cell_over_lambda": 0.365,
+   "aperture_dB": -87.604,
+   "v2_dB": -92.072,
+   "ellingson_q0_area_free_dB": -81.922
+  },
+  {
+   "N": 4096,
+   "cell_over_lambda": 0.182,
+   "aperture_dB": -88.004,
+   "v2_dB": -80.431,
+   "ellingson_q0_area_free_dB": -70.292
+  },
+  {
+   "N": 16384,
+   "cell_over_lambda": 0.091,
+   "aperture_dB": -88.099,
+   "v2_dB": -68.484,
+   "ellingson_q0_area_free_dB": -58.347
+  }
+ ],
+ "T2_refinement_focused_5m": [
+  {
+   "N": 64,
+   "aperture_dB": -50.693,
+   "v2_dB": -79.244
+  },
+  {
+   "N": 256,
+   "aperture_dB": -50.694,
+   "v2_dB": -67.203
+  },
+  {
+   "N": 1024,
+   "aperture_dB": -50.694,
+   "v2_dB": -55.162
+  },
+  {
+   "N": 4096,
+   "aperture_dB": -50.694,
+   "v2_dB": -43.121
+  },
+  {
+   "N": 16384,
+   "aperture_dB": -50.694,
+   "v2_dB": -31.08
+  }
+ ],
+ "T3_far_field_beamforming_scaling": [
+  {
+   "N": 100,
+   "sum_dB": -169.027,
+   "Tang2022_eq8_dB": -169.027
+  },
+  {
+   "N": 400,
+   "sum_dB": -156.985,
+   "Tang2022_eq8_dB": -156.985
+  },
+  {
+   "N": 1600,
+   "sum_dB": -144.944,
+   "Tang2022_eq8_dB": -144.944
+  }
+ ],
+ "T4_disk_closed_form_vs_image_monostatic_d2m": [
+  {
+   "R_m": 0.5,
+   "abs_ratio_to_image_dB": 5.591,
+   "phase_err_deg_vs_image": 11.34
+  },
+  {
+   "R_m": 1.0,
+   "abs_ratio_to_image_dB": 5.099,
+   "phase_err_deg_vs_image": -1.56
+  },
+  {
+   "R_m": 2.0,
+   "abs_ratio_to_image_dB": 2.565,
+   "phase_err_deg_vs_image": 18.42
+  },
+  {
+   "R_m": 5.0,
+   "abs_ratio_to_image_dB": -1.233,
+   "phase_err_deg_vs_image": 2.8
+  },
+  {
+   "R_m": 20.0,
+   "abs_ratio_to_image_dB": 0.062,
+   "phase_err_deg_vs_image": 0.0
+  },
+  {
+   "R_m": 200.0,
+   "abs_ratio_to_image_dB": 0.0,
+   "phase_err_deg_vs_image": 0.39
+  }
+ ],
+ "T4_discrete_disk_vs_closed_form_R1m_d2m": [
+  {
+   "Nside": 32,
+   "cell_over_lambda": 0.73,
+   "discrete_dB": -49.378,
+   "closed_form_dB": -50.272,
+   "phase_diff_deg": -10.06
+  },
+  {
+   "Nside": 64,
+   "cell_over_lambda": 0.365,
+   "discrete_dB": -50.268,
+   "closed_form_dB": -50.272,
+   "phase_diff_deg": -3.05
+  },
+  {
+   "Nside": 128,
+   "cell_over_lambda": 0.182,
+   "discrete_dB": -50.261,
+   "closed_form_dB": -50.272,
+   "phase_diff_deg": -1.58
+  },
+  {
+   "Nside": 256,
+   "cell_over_lambda": 0.091,
+   "discrete_dB": -50.27,
+   "closed_form_dB": -50.272,
+   "phase_diff_deg": 0.06
+  }
+ ],
+ "T4_oblique_specular_plate_vs_image_40deg_3m": [
+  {
+   "L_m": 2.0,
+   "cells": 19600,
+   "ratio_dB": 0.298,
+   "phase_err_deg_with_j": -1.65,
+   "phase_err_deg_without_j": -91.65
+  },
+  {
+   "L_m": 6.0,
+   "cells": 176400,
+   "ratio_dB": -0.24,
+   "phase_err_deg_with_j": 2.66,
+   "phase_err_deg_without_j": -87.34
+  },
+  {
+   "L_m": 12.0,
+   "cells": 707281,
+   "ratio_dB": -0.039,
+   "phase_err_deg_with_j": 0.08,
+   "phase_err_deg_without_j": -89.92
+  }
+ ],
+ "T5_plate_monostatic_far_sum_dB": -126.068,
+ "T5_plate_closed_form_A_over_4pi_d2_dB": -126.067,
+ "T5_radar_eq_dB": -126.067,
+ "T6_Ellingson_TableI_side_length": [
+  {
+   "f_GHz": 0.8,
+   "fe_m": 100,
+   "typical": false,
+   "side_m": 6.12,
+   "side_lambda": 16.3
+  },
+  {
+   "f_GHz": 0.8,
+   "fe_m": 1000,
+   "typical": false,
+   "side_m": 19.36,
+   "side_lambda": 51.7
+  },
+  {
+   "f_GHz": 0.8,
+   "fe_m": 100,
+   "typical": true,
+   "side_m": 8.87,
+   "side_lambda": 23.7
+  },
+  {
+   "f_GHz": 28.0,
+   "fe_m": 1000,
+   "typical": true,
+   "side_m": 4.74,
+   "side_lambda": 442.8
+  },
+  {
+   "f_GHz": 60.0,
+   "fe_m": 100,
+   "typical": false,
+   "side_m": 0.71,
+   "side_lambda": 141.5
+  }
+ ],
+ "T6_Ellingson_Fig2_side_for_0dB_ri=rs=1e4lambda_in_lambda": 70.7,
+ "T7_monostatic_focus_d1m_3p5GHz": [
+  {
+   "L_m": 0.25,
+   "exact_Omega_over_4pi_dB": -46.201,
+   "far_field_formula_dB": -46.067,
+   "discrete_focus_sum_dB": -46.2,
+   "v2_isotropic_cells_dB": -43.624
+  },
+  {
+   "L_m": 0.5,
+   "exact_Omega_over_4pi_dB": -34.547,
+   "far_field_formula_dB": -34.025,
+   "discrete_focus_sum_dB": -34.546,
+   "v2_isotropic_cells_dB": -31.971
+  },
+  {
+   "L_m": 1.0,
+   "exact_Omega_over_4pi_dB": -23.864,
+   "far_field_formula_dB": -21.984,
+   "discrete_focus_sum_dB": -23.863,
+   "v2_isotropic_cells_dB": -21.653
+  },
+  {
+   "L_m": 2.0,
+   "exact_Omega_over_4pi_dB": -15.563,
+   "far_field_formula_dB": -9.943,
+   "discrete_focus_sum_dB": -15.563,
+   "v2_isotropic_cells_dB": -13.353
+  },
+  {
+   "L_m": 4.0,
+   "exact_Omega_over_4pi_dB": -10.599,
+   "far_field_formula_dB": 2.098
+  },
+  {
+   "L_m": 10.0,
+   "exact_Omega_over_4pi_dB": -7.714,
+   "far_field_formula_dB": 18.016
+  },
+  {
+   "L_m": 40.0,
+   "exact_Omega_over_4pi_dB": -6.42,
+   "far_field_formula_dB": 42.098
+  }
+ ],
+ "T7_limit_infinite_plate_dB": -6.021,
+ "T8_reciprocity_rel_error": 2.0185393325353317e-16,
+ "T8_incidence_only_Gamma_reciprocity_error_dB": 0.019,
+ "T8_symmetric_Gamma_rel_error": 5.0463483313383293e-17,
+ "T9_LOS_doppler_expected_Hz": 350.242,
+ "T9_LOS_doppler_measured_Hz_mean": 350.242,
+ "T9_blockconst_phase_jump_per_block_rad": 4.401,
+ "T9_blockconst_apparent_mean_freq_Hz": -148.33,
+ "T9_linear_interp_max_phase_err_deg": 0.0,
+ "T9_RIS_path_doppler_expected_Hz_at_t0": 325.192,
+ "T9_RIS_path_doppler_measured_Hz_first": 325.158,
+ "T9_interp_err_bound_fc5.9GHz_v30.0_r10.0_T2ms_deg": 0.319,
+ "T9_max_block_for_1deg_fc5.9GHz_ms": 3.542,
+ "T9_displacement_per_block_in_lambda_fc5.9GHz_T2ms": 1.181,
+ "T9_interp_err_bound_fc3.5GHz_v30.0_r10.0_T10ms_deg": 4.728,
+ "T9_max_block_for_1deg_fc3.5GHz_ms": 4.599,
+ "T9_displacement_per_block_in_lambda_fc3.5GHz_T10ms": 3.502,
+ "T10_quantisation_loss": [
+  {
+   "bits": 1,
+   "eta_formula_dB": -3.922,
+   "monte_carlo_dB": -4.05
+  },
+  {
+   "bits": 2,
+   "eta_formula_dB": -0.912,
+   "monte_carlo_dB": -0.881
+  },
+  {
+   "bits": 3,
+   "eta_formula_dB": -0.224,
+   "monte_carlo_dB": -0.222
+  }
+ ],
+ "T10_phase_wrap_invariance_abs_err": 3.644013978617588e-18,
+ "T11_Abeywickrama_eta_bmin0.2_alpha1.6_dB": -5.508,
+ "T11_Abeywickrama_eta_bmin0.8_alpha1.6_dB": -1.085,
+ "T11_Abeywickrama_eta_bmin0.5_alpha1.6_dB": -3.018,
+ "T11_Abeywickrama_eta_bmin0.2_alpha3.0_dB": -6.936,
+ "T12_cos^3_gain_dBi(quoted 8 (9.03 dBi))": 9.03,
+ "T12_cos^62_gain_dBi(quoted 21 dB)": 21.0,
+ "T12_cos^13_gain_dBi(quoted 14.5 dB)": 14.47,
+ "T12_cos^53.8_gain_dBi(quoted 20.4 dB)": 20.4,
+ "T12_cos^63.4_gain_dBi(quoted 21.1 dB)": 21.1,
+ "T12_cos^1_gain_dBi(quoted cos pattern)": 6.02,
+ "T12_Tang2021_RIS1_2MNdxdy_over_lambda_m": 71.45,
+ "T12_Tang2021_RIS2_2MNdxdy_over_lambda_m": 11.91,
+ "T12_Tang2021_small_2MNdxdy_over_lambda_m": 1.05,
+ "T12_Tang2022_mmRIS1_2MNdxdy_over_lambda_m": 0.79,
+ "T12_Tang2022_mmRIS2_2MNdxdy_over_lambda_m": 5.09,
+ "T12_Tang2022_mmRIS1_dxdy_over_lambda2": 0.0318,
+ "T12_Tang2022_old_vs_refined_gap_dB(G=4)": 10.0,
+ "T12_Tang2021_RIS1_old_vs_aperture_gap_dB(G=8)": 7.15,
+ "T13_RIS_delay_spread_ns": 1.539,
+ "T13_TDL_windowed_sinc_vs_exact": {
+  "L8": {
+   "taps": 13,
+   "max_rel_err_dB_over_0.8Fs": -14.51
+  },
+  "L16": {
+   "taps": 25,
+   "max_rel_err_dB_over_0.8Fs": -29.89
+  },
+  "L32": {
+   "taps": 49,
+   "max_rel_err_dB_over_0.8Fs": -82.72
+  }
+ },
+ "T13_flatness_dB_exact_over_pm80MHz": 0.114,
+ "T15_FM_d_TX_RIS_m": 51953.7,
+ "T15_FM_radio_horizon_km_h200_h1.5": 63.36,
+ "T15_FM_radio_horizon_km_h200_h34.9": 82.67,
+ "T15_FM_direct_path_loss": [
+  {
+   "d_km": 48.0,
+   "hr_m": 1.5,
+   "FSPL_dB": 106.07,
+   "two_ray_flat_dB": 137.71,
+   "P526_smooth_excess_dB": 35.82,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 141.89
+  },
+  {
+   "d_km": 48.0,
+   "hr_m": 10.0,
+   "FSPL_dB": 106.07,
+   "two_ray_flat_dB": 121.24,
+   "P526_smooth_excess_dB": 18.84,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 124.91
+  },
+  {
+   "d_km": 52.0,
+   "hr_m": 1.5,
+   "FSPL_dB": 106.77,
+   "two_ray_flat_dB": 139.1,
+   "P526_smooth_excess_dB": 37.14,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 143.9
+  },
+  {
+   "d_km": 52.0,
+   "hr_m": 10.0,
+   "FSPL_dB": 106.77,
+   "two_ray_flat_dB": 122.63,
+   "P526_smooth_excess_dB": 20.28,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 127.05
+  },
+  {
+   "d_km": 56.0,
+   "hr_m": 1.5,
+   "FSPL_dB": 107.41,
+   "two_ray_flat_dB": 140.39,
+   "P526_smooth_excess_dB": 38.55,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 145.96
+  },
+  {
+   "d_km": 56.0,
+   "hr_m": 10.0,
+   "FSPL_dB": 107.41,
+   "two_ray_flat_dB": 123.92,
+   "P526_smooth_excess_dB": 21.76,
+   "P526_mode": "interpolated",
+   "P526_total_dB": 129.18
+  }
+ ],
+ "T15_FM_RIS_path_loss": [
+  {
+   "d2_m": 500.0,
+   "RIS_free_space_PL_dB(upper bound, focused, cos=1)": 135.27,
+   "with_flat_ground_factors_dB": {
+    "hr1.5": 147.6,
+    "hr10.0": 134.41
+   }
+  },
+  {
+   "d2_m": 1000.0,
+   "RIS_free_space_PL_dB(upper bound, focused, cos=1)": 141.29,
+   "with_flat_ground_factors_dB": {
+    "hr1.5": 159.59,
+    "hr10.0": 143.88
+   }
+  },
+  {
+   "d2_m": 2000.0,
+   "RIS_free_space_PL_dB(upper bound, focused, cos=1)": 147.31,
+   "with_flat_ground_factors_dB": {
+    "hr1.5": 171.62,
+    "hr10.0": 155.33
+   }
+  },
+  {
+   "d2_m": 3000.0,
+   "RIS_free_space_PL_dB(upper bound, focused, cos=1)": 150.84,
+   "with_flat_ground_factors_dB": {
+    "hr1.5": 178.66,
+    "hr10.0": 162.26
+   }
+  }
+ ],
+ "T15_FM_RIS_area_m2": 56.25,
+ "T15_FM_RIS_Fraunhofer_2D2_over_lambda_m(D=diag)": 75.1,
+ "T15_FM_Ellingson_A_for_specular_equiv_fe=2km_m2": 5996.0,
+ "T16_v1cfg_LOS_dB": -61.39,
+ "T16_v1cfg_RIS_recommended_dB": -99.36,
+ "T16_v1cfg_RIS_v2_dB": -108.6,
+ "T16_v1cfg_RIS_v1_dB": -74.97,
+ "T16_v1cfg_pitch_over_lambda": 0.48,
+ "T18_LOS_plus_RIS_total_power_diff_with_vs_without_j_dB_maxabs": 13.62,
+ "Tcoupling_side_by_side_halfwave_dipoles_induced_emf": [
+  {
+   "d_over_lambda": 0.1,
+   "R21_ohm": 67.29,
+   "X21_ohm": 7.53,
+   "abs_Z21_over_abs_Z11(73.1+j42.5)": 0.801
+  },
+  {
+   "d_over_lambda": 0.25,
+   "R21_ohm": 40.76,
+   "X21_ohm": -28.33,
+   "abs_Z21_over_abs_Z11(73.1+j42.5)": 0.587
+  },
+  {
+   "d_over_lambda": 0.5,
+   "R21_ohm": -12.52,
+   "X21_ohm": -29.91,
+   "abs_Z21_over_abs_Z11(73.1+j42.5)": 0.383
+  },
+  {
+   "d_over_lambda": 1.0,
+   "R21_ohm": 4.01,
+   "X21_ohm": 17.73,
+   "abs_Z21_over_abs_Z11(73.1+j42.5)": 0.215
+  }
+ ],
+ "T19_anomalous_gradient_2m_panel_0to30deg": [
+  {
+   "d1=d2_m": 1.0,
+   "sum_dB": -49.26,
+   "weighted_sum_1/(d1+d2)_dB": -49.35,
+   "product_far_field_dB": -10.57
+  },
+  {
+   "d1=d2_m": 2.0,
+   "sum_dB": -54.25,
+   "weighted_sum_1/(d1+d2)_dB": -55.37,
+   "product_far_field_dB": -22.61
+  },
+  {
+   "d1=d2_m": 5.0,
+   "sum_dB": -62.82,
+   "weighted_sum_1/(d1+d2)_dB": -63.33,
+   "product_far_field_dB": -38.53
+  },
+  {
+   "d1=d2_m": 20.0,
+   "sum_dB": -72.41,
+   "weighted_sum_1/(d1+d2)_dB": -75.37,
+   "product_far_field_dB": -62.61
+  },
+  {
+   "d1=d2_m": 100.0,
+   "sum_dB": -90.94,
+   "weighted_sum_1/(d1+d2)_dB": -89.35,
+   "product_far_field_dB": -90.57
+  },
+  {
+   "d1=d2_m": 400.0,
+   "sum_dB": -114.67,
+   "weighted_sum_1/(d1+d2)_dB": -101.39,
+   "product_far_field_dB": -114.65
+  }
+ ]
+}

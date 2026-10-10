@@ -1,0 +1,556 @@
+{
+  "$defs": {
+    "AngleGrid": {
+      "additionalProperties": false,
+      "description": "Angle axis shared by incidence and reflection (section 5.5), degrees in [-90, 90].",
+      "properties": {
+        "theta_deg": {
+          "items": {
+            "ge": -90,
+            "le": 90,
+            "type": "number"
+          },
+          "minItems": 2,
+          "title": "Theta Deg",
+          "type": "array"
+        }
+      },
+      "required": [
+        "theta_deg"
+      ],
+      "title": "AngleGrid",
+      "type": "object"
+    },
+    "CompactFamily": {
+      "additionalProperties": false,
+      "description": "An analytic, parametric state family expanded at load time (``ideal_bbit``,\n``abeywickrama``); see :func:`sremu.scenario.load.expand_family`.",
+      "properties": {
+        "formula": {
+          "title": "Formula",
+          "type": "string"
+        },
+        "name": {
+          "enum": [
+            "ideal_bbit",
+            "abeywickrama"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FamilyParameter"
+          },
+          "title": "Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "formula",
+        "parameters"
+      ],
+      "title": "CompactFamily",
+      "type": "object"
+    },
+    "Created": {
+      "additionalProperties": false,
+      "description": "Creation record of a table.",
+      "properties": {
+        "date": {
+          "title": "Date",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "date",
+        "tool"
+      ],
+      "title": "Created",
+      "type": "object"
+    },
+    "FamilyParameter": {
+      "additionalProperties": false,
+      "description": "A parameter of an analytic state family.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "integer": {
+          "default": false,
+          "title": "Integer",
+          "type": "boolean"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "title": "FamilyParameter",
+      "type": "object"
+    },
+    "GammaPoint": {
+      "additionalProperties": false,
+      "description": "One response sample: magnitude (linear; ``null`` = must be assumed by the scenario)\nand phase in degrees at ``f_hz`` (``null`` for frequency-independent libraries) and,\nfor angle tables, ``theta_i_deg``/``theta_s_deg`` (or ``theta_deg`` for incidence-only\ntables). Optional per-entry uncertainties override the provenance scalars.",
+      "properties": {
+        "f_hz": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "F Hz"
+        },
+        "mag": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mag"
+        },
+        "phase_deg": {
+          "title": "Phase Deg",
+          "type": "number"
+        },
+        "sigma_mag_db": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sigma Mag Db"
+        },
+        "sigma_phase_deg": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sigma Phase Deg"
+        },
+        "theta_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Theta Deg"
+        },
+        "theta_i_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Theta I Deg"
+        },
+        "theta_s_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Theta S Deg"
+        }
+      },
+      "required": [
+        "mag",
+        "phase_deg"
+      ],
+      "title": "GammaPoint",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Mandatory response-table provenance (section 5.5). ``data_class`` (sremu addition)\nis the manifest data class of the table's values; when omitted it follows from\n``source_kind``.",
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "created": {
+          "$ref": "#/$defs/Created"
+        },
+        "data_class": {
+          "anyOf": [
+            {
+              "enum": [
+                "MEAS",
+                "DIG",
+                "REPORTED",
+                "ASSUMED",
+                "SIM-sremu",
+                "SIM-legacy-v1",
+                "SIM-legacy-v2",
+                "ANALYTIC",
+                "MATLAB"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Class"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "includes_cell_pattern": {
+          "title": "Includes Cell Pattern",
+          "type": "boolean"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "polarization": {
+          "enum": [
+            "co",
+            "cross"
+          ],
+          "title": "Polarization",
+          "type": "string"
+        },
+        "raw_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Raw Sha256"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "reference_plane_offset_m": {
+          "title": "Reference Plane Offset M",
+          "type": "number"
+        },
+        "sigma_mag_db": {
+          "ge": 0,
+          "title": "Sigma Mag Db",
+          "type": "number"
+        },
+        "sigma_phase_deg": {
+          "ge": 0,
+          "title": "Sigma Phase Deg",
+          "type": "number"
+        },
+        "source_kind": {
+          "enum": [
+            "measured",
+            "fullwave",
+            "circuit",
+            "analytic",
+            "digitized",
+            "assumed"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_kind",
+        "description",
+        "reference",
+        "reference_plane_offset_m",
+        "polarization",
+        "includes_cell_pattern",
+        "sigma_mag_db",
+        "sigma_phase_deg",
+        "raw_sha256",
+        "license",
+        "created"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "StateEntry": {
+      "additionalProperties": false,
+      "description": "One state of the alphabet.",
+      "properties": {
+        "gamma": {
+          "items": {
+            "$ref": "#/$defs/GammaPoint"
+          },
+          "minItems": 1,
+          "title": "Gamma",
+          "type": "array"
+        },
+        "id": {
+          "minimum": 0,
+          "title": "Id",
+          "type": "integer"
+        },
+        "label": {
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_\\-+.]+$",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "gamma"
+      ],
+      "title": "StateEntry",
+      "type": "object"
+    }
+  },
+  "$id": "urn:sremu:schema:states:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A RIS state-library file (``data/states/*.yaml``, section 9.4).\n\nEither explicit ``states`` or an analytic ``family`` (expanded with parameters into\nexplicit states). ``frequency_hz: \"any\"`` marks a frequency-independent analytic table;\n``validity_bw_hz: null`` means no bandwidth limit. ``angle_grid: \"none\"`` marks an\nangle-independent (separable) table.",
+  "properties": {
+    "angle_grid": {
+      "anyOf": [
+        {
+          "const": "none",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/AngleGrid"
+        }
+      ],
+      "title": "Angle Grid"
+    },
+    "angle_mapping": {
+      "anyOf": [
+        {
+          "const": "half_difference",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Angle Mapping"
+    },
+    "family": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CompactFamily"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "frequency_hz": {
+      "anyOf": [
+        {
+          "items": {
+            "gt": 0,
+            "type": "number"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "const": "any",
+          "type": "string"
+        }
+      ],
+      "title": "Frequency Hz"
+    },
+    "incidence_only": {
+      "default": false,
+      "title": "Incidence Only",
+      "type": "boolean"
+    },
+    "kind": {
+      "const": "ris_state_library",
+      "title": "Kind",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_\\-.]+(?:\\([A-Za-z0-9_.,=+\\- ]*\\))?$",
+      "title": "Name",
+      "type": "string"
+    },
+    "parameters": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Bound parameters of an expanded analytic family (provenance).",
+      "title": "Parameters"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "reciprocal": {
+      "default": true,
+      "title": "Reciprocal",
+      "type": "boolean"
+    },
+    "reconfiguration_time_s": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity >= 0 (string or int)."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reconfiguration Time S"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "states": {
+      "items": {
+        "$ref": "#/$defs/StateEntry"
+      },
+      "title": "States",
+      "type": "array"
+    },
+    "validity_bw_hz": {
+      "anyOf": [
+        {
+          "gt": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Validity Bw Hz"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "name",
+    "provenance",
+    "frequency_hz",
+    "validity_bw_hz",
+    "angle_grid"
+  ],
+  "title": "sremu RIS state library",
+  "type": "object"
+}

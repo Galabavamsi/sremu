@@ -1,0 +1,86 @@
+{
+  "golden_id": "G7_fm_etsi",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_fm_etsi.m",
+  "script_sha256": "b8f552c4d88c13ee472fb2caf3eb5eaf461f63a447b1fbe2b42fb26b16d78a9a",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 0.6655063,
+  "created_utc": "2026-10-10T07:59:43Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "fc_hz": 1.0E+8,
+    "panel": {
+      "center_m": [
+        0,
+        0,
+        80000
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "u_axis": [
+        1,
+        0,
+        0
+      ],
+      "n_u": 80,
+      "n_v": 80,
+      "pitch_u_m": 0.5,
+      "pitch_v_m": 0.5,
+      "cell_model": "point"
+    },
+    "tx_m": [
+      0,
+      0,
+      0
+    ],
+    "focus_m": [
+      0,
+      0,
+      78000
+    ],
+    "rx_z_m": [
+      1000,
+      79000,
+      1000
+    ],
+    "n_bits": 4,
+    "alphabet": "ideal 4-bit exp(j 2 pi s/16)",
+    "etsi_focus_abs": 7.9577471545947666E-7,
+    "focus_row_index_0based": 77,
+    "d_t_m": 80000
+  },
+  "checks": {
+    "k1_focus_db": -122.05703301747829,
+    "etsi_focus_db": -121.98419728044193,
+    "k1_minus_etsi_db_at_focus": -0.072835737036348838,
+    "max_k1_minus_po_bound_db": -0.05424413883934194,
+    "toolbox_vs_hand_max_rel": 1.0323116468417136E-11
+  },
+  "outputs": [
+    {
+      "file": "G7_fm_etsi.csv",
+      "rows": 79,
+      "sha256": "3c987068a031c52e15bcc8b2c2881fe180f4528206f59812bfaabef69558825d"
+    },
+    {
+      "file": "G7_cells.csv",
+      "rows": 6400,
+      "sha256": "acceedbd40cf68039c5749fd31438abdde9dd64ecf6617eb1f270489a350ec03"
+    }
+  ],
+  "notes": [
+    "Rx lies between the Tx and the panel on the panel axis; h_* include the propagation phase.",
+    "ETSI closed form with A = G_t = G_r = 1 and a unit cell pattern; MATLAB agreement is code-to-code only."
+  ]
+}

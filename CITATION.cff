@@ -1,0 +1,48 @@
+# CITATION.cff -- how to cite sremu (WP12). Citation File Format 1.2.0.
+#
+# LICENCE PENDING: the licence is an open administrative gate (DESIGN 2.1, RQ-100, human
+# gate H-2; see LICENSE-PENDING.md). CFF's `license` key accepts SPDX identifiers only, so it
+# is omitted on purpose until all six authors and IIT Bhilai agree; pyproject.toml declares
+# LicenseRef-Pending meanwhile.
+# At the first public tagged release add: license, repository-code, date-released, the
+# Zenodo DOI (RQ-101), ORCIDs, and a preferred-citation pointing to the arXiv preprint.
+cff-version: 1.2.0
+message: >-
+  If you use sremu, please cite it using the metadata below. sremu is pre-release software;
+  its licence has not been chosen yet (see LICENSE-PENDING.md).
+type: software
+title: "sremu: Smart Radio Environment EMUlator"
+version: 0.1.0.dev0
+abstract: >-
+  sremu is a software-only, IQ-level radio-environment emulator for reconfigurable
+  intelligent surfaces (RIS). RIS configurations are timestamped runtime commands from an
+  external controller, applied at an exact, logged sample on every receiver; per-state RIS
+  responses can be imported from measurements; wall-clock behaviour is measured and
+  reported.
+authors:
+  - given-names: Galaba
+    family-names: Vamsi
+    email: galabavamsi@iitbhilai.ac.in
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+  - given-names: Shubhika
+    family-names: Mishra
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+  - given-names: Anurag
+    family-names: Jaiswal
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+  - given-names: Smriti
+    family-names: Kumar
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+  - given-names: Mansi
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+  - given-names: Arzad Alam
+    family-names: Kherani
+    affiliation: Department of Electrical Engineering, Indian Institute of Technology Bhilai, India
+keywords:
+  - reconfigurable intelligent surface
+  - smart radio environment
+  - RIS
+  - IQ-level emulation
+  - software-defined radio
+  - channel emulation
+  - controller in the loop

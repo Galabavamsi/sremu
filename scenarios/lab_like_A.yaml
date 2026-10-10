@@ -1,0 +1,40 @@
+# E-B geometry (DESIGN.md sections 9.3 and 11, E-B): SIM geometry labelled "lab-like",
+# NOT the lab's. Panel at the origin facing +x, u axis +y; angles are measured from the
+# panel normal in the (u, n) plane and signed by the u component (section 3.1).
+#   3 tiles of 8 x 5 cells (24 x 5) at 42.8 mm pitch with 2 mm tile gaps, f_c = 3.5 GHz.
+#   Tx 2.0 m at -30 deg; RX1 1.2 m at 15 deg; RX2 1.2 m at 35 deg; LOS present.
+# Coordinates are r*(cos a, sin a, 0) to 1e-9 m.
+schema_version: "1.0"
+name: lab_like_A_eb
+seed: 20261010
+description: "E-B intra-frame RIS reconfiguration, lab-like SIM geometry (not the lab's)"
+numerics: {backend: numba_cpu}
+nodes:
+  - id: ap
+    position_m: [1.732050808, -1.0, 0.0]        # 2.0 m at -30 deg from the panel normal (+x)
+    antenna: {pattern: isotropic}
+    streams: [{name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 8.0e5, full_scale_dbm: 0}]
+  - id: rx1
+    position_m: [1.159110992, 0.310582854, 0.0]  # 1.2 m at 15 deg
+    antenna: {pattern: isotropic}
+    streams: [{name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}]
+  - id: rx2
+    position_m: [0.982982453, 0.688291724, 0.0]  # 1.2 m at 35 deg
+    antenna: {pattern: isotropic}
+    streams: [{name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}]
+ris:
+  - id: ris0
+    pose: {center_m: [0, 0, 0], normal: [1, 0, 0], u_axis: [0, 1, 0]}
+    grid: {n_u: 24, n_v: 5, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 3, n_tiles_v: 1, gap_m: 0.002}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+controllers:
+  - {name: tdma, kind: builtin, impl: TdmaAlternate, period_s: "2.304e-3", min_latency_s: "2e-4",
+     latency: {fixed_s: "2e-4", jitter: "uniform:0,5e-4"}, params: {targets: [rx1.rx0, rx2.rx0]}}
+run: {mode: lockstep, coupling: barrier, duration_s: "5", late_policy: apply_on_arrival}
+record: {iq: true, events: true, metrics: true}
+traffic: [{stream: ap.tx0, generator: qpsk_packets, params: {sps: 4, preamble_syms: 64, payload_syms: 512, guard_s: "5e-4"}}]

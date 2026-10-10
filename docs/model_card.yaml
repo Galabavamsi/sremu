@@ -1,0 +1,138 @@
+# docs/model_card.yaml -- physics model card of sremu (WP12 skeleton).
+#
+# SINGLE SOURCE for paper Table II and for docs/model_card.md (DESIGN 5 intro, 5.15).
+# Generate both with:
+#   python docs/tools/gen_model_card.py                       # writes docs/model_card.md
+#   python docs/tools/gen_model_card.py --tex PATH/table2.tex # also writes the LaTeX table
+# Do not edit model_card.md or the LaTeX table by hand.
+#
+# Row fields (component, model, validity_domain, evidence, default) mirror DESIGN 5.15
+# verbatim (backticks mark code); tests/unit/test_wp12_model_card.py compares them with the
+# spec table. Optional *_tex fields override the automatic LaTeX conversion of a cell.
+# `evidence` lists spec test ids; a range such as "PH-02-07" in the spec is expanded here.
+# `status` stays "spec" until the owning work package's tests pass and the paper pipeline
+# fills the verification column from the pinned junit.
+
+schema_version: 1
+title: sremu physics model card
+spec: DESIGN.md section 5.15 (validity domain); component sections 5.2-5.12
+sremu_version: 0.1.0.dev0
+caption: >-
+  Model card of sremu: model, validity domain, verification evidence and default of each
+  component. Generated from docs/model_card.yaml; evidence ids refer to the test tables of
+  Section V. ENG marks an engineering choice without a literature source.
+
+rows:
+  - id: los
+    component: LOS
+    model: Friis + patterns + explicit V
+    validity_domain: Far field of the antennas
+    evidence: [PH-01]
+    default: "On"
+    spec_section: "5.2"
+    status: spec
+  - id: ris_point
+    component: RIS
+    model: K1, `point`
+    validity_domain: Cell in the far field of Tx and Rx (r ≥ 3λ); pitch ≤ λ/2; scalar co-pol
+    validity_domain_tex: 'Cell in the far field of Tx and Rx ($r \geq 3\lambda$); pitch $\leq \lambda/2$; scalar co-pol'
+    evidence: [PH-02, PH-03, PH-04, PH-05, PH-06, PH-07, G1, G2, G3, V-TANG]
+    default: auto
+    spec_section: "5.3, 5.4"
+    status: spec
+  - id: ris_po_patch
+    component: RIS
+    model: K1, `po_patch`
+    validity_domain: As above; uniform-patch PO; Richardson-converged
+    evidence: [PH-04, PH-26]
+    default: Pitch > λ/2
+    default_tex: 'Pitch $> \lambda/2$'
+    spec_section: "5.4"
+    status: spec
+  - id: gamma_tables
+    component: Γ tables
+    component_tex: '$\Gamma$ tables'
+    model: Complex-linear LUT
+    validity_domain: Inside the grid; band ≤ validity bandwidth; reciprocal
+    evidence: [PH-28, PH-31]
+    default: "—"
+    spec_section: "5.5"
+    status: spec
+  - id: ground
+    component: Ground
+    model: Flat-earth image + Fresnel
+    validity_domain: Smooth, flat; no curvature (P.526 experimental)
+    evidence: [PH-10, PH-32, G8]
+    default: "Off"
+    spec_section: "5.7"
+    status: spec
+  - id: walls
+    component: Walls
+    model: Image, order 1
+    validity_domain: Finite polygons; specular
+    evidence: [PH-08]
+    default: "Off"
+    spec_section: "5.8"
+    status: spec
+  - id: diffraction
+    component: Diffraction
+    model: Single knife edge F(ν)
+    model_tex: 'Single knife edge $F(\nu)$'
+    validity_domain: One dominant edge
+    evidence: [PH-11]
+    default: "Off"
+    spec_section: "5.9"
+    status: spec
+  - id: diffuse
+    component: Diffuse
+    model: Additive SoS
+    validity_domain: Statistical background only
+    evidence: [ST-02, G6]
+    default: "Off"
+    spec_section: "5.11"
+    status: spec
+  - id: mobility_doppler
+    component: Mobility/Doppler
+    model: Chord delay + exact phase + tiles
+    validity_domain: ε_rel ≤ 1e-3 (bound plus `verify_interp`)
+    validity_domain_tex: '$\varepsilon_{\mathrm{rel}} \leq 10^{-3}$ (bound plus \texttt{verify\_interp})'
+    evidence: [PH-17, PH-18, PH-19]
+    default: Auto
+    spec_section: "4.4, 5.10"
+    status: spec
+  - id: wideband
+    component: Wideband
+    model: FD Kaiser 8/16/32
+    validity_domain: B ≤ 0.8 f_s; ≤ −60 dB in band
+    validity_domain_tex: '$B \leq 0.8 f_s$; $\leq -60$ dB in band'
+    evidence: [PH-20]
+    default: Auto
+    spec_section: "4.5"
+    status: spec
+  - id: noise
+    component: Noise
+    model: '`kT_0 F f_s` per RX'
+    model_tex: '$k T_0 F f_s$ per RX'
+    validity_domain: "—"
+    evidence: [PH-21, G5]
+    default: "On"
+    spec_section: "5.12"
+    status: spec
+  - id: nonidealities
+    component: Non-idealities
+    model: Pipeline (§5.6)
+    model_tex: 'Ordered pipeline: command, quantizer, failures, table, efficiency, coupling hook, transition'
+    validity_domain: Tables, failures, efficiency; coupling via tables only
+    evidence: [PH-13, PH-14, PH-15, PH-25, PH-30]
+    default: "—"
+    spec_section: "5.6"
+    status: spec
+  - id: transitions
+    component: Transitions
+    model: Per-class g_c, complex-linear Γ path
+    model_tex: 'Per-class $g_c$, complex-linear $\Gamma$ path'
+    validity_domain: "[ENG] until measured"
+    evidence: [RT-12]
+    default: Step
+    spec_section: "4.7"
+    status: spec

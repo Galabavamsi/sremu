@@ -1,0 +1,29 @@
+{
+ "note": "Input data copied into the repository for the WP4 oracle self-tests (DESIGN.md section 10.1). sha256 values are of the committed files with LF line endings; source_sha256 is of the original file (CRLF) at copy time.",
+ "copied": "2026-10-10",
+ "files": {
+  "physics_model_checks.json": {
+   "sha256": "b77bccd58b012fc861aa5d420a9ecaf492f381c32ddcf3651fe60ab2aa3043f9",
+   "source": "D:/projects/ris/data/physics_model_checks.json",
+   "source_sha256": "aa49a36cf8fb13d841c1e1cc70be391c290ea828fa2bbf43dd16dac6696002d3",
+   "generator": "D:/projects/ris/research/scratch/pm_checks.py (uses pm_lib.py)",
+   "generator_sha256": {
+    "pm_checks.py": "34c77365f356be04c75fc93d21eb93ce90794f97839df70c0fa832ff9c60bc80",
+    "pm_lib.py": "b78a1602a696470b583782068473f9a02f42b8e0ac293cc940b99e61c48010d1"
+   },
+   "data_class": "ANALYTIC",
+   "caveats": "Values rounded by the generator (mostly 3 decimals). Monte Carlo entries (T8 random Gamma, T10 monte_carlo_dB) depend on the legacy global numpy RNG (np.random.seed(1)) and are not reproduced by the oracles (global RNG is banned, section 6.1)."
+  },
+  "tang2022_fig10_vector.json": {
+   "sha256": "1e250304fc1f59c02ba119286678a572807e814ce5f6f46f93bbb39956ca1b9d",
+   "source": "D:/projects/ris/data/digitized/tang2022_fig10_vector.json",
+   "source_sha256": "cf8793e9f9ed5a799d9aad4eff799278b8cf0a9d26af9bbe7e3c736cc6f03a20",
+   "generator": "D:/projects/ris/research/scratch/tang_fig10_vec2.py (PyMuPDF vector-path extraction of Tang et al., arXiv:2101.08607v2, Fig. 10)",
+   "generator_sha256": {
+    "tang_fig10_vec2.py": "6ced85dbb0e37c373effa6803662996150be2482913d335b257545ac16d8e248"
+   },
+   "data_class": "DIG",
+   "caveats": "Digitized from a published figure (vector extraction), not raw measurement files. Used only for the oracle check against Tang's published model curves (Eq. 9); the measured series belongs to V-TANG (WP10)."
+  }
+ }
+}

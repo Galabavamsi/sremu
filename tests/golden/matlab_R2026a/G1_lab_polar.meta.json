@@ -1,0 +1,259 @@
+{
+  "golden_id": "G1_lab_polar",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_lab_polar.m",
+  "script_sha256": "ffca47b448f84a60ea3ca6fe7f6cb448d0e3ded0bbd81632f9c1f9699d1f7cf8",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 2.671648,
+  "created_utc": "2026-10-10T07:59:21Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "geometries": {
+      "lab_A_3x1": {
+        "fc_hz": 3.5E+9,
+        "center_m": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          1,
+          0,
+          0
+        ],
+        "u_axis": [
+          0,
+          1,
+          0
+        ],
+        "n_u": 24,
+        "n_v": 5,
+        "pitch_u_m": 0.0448,
+        "pitch_v_m": 0.0448,
+        "n_tiles_u": 3,
+        "n_tiles_v": 1,
+        "gap_m": 0.002,
+        "tile_states": [
+          0,
+          1,
+          0
+        ],
+        "alphabet_mag": [
+          1,
+          1
+        ],
+        "alphabet_phase_deg": [
+          49.64,
+          -153.77
+        ],
+        "cell_model": "point"
+      },
+      "lab_B_6x1": {
+        "fc_hz": 3.5E+9,
+        "center_m": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          1,
+          0,
+          0
+        ],
+        "u_axis": [
+          0,
+          1,
+          0
+        ],
+        "n_u": 48,
+        "n_v": 5,
+        "pitch_u_m": 0.0448,
+        "pitch_v_m": 0.0448,
+        "n_tiles_u": 6,
+        "n_tiles_v": 1,
+        "gap_m": 0.002,
+        "tile_states": [
+          0,
+          0,
+          1,
+          1,
+          0,
+          0
+        ],
+        "alphabet_mag": [
+          1,
+          1
+        ],
+        "alphabet_phase_deg": [
+          49.64,
+          -153.77
+        ],
+        "cell_model": "point"
+      },
+      "lab_C_3x2": {
+        "fc_hz": 3.5E+9,
+        "center_m": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          1,
+          0,
+          0
+        ],
+        "u_axis": [
+          0,
+          1,
+          0
+        ],
+        "n_u": 24,
+        "n_v": 10,
+        "pitch_u_m": 0.0448,
+        "pitch_v_m": 0.0448,
+        "n_tiles_u": 3,
+        "n_tiles_v": 2,
+        "gap_m": 0.002,
+        "tile_states": [
+          [
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            1,
+            0
+          ]
+        ],
+        "alphabet_mag": [
+          1,
+          1
+        ],
+        "alphabet_phase_deg": [
+          49.64,
+          -153.77
+        ],
+        "cell_model": "point"
+      },
+      "tang_mmris1": {
+        "fc_hz": 2.7E+10,
+        "center_m": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "u_axis": [
+          1,
+          0,
+          0
+        ],
+        "n_u": 56,
+        "n_v": 20,
+        "pitch_u_m": 0.0014,
+        "pitch_v_m": 0.0028,
+        "n_tiles_u": 1,
+        "n_tiles_v": 1,
+        "gap_m": 0,
+        "alphabet_mag": [
+          0.9,
+          0.7
+        ],
+        "alphabet_phase_deg": [
+          165,
+          0
+        ],
+        "state_all_cells": 0,
+        "horn_cos_power_alpha": 53.8,
+        "cell_model": "point"
+      }
+    },
+    "polar_theta_deg": [
+      0,
+      5,
+      15,
+      25,
+      35,
+      45
+    ],
+    "polar_r_m": [
+      0.6,
+      0.9,
+      1.2,
+      1.5,
+      1.8
+    ],
+    "tx_variants": {
+      "T0_iso": "[3,0,0] isotropic Tx and Rx",
+      "T25_iso": "3*[cos(-25 deg), sin(-25 deg), 0] isotropic",
+      "T0_cos": "[3,0,0]; Tx CosPower(3) and Rx CosPower(1), boresights toward the panel centre"
+    },
+    "tang_panels": {
+      "a": [
+        1,
+        10
+      ],
+      "b": [
+        2,
+        10
+      ],
+      "c": [
+        1,
+        45
+      ],
+      "d": [
+        2,
+        45
+      ]
+    },
+    "tang_d2_m": [
+      1,
+      1.5,
+      2,
+      2.5,
+      3,
+      3.5,
+      4,
+      4.5,
+      5
+    ],
+    "kernel": "K1 point: sqrt(GT GR) Gamma A sqrt(cos_i cos_s)/(4 pi r_i r_s) j exp(-jk(r_i+r_s)), visibility mask",
+    "antenna_cos_power": "G = 2(alpha+1) cos^alpha(psi): phased.CosineAntennaElement CosinePower [alpha/2 alpha/2] (voltage pattern) times sqrt(G0)"
+  },
+  "checks": {
+    "cosine_element_field_pattern_max_dev": 5.5511151231257827E-16,
+    "rangeangle_vs_vecnorm_max_dev_m": 1.7763568394002505E-15,
+    "toolbox_vs_hand_max_rel": 2.8762786620674237E-13,
+    "n_rows": 306
+  },
+  "outputs": [
+    {
+      "file": "G1_lab_polar.csv",
+      "rows": 306,
+      "sha256": "65df30b117a3dff29725ac5879254c1b4b1b15d8a316cbc08daabf07beba9549"
+    },
+    {
+      "file": "G1_cells.csv",
+      "rows": 1720,
+      "sha256": "aa8e27757cc81e90a632d2fe6d4c845dfd04d98cbca2b56f4382fe6fa411be96"
+    }
+  ],
+  "notes": [
+    "h_* columns are full complex-baseband coefficients at the carrier (propagation phase included).",
+    "Cell order n = iv*n_u + iu; G1_cells.csv lists every cell position and state.",
+    "MATLAB agreement is code-to-code only (DESIGN.md section 1.6)."
+  ]
+}

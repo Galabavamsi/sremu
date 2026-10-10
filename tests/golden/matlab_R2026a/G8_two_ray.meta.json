@@ -1,0 +1,48 @@
+{
+  "golden_id": "G8_two_ray",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_two_ray.m",
+  "script_sha256": "cffb1da4cb2850944e45fd9c36bc307a7ce99cd182ffd9ca77ff42d485edb364",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 0.6742037,
+  "created_utc": "2026-10-10T07:59:44Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "fc_hz": 1.0E+8,
+    "sample_rate_sps": 1.0E+6,
+    "ground_reflection_coefficient": -1,
+    "ht_m": 200,
+    "ground_range_m": [
+      48000,
+      52000,
+      56000
+    ],
+    "hr_m": [
+      1.5,
+      10
+    ],
+    "object": "twoRayChannel (phased.TwoRayChannel renamed in R2026a)",
+    "input": "ones; output sample taken after both rays arrived"
+  },
+  "checks": {
+    "max_abs_toolbox_minus_hand_db": 4.8244430672639282E-9
+  },
+  "outputs": [
+    {
+      "file": "G8_two_ray.csv",
+      "rows": 6,
+      "sha256": "68c1e4d68975c44cecf6cef6b408c397dafc6b0cd8b9c5038357974fd96aa26b"
+    }
+  ],
+  "notes": [
+    "Phase of h follows the toolbox convention; only |h| (path loss) is compared (+-0.05 dB)."
+  ]
+}

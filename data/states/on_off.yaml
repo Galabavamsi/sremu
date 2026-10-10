@@ -1,0 +1,25 @@
+# Built-in RIS state library (DESIGN.md section 5.5): ON/OFF alphabet of the WCL letter
+# (OFF = absorbing, Gamma = 0; ON = 1 at 0 deg).
+schema_version: "1.0"
+kind: ris_state_library
+name: on_off
+provenance:
+  source_kind: analytic
+  description: "Ideal ON/OFF alphabet: OFF absorbing (0), ON 1 at 0 deg"
+  reference: "Mishra and Kherani, IEEE WCL 14(4), 2025 (state model)"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 0.0
+  raw_sha256: null
+  license: "analytic (no data)"
+  created: {date: "2026-10-10", tool: "manual", version: null}
+frequency_hz: any
+validity_bw_hz: null
+angle_grid: none
+reciprocal: true
+reconfiguration_time_s: null
+states:
+  - {id: 0, label: "off", gamma: [{f_hz: null, mag: 0.0, phase_deg: 0.0}]}
+  - {id: 1, label: "on", gamma: [{f_hz: null, mag: 1.0, phase_deg: 0.0}]}

@@ -1,0 +1,28 @@
+# Built-in RIS state family (DESIGN.md section 5.5): ideal b-bit phase alphabet.
+# Use as library "ideal_bbit" (b = 1) or "ideal_bbit(b=2)"; expanded at load time into
+# 2**b explicit states s0..s{2**b-1} with Gamma_s = exp(j*2*pi*s/2**b).
+schema_version: "1.0"
+kind: ris_state_library
+name: ideal_bbit
+provenance:
+  source_kind: analytic
+  description: "Ideal lossless uniform b-bit phase alphabet"
+  reference: "analytic"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 0.0
+  raw_sha256: null
+  license: "analytic (no data)"
+  created: {date: "2026-10-10", tool: "manual", version: null}
+frequency_hz: any
+validity_bw_hz: null
+angle_grid: none
+reciprocal: true
+reconfiguration_time_s: null
+family:
+  name: ideal_bbit
+  formula: "Gamma_s = exp(j*2*pi*s/2**b), s = 0..2**b-1"
+  parameters:
+    b: {default: 1, description: "bits per cell", unit: "bit", integer: true, min: 1, max: 8}

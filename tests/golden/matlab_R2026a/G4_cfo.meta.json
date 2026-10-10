@@ -1,0 +1,53 @@
+{
+  "golden_id": "G4_cfo",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_cfo.m",
+  "script_sha256": "bb4faea13d3f6f4a8dc00b2d2aef6b9dcf1fcec6f857e1ec3cd5badd093bfc95",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 2.7823649,
+  "created_utc": "2026-10-10T07:59:40Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "f_s_sps": 5880,
+    "offsets_hz": [
+      -1400,
+      -1375,
+      500,
+      750,
+      1400
+    ],
+    "n_samples": 2000,
+    "input_file": "G4_input_tx_iq.csv",
+    "input_sha256": "039a63e9106250771e426b6aab36ff154993c483246ec60d6aedd0da4fc3a1cd",
+    "input_rounding": "double(single(x)) so that complex64 storage is exact",
+    "convention": "y[n] = x[n] exp(+j 2 pi df n / f_s), n from 0, PhaseOffset 0",
+    "chunk_sizes_cycled": [
+      1,
+      7,
+      128,
+      333,
+      1000
+    ]
+  },
+  "checks": {
+    "chunked_vs_whole_max_rel_rms": 0
+  },
+  "outputs": [
+    {
+      "file": "G4_cfo.csv",
+      "rows": 2000,
+      "sha256": "5c8214d3c70f3ba4f6d5b23e46352f513b77b44c6280d0c9ce2b6ac85bba0b9f"
+    }
+  ],
+  "notes": [
+    "The render contract applies lo_offset_hz = f_c,tx - f_c,rx as exp(+j 2 pi lo_offset t) at RX time t = n/f_s."
+  ]
+}

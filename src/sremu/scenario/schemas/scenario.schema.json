@@ -1,0 +1,2109 @@
+{
+  "$defs": {
+    "Antenna": {
+      "additionalProperties": false,
+      "description": "Scalar co-polar antenna (section 5.2); ``boresight`` required unless isotropic.",
+      "properties": {
+        "boresight": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boresight"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "const": "isotropic",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/CosPowerPattern"
+            },
+            {
+              "$ref": "#/$defs/TabulatedPattern"
+            }
+          ],
+          "title": "Pattern"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "title": "Antenna",
+      "type": "object"
+    },
+    "AntennaProvenance": {
+      "additionalProperties": false,
+      "description": "Provenance of a tabulated antenna pattern.",
+      "properties": {
+        "data_class": {
+          "enum": [
+            "MEAS",
+            "DIG",
+            "REPORTED",
+            "ASSUMED",
+            "SIM-sremu",
+            "SIM-legacy-v1",
+            "SIM-legacy-v2",
+            "ANALYTIC",
+            "MATLAB"
+          ],
+          "title": "Data Class",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "reference",
+        "data_class"
+      ],
+      "title": "AntennaProvenance",
+      "type": "object"
+    },
+    "CapabilitiesModel": {
+      "additionalProperties": false,
+      "description": "ETSI GS RIS 008-style capabilities (sections 8.5, 8.9).",
+      "properties": {
+        "max_command_rate_hz": {
+          "default": 10000.0,
+          "gt": 0,
+          "title": "Max Command Rate Hz",
+          "type": "number"
+        },
+        "reconfiguration_time_s": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "description": "Exact quantity >= 0 (string or int)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reconfiguration Time S"
+        },
+        "static_power_w": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Static Power W"
+        }
+      },
+      "title": "CapabilitiesModel",
+      "type": "object"
+    },
+    "ConstantVelocityTrajectory": {
+      "additionalProperties": false,
+      "description": "``position(t) = start_m + velocity_mps * t``.",
+      "properties": {
+        "model": {
+          "const": "constant_velocity",
+          "title": "Model",
+          "type": "string"
+        },
+        "start_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Start M",
+          "type": "array"
+        },
+        "velocity_mps": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Velocity Mps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "model",
+        "start_m",
+        "velocity_mps"
+      ],
+      "title": "ConstantVelocityTrajectory",
+      "type": "object"
+    },
+    "ControlModel": {
+      "additionalProperties": false,
+      "description": "Control granularity; ``groups`` lists physical cell indices per control group.",
+      "properties": {
+        "granularity": {
+          "default": "element",
+          "enum": [
+            "element",
+            "column",
+            "tile",
+            "groups"
+          ],
+          "title": "Granularity",
+          "type": "string"
+        },
+        "groups": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Groups"
+        }
+      },
+      "title": "ControlModel",
+      "type": "object"
+    },
+    "ControllerModel": {
+      "additionalProperties": false,
+      "description": "A controller (section 9.2). Built-ins name their class in ``impl``.",
+      "properties": {
+        "impl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Impl"
+        },
+        "kind": {
+          "enum": [
+            "builtin",
+            "external"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "latency": {
+          "$ref": "#/$defs/LatencyModelSpec"
+        },
+        "min_latency_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "Min Latency S"
+        },
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "observation": {
+          "$ref": "#/$defs/ObservationModel"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "period_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity > 0 (string or int).",
+          "title": "Period S"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "period_s",
+        "min_latency_s",
+        "latency"
+      ],
+      "title": "ControllerModel",
+      "type": "object"
+    },
+    "CosPowerParams": {
+      "additionalProperties": false,
+      "description": "``CosPower(alpha)``: G0 = 2(alpha + 1) (section 5.2).",
+      "properties": {
+        "alpha": {
+          "ge": 0,
+          "title": "Alpha",
+          "type": "number"
+        }
+      },
+      "required": [
+        "alpha"
+      ],
+      "title": "CosPowerParams",
+      "type": "object"
+    },
+    "CosPowerPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "cos_power": {
+          "$ref": "#/$defs/CosPowerParams"
+        }
+      },
+      "required": [
+        "cos_power"
+      ],
+      "title": "CosPowerPattern",
+      "type": "object"
+    },
+    "Diffuse": {
+      "additionalProperties": false,
+      "description": "Additive sum-of-sinusoids diffuse multipath (section 5.11).",
+      "properties": {
+        "from_motion": {
+          "default": false,
+          "title": "From Motion",
+          "type": "boolean"
+        },
+        "k_factor_db": {
+          "title": "K Factor Db",
+          "type": "number"
+        },
+        "max_doppler_hz": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Doppler Hz"
+        },
+        "n_sinusoids": {
+          "default": 48,
+          "minimum": 48,
+          "title": "N Sinusoids",
+          "type": "integer"
+        },
+        "taps": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/DiffuseTap"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taps"
+        }
+      },
+      "required": [
+        "k_factor_db"
+      ],
+      "title": "Diffuse",
+      "type": "object"
+    },
+    "DiffuseTap": {
+      "additionalProperties": false,
+      "description": "One exponential-PDP tap of the diffuse term.",
+      "properties": {
+        "delay_s": {
+          "ge": 0,
+          "title": "Delay S",
+          "type": "number"
+        },
+        "rel_power_db": {
+          "title": "Rel Power Db",
+          "type": "number"
+        }
+      },
+      "required": [
+        "delay_s",
+        "rel_power_db"
+      ],
+      "title": "DiffuseTap",
+      "type": "object"
+    },
+    "Edge": {
+      "additionalProperties": false,
+      "description": "Knife edge given as a segment; applies to the paths it intersects (section 5.9).",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "p0_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "P0 M",
+          "type": "array"
+        },
+        "p1_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "P1 M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "p0_m",
+        "p1_m"
+      ],
+      "title": "Edge",
+      "type": "object"
+    },
+    "Environment": {
+      "additionalProperties": false,
+      "description": "Ground, walls, occluders, knife edges and diffuse multipath (section 9.2).",
+      "properties": {
+        "diffuse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Diffuse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "ground": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ground"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "occluders": {
+          "items": {
+            "$ref": "#/$defs/Occluder"
+          },
+          "title": "Occluders",
+          "type": "array"
+        },
+        "walls": {
+          "items": {
+            "$ref": "#/$defs/Wall"
+          },
+          "title": "Walls",
+          "type": "array"
+        }
+      },
+      "title": "Environment",
+      "type": "object"
+    },
+    "ExternalTrajectory": {
+      "additionalProperties": false,
+      "description": "Positions arrive as timed ``node.set_position`` / ``node.set_trajectory`` events.",
+      "properties": {
+        "initial_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Initial M",
+          "type": "array"
+        },
+        "model": {
+          "const": "external",
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "initial_m"
+      ],
+      "title": "ExternalTrajectory",
+      "type": "object"
+    },
+    "FailuresModel": {
+      "additionalProperties": false,
+      "description": "Random failure map rates (keyed RNG purpose ``failure/<panel>``).",
+      "properties": {
+        "dead_rate": {
+          "default": 0.0,
+          "ge": 0,
+          "le": 1,
+          "title": "Dead Rate",
+          "type": "number"
+        },
+        "gamma_dead": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "default": 0.0,
+          "description": "Complex number: a real number or [re, im].",
+          "title": "Gamma Dead"
+        },
+        "stuck_rate": {
+          "default": 0.0,
+          "ge": 0,
+          "le": 1,
+          "title": "Stuck Rate",
+          "type": "number"
+        }
+      },
+      "title": "FailuresModel",
+      "type": "object"
+    },
+    "Grid": {
+      "additionalProperties": false,
+      "description": "Cell grid; cell index ``n = iv*n_u + iu`` (u fastest).",
+      "properties": {
+        "cell_model": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "point",
+            "po_patch"
+          ],
+          "title": "Cell Model",
+          "type": "string"
+        },
+        "n_u": {
+          "minimum": 1,
+          "title": "N U",
+          "type": "integer"
+        },
+        "n_v": {
+          "minimum": 1,
+          "title": "N V",
+          "type": "integer"
+        },
+        "pitch_u_m": {
+          "gt": 0,
+          "title": "Pitch U M",
+          "type": "number"
+        },
+        "pitch_v_m": {
+          "gt": 0,
+          "title": "Pitch V M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "n_u",
+        "n_v",
+        "pitch_u_m",
+        "pitch_v_m"
+      ],
+      "title": "Grid",
+      "type": "object"
+    },
+    "Ground": {
+      "additionalProperties": false,
+      "description": "Flat ground plane z = ``height_m`` with complex permittivity (section 5.7).",
+      "properties": {
+        "eps_r": {
+          "gt": 0,
+          "title": "Eps R",
+          "type": "number"
+        },
+        "height_m": {
+          "default": 0.0,
+          "title": "Height M",
+          "type": "number"
+        },
+        "polarization": {
+          "enum": [
+            "H",
+            "V"
+          ],
+          "title": "Polarization",
+          "type": "string"
+        },
+        "sigma_s_per_m": {
+          "ge": 0,
+          "title": "Sigma S Per M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "eps_r",
+        "sigma_s_per_m",
+        "polarization"
+      ],
+      "title": "Ground",
+      "type": "object"
+    },
+    "InitialModel": {
+      "additionalProperties": false,
+      "description": "Initial configuration: a ``fill`` state for every control or explicit ``states``.",
+      "properties": {
+        "fill": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fill"
+        },
+        "states": {
+          "anyOf": [
+            {
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "States"
+        }
+      },
+      "title": "InitialModel",
+      "type": "object"
+    },
+    "LatencyModelSpec": {
+      "additionalProperties": false,
+      "description": "Controller latency: ``fixed_s`` plus optional ``jitter`` ``\"uniform:a,b\"`` or\n``\"exp:mean\"`` (s), drawn from RNG purpose ``ctrl.latency/<name>``.",
+      "properties": {
+        "fixed_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "Fixed S"
+        },
+        "jitter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jitter"
+        }
+      },
+      "required": [
+        "fixed_s"
+      ],
+      "title": "LatencyModelSpec",
+      "type": "object"
+    },
+    "LoModel": {
+      "additionalProperties": false,
+      "description": "Local oscillator offsets (section 6.3).",
+      "properties": {
+        "cfo_hz": {
+          "default": 0.0,
+          "title": "Cfo Hz",
+          "type": "number"
+        },
+        "linewidth_hz": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Linewidth Hz",
+          "type": "number"
+        }
+      },
+      "title": "LoModel",
+      "type": "object"
+    },
+    "Node": {
+      "additionalProperties": false,
+      "description": "A node: exactly one of ``position_m`` or ``trajectory``.",
+      "properties": {
+        "antenna": {
+          "$ref": "#/$defs/Antenna"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "position_m": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Position M"
+        },
+        "streams": {
+          "items": {
+            "$ref": "#/$defs/StreamModel"
+          },
+          "minItems": 1,
+          "title": "Streams",
+          "type": "array"
+        },
+        "trajectory": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "constant_velocity": "#/$defs/ConstantVelocityTrajectory",
+                  "external": "#/$defs/ExternalTrajectory",
+                  "rwp_1d": "#/$defs/Rwp1dTrajectory",
+                  "rwp_2d": "#/$defs/Rwp2dTrajectory",
+                  "static": "#/$defs/StaticTrajectory",
+                  "trace": "#/$defs/TraceTrajectory",
+                  "waypoints": "#/$defs/WaypointsTrajectory"
+                },
+                "propertyName": "model"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/StaticTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/WaypointsTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/ConstantVelocityTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/Rwp1dTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/Rwp2dTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/TraceTrajectory"
+                },
+                {
+                  "$ref": "#/$defs/ExternalTrajectory"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trajectory"
+        }
+      },
+      "required": [
+        "id",
+        "antenna",
+        "streams"
+      ],
+      "title": "Node",
+      "type": "object"
+    },
+    "Numerics": {
+      "additionalProperties": false,
+      "description": "Numerical policy (section 9.2). Defaults are the spec's.",
+      "properties": {
+        "backend": {
+          "default": "numba_cpu",
+          "enum": [
+            "numba_cpu",
+            "numpy_ref"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "deterministic": {
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "fd_error_target_db": {
+          "default": -60.0,
+          "description": "FD in-band error target, dB (4.5).",
+          "title": "Fd Error Target Db",
+          "type": "number"
+        },
+        "interp_rel_error": {
+          "default": 0.001,
+          "description": "Shared epsilon_rel (4.4).",
+          "gt": 0,
+          "title": "Interp Rel Error",
+          "type": "number"
+        },
+        "narrowband_phase_rad": {
+          "default": 0.05,
+          "description": "pi*B*dtau threshold, rad.",
+          "gt": 0,
+          "title": "Narrowband Phase Rad",
+          "type": "number"
+        },
+        "page_target_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "5e-4",
+          "description": "Page duration target, s (4.3).",
+          "title": "Page Target S"
+        },
+        "point_max_pitch_wavelengths": {
+          "default": 0.5,
+          "description": "auto -> point limit.",
+          "gt": 0,
+          "title": "Point Max Pitch Wavelengths",
+          "type": "number"
+        },
+        "richardson_tol_db": {
+          "default": 0.05,
+          "description": "Richardson tolerance, dB (5.4).",
+          "gt": 0,
+          "title": "Richardson Tol Db",
+          "type": "number"
+        },
+        "subcell_max_wavelengths": {
+          "default": 0.2,
+          "description": "po_patch sub-cell size.",
+          "gt": 0,
+          "title": "Subcell Max Wavelengths",
+          "type": "number"
+        },
+        "t_u_max_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "1e-2",
+          "description": "Snapshot interval cap, s (4.4).",
+          "title": "T U Max S"
+        },
+        "t_u_s": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "description": "Exact quantity > 0 (string or int)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Snapshot interval, s; may only LOWER the automatic value.",
+          "title": "T U S"
+        },
+        "verify_interp": {
+          "default": true,
+          "title": "Verify Interp",
+          "type": "boolean"
+        }
+      },
+      "title": "Numerics",
+      "type": "object"
+    },
+    "ObservationModel": {
+      "additionalProperties": false,
+      "description": "What the controller observes (mirrors ``contracts.ObservationSpec``).",
+      "properties": {
+        "fields": {
+          "items": {
+            "enum": [
+              "rx_power_dbm",
+              "ris_state",
+              "positions",
+              "csi_oracle",
+              "iq_window"
+            ],
+            "type": "string"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "position_delay_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "0",
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "Position Delay S"
+        },
+        "position_noise_m": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Position Noise M",
+          "type": "number"
+        },
+        "window_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "1e-3",
+          "description": "Exact quantity > 0 (string or int).",
+          "title": "Window S"
+        }
+      },
+      "title": "ObservationModel",
+      "type": "object"
+    },
+    "Occluder": {
+      "additionalProperties": false,
+      "description": "Opaque occluder or partition polygon (section 5.9).",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "opaque",
+            "partition"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "transmission_loss_db": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transmission Loss Db"
+        },
+        "vertices_m": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 3,
+          "title": "Vertices M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "vertices_m",
+        "kind"
+      ],
+      "title": "Occluder",
+      "type": "object"
+    },
+    "PacedModel": {
+      "additionalProperties": false,
+      "description": "Paced-mode settings (section 4.10).",
+      "properties": {
+        "d_lag_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "1e-3",
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "D Lag S"
+        },
+        "slacks_s": {
+          "default": [
+            "0",
+            "1e-3",
+            "5e-3"
+          ],
+          "items": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "Exact quantity >= 0 (string or int)."
+          },
+          "title": "Slacks S",
+          "type": "array"
+        }
+      },
+      "title": "PacedModel",
+      "type": "object"
+    },
+    "Pose": {
+      "additionalProperties": false,
+      "description": "Panel pose: centre (m), unit normal n and in-plane u axis; v = n x u (section 3.1).",
+      "properties": {
+        "center_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center M",
+          "type": "array"
+        },
+        "normal": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Normal",
+          "type": "array"
+        },
+        "u_axis": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "U Axis",
+          "type": "array"
+        }
+      },
+      "required": [
+        "center_m",
+        "normal",
+        "u_axis"
+      ],
+      "title": "Pose",
+      "type": "object"
+    },
+    "RecordModel": {
+      "additionalProperties": false,
+      "description": "What a run records (section 3.6).",
+      "properties": {
+        "events": {
+          "default": true,
+          "title": "Events",
+          "type": "boolean"
+        },
+        "iq": {
+          "default": false,
+          "title": "Iq",
+          "type": "boolean"
+        },
+        "metrics": {
+          "default": true,
+          "title": "Metrics",
+          "type": "boolean"
+        },
+        "snapshots": {
+          "default": false,
+          "title": "Snapshots",
+          "type": "boolean"
+        }
+      },
+      "title": "RecordModel",
+      "type": "object"
+    },
+    "RisPanel": {
+      "additionalProperties": false,
+      "description": "A RIS panel (section 9.2).",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/CapabilitiesModel"
+        },
+        "control": {
+          "$ref": "#/$defs/ControlModel"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "failures": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailuresModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grid": {
+          "$ref": "#/$defs/Grid"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "initial": {
+          "$ref": "#/$defs/InitialModel"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "states": {
+          "$ref": "#/$defs/StatesModel"
+        },
+        "tiles": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tiles"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "transition": {
+          "$ref": "#/$defs/TransitionModelSpec"
+        }
+      },
+      "required": [
+        "id",
+        "pose",
+        "grid",
+        "states"
+      ],
+      "title": "RisPanel",
+      "type": "object"
+    },
+    "RunModel": {
+      "additionalProperties": false,
+      "description": "Run mode and policies (sections 4.6-4.10). ``stall_timeout_s`` is wall time.",
+      "properties": {
+        "coupling": {
+          "default": "barrier",
+          "enum": [
+            "barrier",
+            "async"
+          ],
+          "title": "Coupling",
+          "type": "string"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity > 0 (string or int).",
+          "title": "Duration S"
+        },
+        "late_policy": {
+          "default": "apply_on_arrival",
+          "enum": [
+            "apply_on_arrival",
+            "reject"
+          ],
+          "title": "Late Policy",
+          "type": "string"
+        },
+        "mode": {
+          "default": "lockstep",
+          "enum": [
+            "lockstep",
+            "paced"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "on_stall": {
+          "default": "wait",
+          "enum": [
+            "wait",
+            "zero_fill"
+          ],
+          "title": "On Stall",
+          "type": "string"
+        },
+        "paced": {
+          "$ref": "#/$defs/PacedModel"
+        },
+        "stall_timeout_s": {
+          "default": 2.0,
+          "gt": 0,
+          "title": "Stall Timeout S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "duration_s"
+      ],
+      "title": "RunModel",
+      "type": "object"
+    },
+    "Rwp1dTrajectory": {
+      "additionalProperties": false,
+      "description": "1-D random waypoint on the segment [p0_m, p1_m] (Bettstetter), constant speed, legs\nkeyed by RNG purpose ``mobility/<node>``.",
+      "properties": {
+        "model": {
+          "const": "rwp_1d",
+          "title": "Model",
+          "type": "string"
+        },
+        "p0_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "P0 M",
+          "type": "array"
+        },
+        "p1_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "P1 M",
+          "type": "array"
+        },
+        "pause_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "0",
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "Pause S"
+        },
+        "speed_mps": {
+          "gt": 0,
+          "title": "Speed Mps",
+          "type": "number"
+        }
+      },
+      "required": [
+        "model",
+        "p0_m",
+        "p1_m",
+        "speed_mps"
+      ],
+      "title": "Rwp1dTrajectory",
+      "type": "object"
+    },
+    "Rwp2dTrajectory": {
+      "additionalProperties": false,
+      "description": "2-D random waypoint in the rectangle ``bounds_m = [[x0, y0], [x1, y1]]`` at height\n``z_m``.",
+      "properties": {
+        "bounds_m": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "title": "Bounds M",
+          "type": "array"
+        },
+        "model": {
+          "const": "rwp_2d",
+          "title": "Model",
+          "type": "string"
+        },
+        "pause_s": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "0",
+          "description": "Exact quantity >= 0 (string or int).",
+          "title": "Pause S"
+        },
+        "speed_mps": {
+          "gt": 0,
+          "title": "Speed Mps",
+          "type": "number"
+        },
+        "z_m": {
+          "default": 0.0,
+          "title": "Z M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "model",
+        "bounds_m",
+        "speed_mps"
+      ],
+      "title": "Rwp2dTrajectory",
+      "type": "object"
+    },
+    "StatesModel": {
+      "additionalProperties": false,
+      "description": "Response states: a built-in ``library`` (``\"name\"`` or ``\"name(k=v, ...)\"`` for\nparametric families) or a state-library ``file``; ``assume_mag`` per state label for\n``mag: null`` states (recorded as ASSUMED).",
+      "properties": {
+        "assume_mag": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "ge": 0,
+                "le": 1,
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assume Mag"
+        },
+        "efficiency": {
+          "default": 1.0,
+          "gt": 0,
+          "le": 1,
+          "title": "Efficiency",
+          "type": "number"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "library": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Library"
+        },
+        "override_efficiency": {
+          "default": false,
+          "title": "Override Efficiency",
+          "type": "boolean"
+        }
+      },
+      "title": "StatesModel",
+      "type": "object"
+    },
+    "StaticTrajectory": {
+      "additionalProperties": false,
+      "description": "Fixed position (section 5.10).",
+      "properties": {
+        "model": {
+          "const": "static",
+          "title": "Model",
+          "type": "string"
+        },
+        "position_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Position M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "model",
+        "position_m"
+      ],
+      "title": "StaticTrajectory",
+      "type": "object"
+    },
+    "StreamModel": {
+      "additionalProperties": false,
+      "description": "A TX or RX stream of a node (sections 3.3, 4.5, 9.2).\n\n``occupied_bw_hz`` (TX only) defaults to ``0.8*f_s`` at resolution, with a warning.\n``noise_figure_db`` and ``adc_clip`` are RX-only.",
+      "properties": {
+        "adc_clip": {
+          "default": false,
+          "title": "Adc Clip",
+          "type": "boolean"
+        },
+        "direction": {
+          "enum": [
+            "tx",
+            "rx"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "fc_hz": {
+          "gt": 0,
+          "title": "Fc Hz",
+          "type": "number"
+        },
+        "full_scale_dbm": {
+          "default": 0.0,
+          "title": "Full Scale Dbm",
+          "type": "number"
+        },
+        "gain_db": {
+          "default": 0.0,
+          "title": "Gain Db",
+          "type": "number"
+        },
+        "lo": {
+          "$ref": "#/$defs/LoModel"
+        },
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "noise_figure_db": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Noise Figure Db",
+          "type": "number"
+        },
+        "occupied_bw_hz": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occupied Bw Hz"
+        },
+        "rate_sps": {
+          "anyOf": [
+            {
+              "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "Exact quantity > 0 (string or int).",
+          "title": "Rate Sps"
+        }
+      },
+      "required": [
+        "name",
+        "direction",
+        "fc_hz",
+        "rate_sps"
+      ],
+      "title": "StreamModel",
+      "type": "object"
+    },
+    "TabulatedParams": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/AntennaProvenance"
+        }
+      },
+      "required": [
+        "file",
+        "provenance"
+      ],
+      "title": "TabulatedParams",
+      "type": "object"
+    },
+    "TabulatedPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "tabulated": {
+          "$ref": "#/$defs/TabulatedParams"
+        }
+      },
+      "required": [
+        "tabulated"
+      ],
+      "title": "TabulatedPattern",
+      "type": "object"
+    },
+    "Tiles": {
+      "additionalProperties": false,
+      "description": "Tile layout; ``gap_m`` between adjacent tiles; ``gap_gamma`` optional structural\nreflection of exposed gaps (None = inert).",
+      "properties": {
+        "gap_gamma": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                }
+              ],
+              "description": "Complex number: a real number or [re, im]."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gap Gamma"
+        },
+        "gap_m": {
+          "ge": 0,
+          "title": "Gap M",
+          "type": "number"
+        },
+        "n_tiles_u": {
+          "minimum": 1,
+          "title": "N Tiles U",
+          "type": "integer"
+        },
+        "n_tiles_v": {
+          "minimum": 1,
+          "title": "N Tiles V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n_tiles_u",
+        "n_tiles_v",
+        "gap_m"
+      ],
+      "title": "Tiles",
+      "type": "object"
+    },
+    "TraceTrajectory": {
+      "additionalProperties": false,
+      "description": "CSV trace ``t_s,x_m,y_m,z_m`` (cubic spline, no extrapolation); path relative to the\nscenario file.",
+      "properties": {
+        "data_class": {
+          "enum": [
+            "MEAS",
+            "DIG",
+            "REPORTED",
+            "ASSUMED",
+            "SIM-sremu",
+            "SIM-legacy-v1",
+            "SIM-legacy-v2",
+            "ANALYTIC",
+            "MATLAB"
+          ],
+          "title": "Data Class",
+          "type": "string"
+        },
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "model": {
+          "const": "trace",
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "file",
+        "data_class"
+      ],
+      "title": "TraceTrajectory",
+      "type": "object"
+    },
+    "Traffic": {
+      "additionalProperties": false,
+      "description": "An in-process traffic generator feeding a TX stream (studies).",
+      "properties": {
+        "generator": {
+          "enum": [
+            "tone",
+            "bpsk",
+            "qpsk_packets",
+            "file"
+          ],
+          "title": "Generator",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "stream": {
+          "maxLength": 129,
+          "pattern": "^[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+$",
+          "title": "Stream",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream",
+        "generator"
+      ],
+      "title": "Traffic",
+      "type": "object"
+    },
+    "TransitionModelSpec": {
+      "additionalProperties": false,
+      "description": "Default transition (section 4.7); ``duration_s`` defaults to the panel's\n``reconfiguration_time_s``.",
+      "properties": {
+        "classes": {
+          "default": "single",
+          "enum": [
+            "single",
+            "by_edge"
+          ],
+          "title": "Classes",
+          "type": "string"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "description": "Exact quantity > 0 (string or int)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration S"
+        },
+        "model": {
+          "default": "step",
+          "enum": [
+            "step",
+            "linear",
+            "first_order"
+          ],
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "title": "TransitionModelSpec",
+      "type": "object"
+    },
+    "Wall": {
+      "additionalProperties": false,
+      "description": "Finite planar polygon wall, image order 1 (section 5.8).",
+      "properties": {
+        "eps_r": {
+          "gt": 0,
+          "title": "Eps R",
+          "type": "number"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "roughness_m": {
+          "default": 0.0,
+          "ge": 0,
+          "title": "Roughness M",
+          "type": "number"
+        },
+        "sigma_s_per_m": {
+          "ge": 0,
+          "title": "Sigma S Per M",
+          "type": "number"
+        },
+        "vertices_m": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 3,
+          "title": "Vertices M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "vertices_m",
+        "eps_r",
+        "sigma_s_per_m"
+      ],
+      "title": "Wall",
+      "type": "object"
+    },
+    "WaypointsTrajectory": {
+      "additionalProperties": false,
+      "description": "Piecewise linear through ``positions_m`` at exact times ``t_s`` (strictly\nincreasing, same length); held before the first and after the last waypoint.",
+      "properties": {
+        "model": {
+          "const": "waypoints",
+          "title": "Model",
+          "type": "string"
+        },
+        "positions_m": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 1,
+          "title": "Positions M",
+          "type": "array"
+        },
+        "t_s": {
+          "items": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+/0*[1-9][0-9]*|(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$",
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "Exact quantity >= 0 (string or int)."
+          },
+          "minItems": 1,
+          "title": "T S",
+          "type": "array"
+        }
+      },
+      "required": [
+        "model",
+        "t_s",
+        "positions_m"
+      ],
+      "title": "WaypointsTrajectory",
+      "type": "object"
+    }
+  },
+  "$id": "urn:sremu:schema:scenario:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root of a scenario file (section 9.2).",
+  "properties": {
+    "controllers": {
+      "items": {
+        "$ref": "#/$defs/ControllerModel"
+      },
+      "title": "Controllers",
+      "type": "array"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "name": {
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.\\-]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/Node"
+      },
+      "minItems": 1,
+      "title": "Nodes",
+      "type": "array"
+    },
+    "numerics": {
+      "$ref": "#/$defs/Numerics"
+    },
+    "record": {
+      "$ref": "#/$defs/RecordModel"
+    },
+    "ris": {
+      "items": {
+        "$ref": "#/$defs/RisPanel"
+      },
+      "title": "Ris",
+      "type": "array"
+    },
+    "run": {
+      "$ref": "#/$defs/RunModel"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seed": {
+      "exclusiveMaximum": 9223372036854775808,
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "traffic": {
+      "items": {
+        "$ref": "#/$defs/Traffic"
+      },
+      "title": "Traffic",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "name",
+    "seed",
+    "nodes",
+    "run"
+  ],
+  "title": "sremu scenario",
+  "type": "object"
+}

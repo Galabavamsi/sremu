@@ -1,0 +1,16 @@
+{
+ "file": "G4_input_tx_iq.csv",
+ "sha256": "039a63e9106250771e426b6aab36ff154993c483246ec60d6aedd0da4fc3a1cd",
+ "rows": 2000,
+ "source": "D:/projects/ris/data/matlab/cfo_reference_iq.csv",
+ "source_sha256": "852a8e8ddc8ece2f9e4a3f42c79d39227294c88b58e78bf8026977e4519ec538",
+ "source_columns_kept": [
+  "n",
+  "tx_re",
+  "tx_im"
+ ],
+ "generator": "D:/projects/ris/research/matlab/cfo_bpsk_crosscheck.m (MATLAB R2026a): BPSK, RRC beta 0.35, span 10, 4 samples/symbol, Barker-13 x 4 preamble, rng(7, 'twister')",
+ "generator_matlab": "26.1.0.3346908 (R2026a) Update 5",
+ "data_class": "MATLAB",
+ "note": "TX reference waveform for G4 (DESIGN.md section 10.6). golden_cfo.m rounds it to single precision so that the complex64 TX ring of the emulator holds it exactly."
+}

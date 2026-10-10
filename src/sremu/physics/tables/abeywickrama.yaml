@@ -1,0 +1,35 @@
+# Built-in RIS state family (DESIGN.md section 5.5): practical phase-dependent amplitude
+# model of Abeywickrama et al. (Eq. 5). Use as "abeywickrama" (defaults) or e.g.
+# "abeywickrama(b=2, beta_min=0.2, phi_deg=0, alpha=1.6)"; expanded at load time into
+# 2**b states s0..s{2**b-1} at theta_s = 2*pi*s/2**b with Gamma_s = beta(theta_s)*exp(j*theta_s).
+schema_version: "1.0"
+kind: ris_state_library
+name: abeywickrama
+provenance:
+  source_kind: analytic
+  description: "Phase-dependent amplitude beta(theta) = (1-beta_min)*((sin(theta-phi)+1)/2)**alpha + beta_min sampled at 2**b phases"
+  reference: "S. Abeywickrama, R. Zhang, Q. Wu, C. Yuen, Intelligent reflecting surface: practical phase shift model and beamforming optimization, IEEE Trans. Commun., 2020 (arXiv:2002.10112), Eq. (5)"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 0.0
+  raw_sha256: null
+  license: "analytic (no data)"
+  created: {date: "2026-10-10", tool: "manual", version: null}
+  assumptions:
+    - "beta_min = 0.2 and alpha = 1.6 are the example values of the source; the source's phi for that fit is UNVERIFIED, so phi_deg defaults to 0 [ENG]"
+    - "the 2**b sampled phases are theta_s = 2*pi*s/2**b [ENG]"
+frequency_hz: any
+validity_bw_hz: null
+angle_grid: none
+reciprocal: true
+reconfiguration_time_s: null
+family:
+  name: abeywickrama
+  formula: "theta_s = 2*pi*s/2**b; Gamma_s = ((1-beta_min)*((sin(theta_s-phi)+1)/2)**alpha + beta_min)*exp(j*theta_s)"
+  parameters:
+    b: {default: 1, description: "bits per cell (2**b states)", unit: "bit", integer: true, min: 1, max: 8}
+    beta_min: {default: 0.2, description: "minimum amplitude", unit: "1", min: 0.0, max: 1.0}
+    phi_deg: {default: 0.0, description: "phase offset phi of the amplitude dip", unit: "deg"}
+    alpha: {default: 1.6, description: "steepness exponent", unit: "1", min: 0.0}

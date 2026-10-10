@@ -1,0 +1,30 @@
+# Built-in RIS state library (DESIGN.md section 5.5): Tang et al. 2022, Table III, RIS2.
+# Published measured reflection coefficients of the two coding states of a 1-bit mmWave RIS.
+schema_version: "1.0"
+kind: ris_state_library
+name: tang2022_ris2_33ghz
+provenance:
+  source_kind: measured
+  description: "1-bit mmWave RIS2, coding states '0' and '1' at 33 GHz (published measured unit-cell response)"
+  reference: "W. Tang et al., Path loss modeling and measurements for reconfigurable intelligent surfaces in the millimeter-wave frequency band, IEEE Trans. Commun., 2022, Table III"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 0.0
+  raw_sha256: null
+  license: "values transcribed from a published table; cite the source"
+  created: {date: "2026-10-10", tool: "manual transcription", version: null}
+  assumptions:
+    - "measurement uncertainty is not reported in the source table; sigma_mag_db = sigma_phase_deg = 0 [ENG]"
+    - "used as an angle-independent (separable) response [ENG]"
+    - "validity_bw_hz = 1 GHz [ENG]; the source table gives no bandwidth"
+  data_class: REPORTED
+frequency_hz: [3.3e10]
+validity_bw_hz: 1.0e9          # [ENG]
+angle_grid: none
+reciprocal: true
+reconfiguration_time_s: null
+states:
+  - {id: 0, label: "0", gamma: [{f_hz: 3.3e10, mag: 0.8, phase_deg: 150.0}]}
+  - {id: 1, label: "1", gamma: [{f_hz: 3.3e10, mag: 0.8, phase_deg: 0.0}]}

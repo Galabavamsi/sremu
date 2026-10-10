@@ -1,0 +1,56 @@
+{
+  "golden_id": "G6_fading_sos",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_fading_sos.m",
+  "script_sha256": "57bcb3972c408510968935b67547587207f36eb53f1d492e775e45736af7b49a",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 0.9792426,
+  "created_utc": "2026-10-10T07:59:43Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "sample_rate_sps": 10000,
+    "max_doppler_hz": 50,
+    "n_samples": 2.0E+6,
+    "n_sinusoids": 48,
+    "seed": 12,
+    "random_stream": "mt19937ar with seed",
+    "fading_technique": "Sum of sinusoids",
+    "normalization": "path gain divided by sqrt(mean |g|^2)",
+    "acf": "xcorr unbiased of the mean-removed gain, normalized to lag 0"
+  },
+  "checks": {
+    "mean_power": 0.99981257514081145,
+    "max_abs_acf_minus_j0_40ms": 0.00050614470154217162,
+    "lcr_m10db_hz": 35.215,
+    "lcr_m10db_theory_hz": 35.861668387972593,
+    "ks_cdf_grid": 0.0066652029958144121
+  },
+  "outputs": [
+    {
+      "file": "G6_fading_acf.csv",
+      "rows": 1001,
+      "sha256": "bc0e157e1ac0943bd28762947d512b477625cab68fef131f6e92659ef4dd5c40"
+    },
+    {
+      "file": "G6_fading_lcr.csv",
+      "rows": 19,
+      "sha256": "be9ff05d4c5c966425afc4593169ea799f95310d0fbff91eb3a9582751bb7146"
+    },
+    {
+      "file": "G6_fading_cdf.csv",
+      "rows": 101,
+      "sha256": "7ed462638bc14fd56851e391429a17775ac5fef72c648bb15170067bbff071b6"
+    }
+  ],
+  "notes": [
+    "comm.RayleighChannel SoS is the ACF/LCR reference; filtered Gaussian noise deviates from J0 by up to 0.127 (research/matlab_ris.md)."
+  ]
+}

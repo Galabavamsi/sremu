@@ -1,0 +1,84 @@
+{
+  "golden_id": "G2_beam_pattern",
+  "data_class": "MATLAB",
+  "matlab_version": "26.1.0.3346908 (R2026a) Update 5",
+  "matlab_release": "2026a",
+  "script": "golden_beam_pattern.m",
+  "script_sha256": "0d295073c4fec55e9f3c26281519fd4dcbee78300e7c06e95c1f3b1f12f54a81",
+  "helpers_sha256": {
+    "golden_util_k1_m": "c25c956a213b73db4cd92021242716ae5e686b3b2b8e775e08aad485bdd9fe37",
+    "golden_util_panel_m": "f604aa58cca51d1c5e9c455cfd5def8cf01369c6819de89e854c85a2b43d0832",
+    "golden_util_sha256_m": "96f604cf47e9dd396bdee9d31511a4288d31203174ce227289be9594b65bb303",
+    "golden_util_write_csv_m": "f4f0cd5ab1e2d1d2f8725e4d5c6fe69a092ff0bf8ea9d2e0ac9570f049f23b23",
+    "golden_util_write_meta_m": "91c9a37c4c305de57a304d828d0e2818e44d43830f45b9fce9fe3f529049c33a"
+  },
+  "runtime_s": 9.5506125,
+  "created_utc": "2026-10-10T07:59:30Z",
+  "light_speed_mps": 2.99792458E+8,
+  "parameters": {
+    "fc_hz": 3.5E+9,
+    "n_u": 16,
+    "n_v": 16,
+    "pitch_m": 0.042827494,
+    "range_m": 500,
+    "az_in_deg": -30,
+    "az_target_deg": 20,
+    "az_out_deg": [
+      -85,
+      85,
+      0.25
+    ],
+    "profile": "continuous_4bit",
+    "n_states": 16,
+    "alphabet": "ideal 4-bit exp(j 2 pi s/16)",
+    "panel": {
+      "center_m": [
+        0,
+        0,
+        0
+      ],
+      "normal": [
+        1,
+        0,
+        0
+      ],
+      "u_axis": [
+        0,
+        1,
+        0
+      ],
+      "cell_model": "point"
+    },
+    "tx_m": [
+      433.0127018922193,
+      -250,
+      0
+    ],
+    "unit_cell": "phased.CosineAntennaElement CosinePower [0.5 0.5]",
+    "weights_rule": "w = exp(-jk p.(u_in + u_target)) quantized; 1-bit: pi where mod(angle(w),2pi) in [pi/2, 3pi/2)"
+  },
+  "checks": {
+    "reflector_vs_hand_af_max_rel": 1.4864933844811875E-15,
+    "main_lobe_az_deg": 20.161151973684078,
+    "main_lobe_db": 47.215403124417016,
+    "k1_minus_reflector_channel_db_at_main_lobe": 9.94280775385717,
+    "cell_gain_constant_db": 9.9429974538826755
+  },
+  "outputs": [
+    {
+      "file": "G2_beam_pattern.csv",
+      "rows": 681,
+      "sha256": "e8ffcba5fbb1c9b10ae8dd9ac0750b1f43a055b19e95c4135b68c9aa0dd32445"
+    },
+    {
+      "file": "G2_G3_cells.csv",
+      "rows": 256,
+      "sha256": "974fc467b8cb76f1c948a98e5b91cc626ad8bf9b6cbf078edaac0167933f4cd5"
+    }
+  ],
+  "notes": [
+    "G2/G3 show code agreement only: MATLAB unit-gain cells share v2's normalization, so they do not validate absolute RIS power (DESIGN.md 10.6).",
+    "Peaks by parabolic interpolation of the dB pattern of the reflector path (y_reflector).",
+    "States per cell are in G2_G3_cells.csv (cell order n = iv*16 + iu)."
+  ]
+}

@@ -1,0 +1,32 @@
+# Built-in RIS state library (DESIGN.md sections 5.5, 9.4; contradiction register #12).
+# The lab's binary unit-cell states at 3.5 GHz. Phases are from the ANTS 2025 manuscript
+# (Sec. III); the amplitudes are unknown, so every scenario using this library MUST set
+# states.assume_mag (recorded as ASSUMED in the manifest and in figure metadata).
+schema_version: "1.0"
+kind: ris_state_library
+name: lab_binary_3p5ghz
+provenance:
+  source_kind: assumed
+  description: "ANTS manuscript Sec. III phases; amplitudes unknown"
+  reference: "unpublished ANTS 2025 manuscript"
+  reference_plane_offset_m: 0.0
+  polarization: co
+  includes_cell_pattern: false
+  sigma_mag_db: 0.0
+  sigma_phase_deg: 15.0
+  raw_sha256: null
+  license: "lab permission pending"
+  created: {date: "2026-10-10", tool: "manual", version: null}
+  assumptions:
+    - "phases 49.64 deg and -153.77 deg as reported in the manuscript; magnitudes unknown (mag: null, set by the scenario's assume_mag)"
+    - "sigma_phase_deg = 15 from the 389 deg/mm etch sensitivity (Monte Carlo use only)"
+    - "angle-independent (separable) response [ENG]"
+    - "validity_bw_hz = 20 MHz [ENG] until measured"
+frequency_hz: [3.5e9]
+validity_bw_hz: 2.0e7          # [ENG] until measured
+angle_grid: none               # angle-independent (separable)
+reciprocal: true
+reconfiguration_time_s: null   # GS RIS 008 parameter
+states:
+  - {id: 0, label: sigma1, gamma: [{f_hz: 3.5e9, mag: null, phase_deg: 49.64}]}
+  - {id: 1, label: sigma2, gamma: [{f_hz: 3.5e9, mag: null, phase_deg: -153.77}]}
