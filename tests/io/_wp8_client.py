@@ -25,6 +25,12 @@ from pathlib import Path
 
 import numpy as np
 
+# Wall-clock waits for the served engine (backstops only; run_clients bounds the whole run at
+# 300 s). The first samples can take tens of seconds on a loaded CI runner: the served engine
+# JIT-compiles its numba kernels on a cold cache while the other xdist workers compete for
+# 2 vCPUs (GitHub Actions run 38086720572: "recv error TIMEOUT" after the former 30 s).
+WAIT_S = 120.0
+
 
 def _log(msg: str) -> None:
     import os
@@ -58,7 +64,7 @@ def _tx(args: argparse.Namespace) -> int:
                 assert n == part.size, (n, part.size)
                 sent += part.size
                 i += 1
-            ack = tx.recv_async_msg(timeout=30.0)
+            ack = tx.recv_async_msg(timeout=WAIT_S)
             assert ack is not None and ack.event_code.name == "BURST_ACK", ack
             _log(f"tx session {ep} done")
     print(f"tx sent {x.size} samples per session")
@@ -94,7 +100,7 @@ def _rx(args: argparse.Namespace) -> int:
                     if got[s] >= n:
                         continue
                     c = min(chunks[i % len(chunks)], n - got[s])
-                    k = rx.recv(bufs[s][got[s] : got[s] + c], md, timeout=30.0)
+                    k = rx.recv(bufs[s][got[s] : got[s] + c], md, timeout=WAIT_S)
                     if k == 0:
                         print(f"recv error {md.error_code.name} on {s}", file=sys.stderr)
                         return 3

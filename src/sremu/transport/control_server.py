@@ -48,10 +48,11 @@ served default), so the engine waits for their transmitters instead of computing
 (its served loop, RX backpressure and stall reports) and wraps the instance's ``step`` to
 implement pause, to hold virtual time while nothing consumes it (no RX stream streaming,
 no barrier controller, no RX recording; advancing would only skip pages and make later
-timed RX starts late) and to capture an engine exception (reported as ``sim.stall`` with an
-``error`` and in ``stats.get``) instead of losing it in a thread. Paced mode runs
-``run_paced`` in a driver thread. Engines without a ``start`` method (e.g. the synchronous
-``FakeEngine``) compute on demand.
+timed RX starts late; with ``exit_when_done`` it never holds once a consumer has attached,
+so the run reaches its end and the server exits) and to capture an engine exception
+(reported as ``sim.stall`` with an ``error`` and in ``stats.get``) instead of losing it in
+a thread. Paced mode runs ``run_paced`` in a driver thread. Engines without a ``start``
+method (e.g. the synchronous ``FakeEngine``) compute on demand.
 """
 
 from __future__ import annotations
@@ -213,7 +214,9 @@ class ServerConfig:
     backpressure). ``rx_frame_samples``: samples per RX frame (default: the stream's page
     size). ``ack_timeout_s``: None waits for remote barrier acks indefinitely (publishing
     ``sim.stall``); a number ends the wait with an engine error. ``exit_when_done``: stop
-    the server once the run has ended and every RX egress has sent ``END_OF_STREAM``.
+    the server once the run has ended and every RX egress has sent ``END_OF_STREAM``; once
+    a consumer has attached (RX stream, raw peer, remote controller) the run goes on to its
+    end even after every consumer has left.
     """
 
     control_endpoint: str = DEFAULT_CONTROL_ENDPOINT
@@ -543,6 +546,9 @@ class ControlServer:
         self._driver: threading.Thread | None = None
         self._ingress: TxIngress | None = None
         self._raw: list[Any] = []
+        # sticky: some consumer (RX egress, raw peer, remote controller) attached once;
+        # with exit_when_done the run then goes on to its end (see _engine_idle)
+        self._consumer_attached = False
         self._started = False
         self._router: Any = None
         self._pub: Any = None
@@ -623,6 +629,7 @@ class ControlServer:
                 peer = RawPeer(self, pc)
                 peer.open()  # streams exist before the engine computes anything
                 self._raw.append(peer)
+                self._consumer_attached = True
         self._ingress.start()
         self._thread = threading.Thread(target=self._loop, name="sremu-control", daemon=True)
         self._thread.start()
@@ -757,14 +764,20 @@ class ControlServer:
         streaming or tapped (``capture_accumulator``), no barrier controller is registered,
         no sink records RX and the engine is not ``always_active``. Advancing would only
         skip pages (D-6) and make a later timed RX start late; the engine resumes as soon
-        as a client streams. With
-        ``exit_when_done`` the run proceeds to its end once a client opened an RX stream."""
+        as a client streams.
+
+        With ``exit_when_done`` the run proceeds to its end once a consumer has attached (a
+        client opened an RX stream, a raw peer is configured, or a remote controller
+        registered), and keeps going after that consumer closed its stream or unregistered:
+        holding virtual time with nobody left to resume it would never end the run, so the
+        server would never exit (a remote controller that unregistered before the last
+        barrier used to leave ``sremu serve --exit-when-done`` waiting forever)."""
         eng: Any = self.engine
         rx = getattr(eng, "rx", None)
         cfg = getattr(eng, "cfg", None)
         if not isinstance(rx, Mapping) or cfg is None or getattr(cfg, "always_active", True):
             return False
-        if self.config.exit_when_done and (self._egress or self._raw):
+        if self.config.exit_when_done and (self._consumer_attached or self._egress or self._raw):
             return False  # run on to the end of the run, then exit
         if any(
             getattr(st, "streaming", True) or getattr(st, "capture", None) is not None
@@ -1264,6 +1277,7 @@ class ControlServer:
                 publish=self.publish,
             )
             self._egress[h.id] = eg
+            self._consumer_attached = True
             eg.start()
             endpoint = eg.endpoint
         return self._ok(
@@ -1406,6 +1420,7 @@ class ControlServer:
             self.controllers[name] = proxy
         s.controllers.add(name)
         proxy.attach(s.ident, s.delimited)
+        self._consumer_attached = True
         eng: Any = self.engine
         cfg = getattr(eng, "cfg", None)
         return self._ok(

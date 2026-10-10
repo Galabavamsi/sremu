@@ -27,18 +27,26 @@ pytestmark = pytest.mark.io
 EX = REPO / "examples"
 
 
-def test_rt08_example_controller_remote_matches_inprocess() -> None:
-    p = subprocess.run(
-        [sys.executable, str(EX / "controller_remote" / "controller_remote.py")],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    assert p.returncode == 0, p.stdout + p.stderr
-    assert "10 barriers, 10 commands" in p.stdout
-    assert "identical observations: True" in p.stdout
-    rows = [ln.split() for ln in p.stdout.splitlines() if ln.strip()[:1].isdigit()]
+def test_rt08_example_controller_remote_matches_inprocess(tmp_path) -> None:
+    # Output goes to files, not pipes: a pipe stays open while any process holding it lives,
+    # so a leaked grandchild (the example's served emulator) used to block the read here for
+    # the whole timeout on Linux and forever on Windows (subprocess.run reads the pipes again
+    # after killing the child), see examples/controller_remote/controller_remote.py.
+    out_f, err_f = tmp_path / "stdout.txt", tmp_path / "stderr.txt"
+    with out_f.open("w", encoding="utf-8") as out, err_f.open("w", encoding="utf-8") as err:
+        p = subprocess.run(
+            [sys.executable, str(EX / "controller_remote" / "controller_remote.py")],
+            cwd=REPO,
+            stdout=out,
+            stderr=err,
+            text=True,
+            timeout=300,
+        )
+    stdout = out_f.read_text(encoding="utf-8")
+    assert p.returncode == 0, stdout + err_f.read_text(encoding="utf-8")
+    assert "10 barriers, 10 commands" in stdout
+    assert "identical observations: True" in stdout
+    rows = [ln.split() for ln in stdout.splitlines() if ln.strip()[:1].isdigit()]
     powers = {int(r[2]): float(r[1]) for r in rows[1:]}  # state -> dBm (t_b = 0 has no data)
     assert abs(powers[0] - powers[1]) > 1.0  # the RIS state changes the received power
 

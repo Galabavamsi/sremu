@@ -50,7 +50,8 @@ def client_cmd(*args: str) -> list[str]:
 
 
 def run_clients(cmds: Sequence[Sequence[str]], timeout_s: float = 300.0) -> list[str]:
-    """Run client processes concurrently; assert exit code 0; return their stdout."""
+    """Run client processes concurrently; assert exit code 0; return their stdout. On any
+    failure every client still running is killed (none outlives the test)."""
     procs = [
         subprocess.Popen(
             list(c), cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -59,16 +60,28 @@ def run_clients(cmds: Sequence[Sequence[str]], timeout_s: float = 300.0) -> list
     ]
     outs = []
     t0 = time.monotonic()
-    for p in procs:
-        try:
+    try:
+        for p in procs:
             out, err = p.communicate(timeout=max(1.0, timeout_s - (time.monotonic() - t0)))
-        except subprocess.TimeoutExpired:
-            for q in procs:
+            assert p.returncode == 0, f"client failed ({p.args}):\n{out}\n{err}"
+            outs.append(out)
+    finally:
+        for q in procs:
+            if q.poll() is None:
                 q.kill()
-            raise
-        assert p.returncode == 0, f"client failed ({p.args}):\n{out}\n{err}"
-        outs.append(out)
+                q.communicate()
     return outs
+
+
+def tcp_buffer_bytes() -> int:
+    """Upper bound of the OS buffering of one loopback TCP connection (send + receive
+    buffers at their autotuning maxima; Linux reads them from /proc, elsewhere 16 MiB)."""
+    try:
+        rmem = int(Path("/proc/sys/net/ipv4/tcp_rmem").read_text().split()[2])
+        wmem = int(Path("/proc/sys/net/ipv4/tcp_wmem").read_text().split()[2])
+    except (OSError, ValueError, IndexError):
+        return 16 << 20
+    return rmem + wmem
 
 
 def wait_until(pred: Any, timeout_s: float = 10.0, what: str = "condition") -> None:

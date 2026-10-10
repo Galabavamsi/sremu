@@ -28,8 +28,14 @@ python examples/controller_remote/controller_remote.py --endpoint tcp://127.0.0.
 * `controller_remote.py`: starts `python -m sremu.commands.serve remote.yaml` on ephemeral
   loopback ports (or uses `--endpoint`), runs `PowerProbe` (an ordinary controller class:
   alternate the panel between all-0 and all-1, record the observed power) through
-  `sremu.control.remote.run_remote`, then runs the same class in-process and checks that
-  both saw bit-identical observations.
+  `sremu.control.remote.run_remote` for exactly the run's barriers (`t_b = m * T_c` below
+  the run's duration: ten), then runs the same class in-process and checks that both saw
+  bit-identical observations. It does not use a wall-clock idle timeout to decide that the
+  run is over: on a cold numba cache the served engine can spend several seconds compiling
+  before the first barrier. The served emulator (`--exit-when-done`) finishes the run and
+  exits by itself; the script stops it in any case before returning. The server also gets
+  `--ack-timeout-s 120`, so it exits by itself (exit code 1) if the controller process
+  dies in the middle of the run.
 
 Expected output: ten barriers; the measured user power alternates between two levels
 (about -58.0 and -54.1 dBm in this SIM geometry) as the panel state alternates; the

@@ -16,12 +16,20 @@ drives it over the control socket (``ctrl.barrier`` -> ``ris.set_config`` -> ``c
 With ``--compare`` (default) the same class then runs in-process on the same scenario; the
 script checks that both runs saw bit-identical observations (lockstep barriers make the
 remote run deterministic, RT-08) and prints the table. Exit code 0 when they agree.
+
+The remote controller stops after the run's last barrier (``t_b = m*T_c < duration``,
+section 4.9; ten for ``remote.yaml``), not after a wall-clock idle timeout: a served
+engine may spend seconds JIT-compiling its numba kernels (cold cache) before the first
+barrier, so "no barrier for N seconds" does not mean the run is over. The served
+emulator (``--exit-when-done``) finishes the run by itself and exits; the script always
+stops it before returning, also when something failed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -36,6 +44,16 @@ from sremu.control.remote import run_remote
 
 HERE = Path(__file__).resolve().parent
 SCENARIO = HERE / "remote.yaml"
+# Wall-clock backstops that only end a broken run (they never decide when a run is over):
+# no barrier for this long, or the server still running this long after the last barrier.
+IDLE_BACKSTOP_S = 180.0
+SERVER_EXIT_S = 60.0
+# The served emulator gives up on a barrier ack after this long (--ack-timeout-s; counted
+# once the controller has attached), so it cannot outlive this script by more than that
+# when the script is killed in the middle of the run (SIGKILL or TerminateProcess skip the
+# finally below). The controller acks within milliseconds; the server's JIT and rendering
+# happen before it sends a barrier, so they do not count against this timeout.
+ACK_BACKSTOP_S = 120.0
 
 
 class PowerProbe:
@@ -76,6 +94,8 @@ def serve(scenario: Path) -> tuple[subprocess.Popen[str], dict[str, Any]]:
             "tcp://127.0.0.1:0",
             "--no-paused",
             "--exit-when-done",
+            "--ack-timeout-s",
+            str(ACK_BACKSTOP_S),
         ],
         stdout=subprocess.PIPE,
         text=True,
@@ -86,6 +106,23 @@ def serve(scenario: Path) -> tuple[subprocess.Popen[str], dict[str, Any]]:
         proc.kill()
         raise RuntimeError(f"the server did not start: {line!r}")
     return proc, json.loads(line.split(" ", 1)[1])
+
+
+def run_barriers(scenario: Path, period_s: Fraction) -> int:
+    """Number of barriers of a run from t = 0: ``t_b = m*T_c < duration`` (section 4.9)."""
+    from sremu.scenario.load import load_scenario
+
+    duration = Fraction(load_scenario(scenario, warn=False).scenario.run.duration_s)
+    return math.ceil(duration / Fraction(period_s))
+
+
+def stop_server(proc: subprocess.Popen[str]) -> None:
+    """Make sure the served emulator is gone (it must never outlive this script)."""
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    if proc.stdout is not None:
+        proc.stdout.close()
 
 
 def run_inprocess(scenario: Path) -> list[tuple[Fraction, float, int]]:
@@ -104,17 +141,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--endpoint", default=None, help="control endpoint of a running server")
     ap.add_argument("--no-compare", action="store_true", help="skip the in-process run")
     args = ap.parse_args(argv)
+    ctrl = PowerProbe()
+    n_barriers = run_barriers(SCENARIO, ctrl.period_s)
     proc = None
     endpoint = args.endpoint
-    if endpoint is None:
-        proc, info = serve(SCENARIO)
-        endpoint = info["endpoints"]["control"]
-        print(f"served emulator at {endpoint}")
-    ctrl = PowerProbe()
-    stats = run_remote(ctrl, endpoint, idle_timeout_s=2.0)
-    if proc is not None:
-        proc.wait(timeout=60)
+    try:
+        if endpoint is None:
+            proc, info = serve(SCENARIO)
+            endpoint = info["endpoints"]["control"]
+            print(f"served emulator at {endpoint}", flush=True)
+        # serve exactly the run's barriers, then unregister; the server runs on to the end
+        stats = run_remote(ctrl, endpoint, max_barriers=n_barriers, idle_timeout_s=IDLE_BACKSTOP_S)
+        if proc is not None:
+            proc.wait(timeout=SERVER_EXIT_S)  # --exit-when-done: the run ends without us
+    finally:
+        if proc is not None:
+            stop_server(proc)
     print(f"remote controller: {stats.barriers} barriers, {stats.commands} commands")
+    if proc is not None and proc.returncode != 0:
+        print(f"the served emulator failed (exit code {proc.returncode})", file=sys.stderr)
+        return 1
     print("   t_b (s)   RX power (dBm)   state")
     for t_b, p, s in ctrl.log:
         print(f"  {float(t_b):8.3f}   {p:14.6f}   {s:5d}")

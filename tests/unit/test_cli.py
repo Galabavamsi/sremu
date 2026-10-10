@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,16 @@ SPEC_COMMANDS = {
 }
 
 
+# typer's rich help forces terminal styling when GITHUB_ACTIONS (or FORCE_COLOR, PY_COLORS)
+# is set, even into CliRunner's buffer; an ANSI sequence can then split "--flag" in two
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain(text: str) -> str:
+    """``text`` without ANSI escape sequences (help output in CI)."""
+    return ANSI_ESCAPE.sub("", text)
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
@@ -52,7 +63,7 @@ def test_cli_help_lists_commands_without_importing_them(runner):
     res = runner.invoke(cli.app, ["--help"])
     assert res.exit_code == 0, res.output
     for name in SPEC_COMMANDS:
-        assert name in res.output
+        assert name in _plain(res.output)
     after = {m for m in sys.modules if m.startswith("sremu.commands.")}
     assert after == before
 
@@ -232,7 +243,7 @@ def test_cli_lazy_function_command_forwards_arguments(runner, tmp_path, monkeypa
     assert "n=5 flag=True" in res.output
     res = runner.invoke(app, ["fake", "--help"])
     assert res.exit_code == 0
-    assert "--flag" in res.output
+    assert "--flag" in _plain(res.output)
     res = runner.invoke(app, ["fake", "not-an-int"])
     assert res.exit_code == 2  # usage error from the real command
 

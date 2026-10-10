@@ -169,7 +169,14 @@ class RemoteControllerRunner:
         self, *, max_barriers: int | None = None, idle_timeout_s: float | None = None
     ) -> RemoteRunStats:
         """Serve barriers until :meth:`stop`, ``max_barriers`` barriers, or no barrier for
-        ``idle_timeout_s`` wall seconds (None: wait forever)."""
+        ``idle_timeout_s`` wall seconds (None: wait forever).
+
+        The idle timeout counts from registration and is a backstop, not an end-of-run
+        signal: a served engine can be silent for many seconds before a barrier (it computes
+        every receiver up to ``t_b + L_min`` first, and on a cold cache JIT-compiles its numba
+        kernels, which takes seconds before the first barrier and longer on a loaded CI
+        runner). When the run's barrier count is known (``t_b = m*T_c < duration``), pass
+        ``max_barriers``."""
         if self.registered is None:
             self.register()
         idle = 0.0

@@ -28,7 +28,7 @@ from sremu.engine.streams import ToneSource
 from sremu.errors import ErrorCode
 from sremu.timebase import TimeSpec
 from sremu.transport.client import RemoteEngine
-from tests.io._wp8_support import served
+from tests.io._wp8_support import served, tcp_buffer_bytes
 from tests.runtime._engine_support import lab_like_fake, make_engine
 
 pytestmark = pytest.mark.io
@@ -79,27 +79,51 @@ def test_i6_lockstep_tx_backpressure_holds_the_client_without_loss() -> None:
             cli.close()
 
 
+def _held_frontier(eng, stream: str, *, still_s: float = 1.0, deadline_s: float = 120.0) -> int:
+    """The RX frontier once the engine is held by its non-reading client: the stream's RX
+    queue is full (the lockstep backpressure condition) and the frontier has not moved for
+    ``still_s`` while it stayed full. How long the engine, the egress pump, ZMQ and the OS
+    TCP buffers take to fill depends on the machine and its load (CI: 2 vCPUs shared by 8
+    xdist workers), so the test waits for that state instead of sampling the frontier at
+    fixed times; an engine that never stops for its reader fails at ``deadline_s``."""
+    st = eng.rx[stream]
+    t_end = time.monotonic() + deadline_s
+    last: int | None = None
+    since = time.monotonic()
+    while True:
+        f = int(eng.frontier()[stream])
+        now = time.monotonic()
+        if f != last or st.queued < st.queue_samples:
+            last, since = f, now
+        elif now - since >= still_s:
+            return f
+        assert now < t_end, f"the engine did not stop for its reader (frontier {f})"
+        time.sleep(0.02)
+
+
 def test_i6_lockstep_rx_backpressure_bounds_the_frontier() -> None:
     eng = make_engine(lab_like_fake(), traffic={"ap.tx0": ToneSource(F, 1.0e3, 1.0)})
-    with served(eng, rx_sndhwm=2) as srv:
+    sndhwm, rcvhwm = 2, 64  # server egress SNDHWM (set here), client RCVHWM (RxReceiver)
+    with served(eng, rx_sndhwm=sndhwm) as srv:
         cli = RemoteEngine(str(srv.endpoints["control"]))
         try:
             h = cli.open_stream(StreamSpec("rx1.rx0", "rx", 3.5e9, F))
             cli.stream_cmd(h, StreamCmd("start_cont", 0, False, TimeSpec(0, 0)))
-            time.sleep(0.5)
-            f1 = eng.frontier()["rx1.rx0"]
-            time.sleep(0.5)
-            f2 = eng.frontier()["rx1.rx0"]
-            assert f1 == f2  # the engine waits for the reader
-            # bounded by the engine's RX queue (64 pages), the ZMQ high-water marks and the
-            # operating system's TCP buffers in between: well below 1 s of samples
-            assert f2 < 250_000
+            f_held = _held_frontier(eng, "rx1.rx0")  # the engine waits for the reader
+            # bounded by the configured buffering: the engine's RX queue (64 pages), the ZMQ
+            # high-water marks (frames of one page) and the OS TCP buffers in between
+            queue = eng.rx["rx1.rx0"].queue_samples
+            bound = queue + (sndhwm + rcvhwm + 2) * h.page_size + tcp_buffer_bytes() // 8
+            assert queue <= f_held <= bound
+            # reading again resumes the engine; every sample arrives, in order, no loss
             expect = 0
-            while expect < 3 * f2:
-                y, md = cli.read_rx(h, 4096, 5.0)
+            while expect < f_held + queue:
+                y, md = cli.read_rx(h, 4096, 30.0)
                 assert md.error_code == ErrorCode.NONE and md.first_sample == expect
                 expect += y.size
-            assert eng.frontier()["rx1.rx0"] > f2
+            assert eng.frontier()["rx1.rx0"] > f_held
+            assert eng.counters["overflow_pages"] == 0
+            assert srv.counters["rx_egress_dropped_samples"] == 0
         finally:
             cli.close()
 

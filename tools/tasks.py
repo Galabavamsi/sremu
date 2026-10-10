@@ -13,7 +13,8 @@ Usage::
 Every task runs with the interpreter that runs this script and sets
 ``NUMBA_DISABLE_INTEL_SVML=1`` (deterministic mode, D-4) unless already set. A task whose
 implementation does not exist yet exits with code 3. pytest tasks use ``-n 8`` xdist workers
-when pytest-xdist is installed (D21: a 16-worker run crashed).
+when pytest-xdist is installed (D21: a 16-worker run crashed) and pytest's built-in
+``faulthandler_timeout`` (``HANG_DUMP_S``): a test that hangs dumps every thread's stack.
 
 ``paper-junit`` (D21) runs the CI and nightly markers with ``--junitxml=PATH`` and writes the
 sidecar ``<stem>.meta.json`` next to it: ``{"sremu_commit": <git rev-parse HEAD>,
@@ -40,6 +41,11 @@ NIGHTLY_MARKERS = "statistical or integration or validation_smoke"  # DESIGN.md 
 PAPER_MARKERS = f"({CI_MARKERS}) or ({NIGHTLY_MARKERS})"  # D21: what the paper's junit pins
 BUDGET_S = {"ci": 8 * 60, "nightly": 30 * 60}
 XDIST_WORKERS = 8  # D21
+# pytest's built-in faulthandler_timeout: a test running longer than this dumps the stack of
+# every thread to stderr (CI log) and keeps running, so a hang is diagnosable instead of the
+# CI job being cancelled without a trace (GitHub Actions run 38066711708, windows-latest).
+# No single test of either tier should come near it.
+HANG_DUMP_S = 300
 
 
 def _env() -> dict[str, str]:
@@ -67,8 +73,24 @@ def _xdist_args() -> list[str]:
     return ["-n", str(XDIST_WORKERS)]
 
 
+def _hang_dump_args(extra: list[str]) -> list[str]:
+    """``-o faulthandler_timeout=HANG_DUMP_S`` unless the caller sets it."""
+    if any("faulthandler_timeout" in a for a in extra):
+        return []
+    return ["-o", f"faulthandler_timeout={HANG_DUMP_S}"]
+
+
 def _pytest(markers: str, extra: list[str], budget_s: float | None = None) -> int:
-    cmd = [sys.executable, "-m", "pytest", "-m", markers, *_xdist_args(), *extra]
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-m",
+        markers,
+        *_xdist_args(),
+        *_hang_dump_args(extra),
+        *extra,
+    ]
     rc = _run(cmd, budget_s)
     if rc == PYTEST_NO_TESTS:
         print(f"[tasks] no tests selected by -m {markers!r} yet; treated as success", flush=True)

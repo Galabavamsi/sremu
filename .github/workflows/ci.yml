@@ -1,35 +1,60 @@
-# CI tier (DESIGN.md 2.6). Committed now; used only once the repository is public.
-# CI timing is never quoted in the paper.
+# CI tier (DESIGN.md 2.6). CI timing is never quoted in the paper.
+#
+# Private-repo minutes: a push or pull request runs ubuntu only. Windows (billed at twice
+# the Linux rate) runs on a manual dispatch ("Run workflow", input "os"); "both" runs the
+# full DESIGN.md 2.6 matrix. Once the repository is public, the push matrix can go back to
+# both operating systems.
 name: ci
 
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner OS for this manual run"
+        type: choice
+        options: [windows-latest, ubuntu-latest, both]
+        default: windows-latest
 
 jobs:
   ci:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # push / pull_request -> ["ubuntu-latest"]; workflow_dispatch -> the chosen OS(es)
+        os: >-
+          ${{ fromJSON(github.event_name != 'workflow_dispatch' && '["ubuntu-latest"]'
+          || inputs.os == 'both' && '["ubuntu-latest", "windows-latest"]'
+          || format('["{0}"]', inputs.os)) }}
         python-version: ["3.12"]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Measured on run 38066711708 (before the hang fixes): ubuntu install + lint ~1 min and
+    # the CI tier ~2 min apart from one 300 s hang; windows reached 95 % of the tier after
+    # ~4 min. Windows gets a wide margin (process start, numba JIT and imports are slower).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
     env:
       NUMBA_DISABLE_INTEL_SVML: "1"
+      PYTHONFAULTHANDLER: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Versions
+        run: python -m pip list
       - name: Lint
         run: python tools/tasks.py lint
+      # tasks.py ci arms pytest's faulthandler_timeout: a hung test dumps every thread's
+      # stack into this log instead of the job being cancelled without a trace
       - name: Tests (CI tier)
-        run: python tools/tasks.py ci
+        run: python tools/tasks.py ci --durations=30
       - name: CLI smoke
         run: sremu info
