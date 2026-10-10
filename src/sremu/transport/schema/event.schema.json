@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sremu:control:v1:event",
+  "title": "sremu control event, schema version 1 (DESIGN.md sections 4.9, 8.5)",
+  "description": "Unsolicited emulator-to-client messages on the ROUTER/DEALER connection (never on PUB, which may drop). 'ctrl.barrier' asks a registered remote controller for its decision at barrier t_b = m*T_c; the controller answers with zero or more ris.set_config / ris.set_enabled requests and then ctrl.ack {t_b}. 'stream.async' carries a TX stream's asynchronous event (BURST_ACK, UNDERFLOW, SEQ_ERROR, TIME_ERROR, ...) to the client that opened it.",
+  "type": "object",
+  "required": ["v", "op"],
+  "properties": {"v": {"const": 1}, "op": {"enum": ["ctrl.barrier", "stream.async"]}},
+  "allOf": [
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ctrl.barrier"}}}, "then": {"$ref": "#/$defs/ctrl.barrier"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "stream.async"}}}, "then": {"$ref": "#/$defs/stream.async"}}
+  ],
+  "$defs": {
+    "exact": {"type": "string", "pattern": "^-?[0-9]+(/[0-9]+)?$"},
+    "b64": {"type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$"},
+    "dbm": {"anyOf": [{"type": "number"}, {"enum": ["-Infinity", "Infinity", "NaN"]}]},
+    "receipt": {
+      "type": "object", "required": ["id", "ok", "status"],
+      "properties": {"id": {"type": "string"}, "ok": {"type": "boolean"}, "status": {"type": "string"},
+                     "seq": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                     "t_req": {"anyOf": [{"$ref": "#/$defs/exact"}, {"type": "null"}]},
+                     "k_req": {"type": "object", "additionalProperties": {"type": "integer"}}}
+    },
+    "observation": {
+      "description": "contracts.Observation: arrays as base64 of little-endian bytes (ris_state int16 'i2_b64', iq_window complex64 'c8_b64', CSI cascades complex128 'c16_b64' with shape [S, N]); rx_power_dbm numbers or '-Infinity'/'Infinity'/'NaN'.",
+      "type": "object",
+      "required": ["t_b", "k_b", "rx_power_dbm", "positions", "csi_oracle", "iq_window", "ris_state", "pending"],
+      "additionalProperties": false,
+      "properties": {
+        "t_b": {"$ref": "#/$defs/exact"},
+        "k_b": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "rx_power_dbm": {"type": "object", "additionalProperties": {"$ref": "#/$defs/dbm"}},
+        "positions": {"anyOf": [{"type": "null"},
+                                {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}}]},
+        "csi_oracle": {"anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": {
+          "type": "object", "required": ["t", "fc_hz", "h_direct", "cascade"], "additionalProperties": false,
+          "properties": {"t": {"$ref": "#/$defs/exact"}, "fc_hz": {"type": "number"},
+                         "h_direct": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                         "cascade": {"type": "object", "additionalProperties": {
+                           "type": "object", "required": ["shape", "c16_b64"], "additionalProperties": false,
+                           "properties": {"shape": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2},
+                                          "c16_b64": {"$ref": "#/$defs/b64"}}}}}}}]},
+        "iq_window": {"anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": {
+          "type": "object", "required": ["c8_b64"], "additionalProperties": false, "properties": {"c8_b64": {"$ref": "#/$defs/b64"}}}}]},
+        "ris_state": {"type": "object", "additionalProperties": {
+          "type": "object", "required": ["i2_b64"], "additionalProperties": false, "properties": {"i2_b64": {"$ref": "#/$defs/b64"}}}},
+        "pending": {"type": "array", "items": {"$ref": "#/$defs/receipt"}}
+      }
+    },
+    "ctrl.barrier": {
+      "type": "object", "required": ["controller", "t_b", "k_b", "m", "observation"], "additionalProperties": false,
+      "properties": {"v": true, "op": true, "controller": {"type": "string"}, "t_b": {"$ref": "#/$defs/exact"},
+                     "k_b": {"type": "object", "additionalProperties": {"type": "integer"}},
+                     "m": {"type": "integer", "minimum": 0}, "observation": {"$ref": "#/$defs/observation"}}
+    },
+    "stream.async": {
+      "type": "object", "required": ["stream_id", "stream", "event_code"], "additionalProperties": false,
+      "properties": {"v": true, "op": true, "stream_id": {"type": "integer", "minimum": 0}, "stream": {"type": "string"},
+                     "event_code": {"enum": ["BURST_ACK", "UNDERFLOW", "SEQ_ERROR", "TIME_ERROR", "UNDERFLOW_IN_PACKET", "SEQ_ERROR_IN_BURST"]},
+                     "sample_index": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                     "n_samples": {"type": "integer", "minimum": 0},
+                     "t": {"anyOf": [{"$ref": "#/$defs/exact"}, {"type": "null"}]}}
+    }
+  }
+}

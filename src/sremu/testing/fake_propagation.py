@@ -15,15 +15,30 @@ coefficient is K1 with isotropic antennas, obliquity 1 and no visibility test:
 ``L_tile = C0*tau_tile`` the Tx -> tile reference -> Rx length. It is NOT a physics model
 and must never be used for physics results.
 
+Contract 1.1 (D11): ``link_fc_hz``, ``panel_geometry`` (D17 conventions; point cells, so
+Q = N), ``ris_delay_s(..., tile=k)`` from the tile reference point (the centroid of the
+tile's cells, the point used in ``tile_delay_s``), ``with_render_tiles`` (a copy with other
+panel tile grids) and timed node events. ``set_node_position`` / ``set_node_trajectory``
+need a node declared ``external=True`` (like the physics model's external trajectories) and
+events in time order; positions are then piecewise constant-velocity: a position event holds
+the position, a trajectory event follows ``start + v*(t - t_event)`` for any object with
+``velocity_mps`` and ``start_m`` or ``position_m`` (``FakeNode``, or the physics ``Static``
+and ``ConstantVelocity`` trajectories). Motion bounds stay exact for that piecewise motion.
+
 Self-links (TX and RX on the same node) are not modelled.
 """
 
 from __future__ import annotations
 
+import bisect
+import copy
+import dataclasses
+import itertools
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
+from typing import Any
 
 import numpy as np
 
@@ -33,9 +48,11 @@ from sremu.contracts import (
     MotionBounds,
     NodeId,
     PanelConfig,
+    PanelGeometry,
     PanelId,
     PathBundle,
     PathKind,
+    PropagationModel,
     RISCoefficients,
     Snapshot,
     StreamId,
@@ -62,12 +79,18 @@ def _vec3(v: Iterable[float], name: str) -> Vec3:
 
 @dataclass(frozen=True)
 class FakeNode:
-    """A node at ``position_m`` (m) at t = 0 moving with constant ``velocity_mps`` (m/s)."""
+    """A node at ``position_m`` (m) at t = 0 moving with constant ``velocity_mps`` (m/s).
+
+    ``external=True`` lets timed ``node.set_position`` / ``node.set_trajectory`` events move
+    the node (``FakePropagation.set_node_position``); :meth:`position` is always the initial
+    motion.
+    """
 
     id: NodeId
     position_m: Vec3
     velocity_mps: Vec3 = (0.0, 0.0, 0.0)
     streams: tuple[StreamSpec, ...] = ()
+    external: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "position_m", _vec3(self.position_m, "position_m"))
@@ -171,6 +194,38 @@ def _min_distance(dp: np.ndarray, dv: np.ndarray, horizon_s: float) -> float:
     return float(np.linalg.norm(dp + dv * t))
 
 
+@dataclass(frozen=True, eq=False)
+class _Segment:
+    """Constant-velocity motion from exact time ``t0`` on: ``p0 + v*(t - t0)``."""
+
+    t0: Fraction
+    p0: np.ndarray
+    v: np.ndarray
+
+    def position(self, t: Fraction) -> np.ndarray:
+        return self.p0 + self.v * float(t - self.t0)
+
+
+def _segment_at(segs: Sequence[_Segment], t: Fraction) -> _Segment:
+    i = bisect.bisect_right([sg.t0 for sg in segs], t) - 1
+    return segs[max(i, 0)]
+
+
+def _constant_velocity(traj: Any) -> tuple[np.ndarray, np.ndarray]:
+    """(start (3,), velocity (3,)) of a constant-velocity trajectory object."""
+    start = getattr(traj, "start_m", None)
+    if start is None:
+        start = getattr(traj, "position_m", None)
+    if start is None:
+        raise TypeError(
+            "FakePropagation supports constant-velocity trajectories only: objects with "
+            "'start_m' or 'position_m' and optional 'velocity_mps'"
+        )
+    p0 = np.asarray(_vec3(start, "trajectory start"))
+    v = np.asarray(_vec3(getattr(traj, "velocity_mps", (0.0, 0.0, 0.0)), "velocity_mps"))
+    return p0, v
+
+
 class FakePropagation:
     """LOS-only analytic ``PropagationModel`` with constant-velocity nodes (WP0 fake).
 
@@ -203,7 +258,12 @@ class FakePropagation:
                 if s.stream in self._streams:
                     raise ConfigurationError(f"duplicate stream id {s.stream!r}")
                 self._streams[s.stream] = s
-        self._horizon_s = float(parse_exact(horizon_s, name="horizon_s"))
+        self._horizon_q = parse_exact(horizon_s, name="horizon_s")
+        self._horizon_s = float(self._horizon_q)
+        self._segments: dict[NodeId, list[_Segment]] = {
+            nd.id: [_Segment(Fraction(0), np.asarray(nd.position_m), np.asarray(nd.velocity_mps))]
+            for nd in nodes
+        }
         txs = [s for s in self._streams.values() if s.direction == "tx"]
         rxs = [s for s in self._streams.values() if s.direction == "rx"]
         self._links: dict[LinkId, tuple[StreamSpec, StreamSpec]] = {}
@@ -232,11 +292,17 @@ class FakePropagation:
 
     def link_streams(self, link: LinkId) -> tuple[StreamSpec, StreamSpec]:
         """(tx, rx) stream specs of a link."""
-        return self._links[link]
+        try:
+            return self._links[link]
+        except KeyError:
+            raise UnknownTarget(f"unknown link {link!r}") from None
 
-    def node_position(self, node: NodeId, t: Fraction) -> np.ndarray:
-        """Position (3,) of ``node`` at time ``t``, m."""
-        return self._nodes[node].position(t)
+    def node_position(self, node: NodeId, t: Fraction | int | str) -> np.ndarray:
+        """Position (3,) of ``node`` at exact time ``t`` (s), m, timed node events included."""
+        if node not in self._segments:
+            raise UnknownTarget(f"unknown node {node!r}")
+        tq = parse_exact(t, name="t")
+        return _segment_at(self._segments[node], tq).position(tq)
 
     def los_distance_m(self, link: LinkId, t: Fraction) -> float:
         """LOS distance of ``link`` at time ``t``, m."""
@@ -250,6 +316,57 @@ class FakePropagation:
     def links(self) -> tuple[LinkId, ...]:
         """All links in scenario order."""
         return tuple(self._links)
+
+    def link_fc_hz(self, link: LinkId) -> float:
+        """Carrier of the link's TX stream, Hz."""
+        return float(self.link_streams(link)[0].fc_hz)
+
+    def _panel(self, panel: PanelId) -> FakePanel:
+        try:
+            return self._panels[panel]
+        except KeyError:
+            raise UnknownTarget(f"unknown panel {panel!r}") from None
+
+    def panel_geometry(self, panel: PanelId) -> PanelGeometry:
+        """D17 geometry of a panel (point cells: Q = N; no physical tiles or gaps)."""
+        p = self._panel(panel)
+        return PanelGeometry.from_cells(
+            p.id, p.center_m, p.normal, p.u_axis, p.n_u, p.n_v, p.pitch_u_m, p.pitch_v_m
+        )
+
+    def with_render_tiles(self, tiles: Mapping[PanelId, tuple[int, int]]) -> FakePropagation:
+        """A copy whose listed panels use render tiles ``(tiles_u, tiles_v)``; the receiver is
+        unchanged. The copy shares the node event history (as the physics model does)."""
+        new = copy.copy(self)
+        new._panels = dict(self._panels)
+        for pid, (ku, kv) in tiles.items():
+            new._panels[pid] = dataclasses.replace(
+                self._panel(pid), tiles_u=int(ku), tiles_v=int(kv)
+            )
+        return new
+
+    def _event(self, node: NodeId, t: Fraction | int | str, p0: np.ndarray, v: np.ndarray) -> None:
+        if node not in self._nodes:
+            raise UnknownTarget(f"unknown node {node!r}")
+        if not self._nodes[node].external:
+            raise ConfigurationError(f"node {node!r} does not have an external trajectory")
+        tq = parse_exact(t, name="event time")
+        segs = self._segments[node]
+        if tq < segs[-1].t0:
+            raise ConfigurationError("external trajectory events must be in time order")
+        segs.append(_Segment(tq, p0, v))
+
+    def set_node_position(
+        self, node: NodeId, t: Fraction | int | str, position_m: Sequence[float]
+    ) -> None:
+        """Timed ``node.set_position``: hold ``position_m`` (m) from exact time ``t`` (s) on."""
+        self._event(node, t, np.asarray(_vec3(position_m, "position_m")), np.zeros(3))
+
+    def set_node_trajectory(self, node: NodeId, t: Fraction | int | str, traj: Any) -> None:
+        """Timed ``node.set_trajectory``: from ``t`` on, ``start + v*(t' - t)`` (constant
+        velocity; see the module docstring for the accepted objects)."""
+        p0, v = _constant_velocity(traj)
+        self._event(node, t, p0, v)
 
     def snapshot(self, t: Fraction) -> Snapshot:
         """LOS paths of every link and simplified RIS coefficients at time ``t`` (s)."""
@@ -354,47 +471,86 @@ class FakePropagation:
             )
         return out
 
-    def ris_delay_s(self, panel: PanelId, rx: StreamId, t: Fraction) -> float:
-        """tau_RIS->rx at the panel centre, s."""
-        if panel not in self._panels:
-            raise UnknownTarget(f"unknown panel {panel!r}")
+    def ris_delay_s(
+        self, panel: PanelId, rx: StreamId, t: Fraction, tile: int | None = None
+    ) -> float:
+        """tau_RIS->rx in s from the panel centre, or from tile ``tile``'s reference point
+        (the tile centroid used in ``tile_delay_s``)."""
+        p = self._panel(panel)
         node, _ = split_stream_id(rx)
         if node not in self._nodes:
             raise UnknownTarget(f"unknown stream {rx!r}")
-        c = np.asarray(self._panels[panel].center_m)
-        return float(np.linalg.norm(self.node_position(node, parse_exact(t)) - c)) / C0
+        pos = self.node_position(node, parse_exact(t))
+        if tile is None:
+            return float(np.linalg.norm(pos - np.asarray(p.center_m))) / C0
+        if isinstance(tile, bool) or int(tile) != tile or not 0 <= int(tile) < p.n_tiles:
+            raise ConfigurationError(f"panel {panel!r}: tile {tile!r} outside [0, {p.n_tiles})")
+        # the same expression as the tile reference delay of _panel_coefficients
+        return float(np.linalg.norm(p._tile_ref - pos[None, :], axis=1)[int(tile)]) / C0
+
+    def _breaks(self, *nodes: NodeId) -> list[Fraction]:
+        h = self._horizon_q
+        pts = {Fraction(0), h}
+        for nd in nodes:
+            pts.update(sg.t0 for sg in self._segments[nd] if 0 < sg.t0 < h)
+        return sorted(pts)
+
+    def _closest(self, a: NodeId | None, b: NodeId, point: np.ndarray | None = None) -> float:
+        """Exact closest approach over [0, horizon] of node ``b`` to node ``a`` (or to the
+        fixed ``point`` when ``a`` is None) for piecewise constant-velocity motion, m."""
+        ts = self._breaks(b) if a is None else self._breaks(a, b)
+        best = math.inf
+        for s0, s1 in itertools.pairwise(ts):
+            sb = _segment_at(self._segments[b], s0)
+            if a is None:
+                assert point is not None
+                dp, dv = sb.position(s0) - point, sb.v
+            else:
+                sa = _segment_at(self._segments[a], s0)
+                dp, dv = sb.position(s0) - sa.position(s0), sb.v - sa.v
+            best = min(best, _min_distance(dp, dv, float(s1 - s0)))
+        return best
+
+    def _max_speed(self, node: NodeId, other: NodeId | None = None) -> float:
+        """Largest |v_node - v_other| (or |v_node|) over [0, horizon], m/s."""
+        ts = self._breaks(node) if other is None else self._breaks(node, other)
+        best = 0.0
+        for s0 in ts[:-1]:
+            v = _segment_at(self._segments[node], s0).v
+            if other is not None:
+                v = v - _segment_at(self._segments[other], s0).v
+            best = max(best, float(np.linalg.norm(v)))
+        return best
 
     def motion_bounds(self) -> MotionBounds:
-        """Exact bounds for constant velocity over [0, horizon_s] (v_perp bounded by v_rel)."""
+        """Exact bounds over [0, horizon_s] for piecewise constant-velocity motion (v_perp is
+        bounded by v_rel). ``static`` is True when no node ever has a non-zero velocity
+        (position events are discrete events, handled by event snapshots)."""
         v_rel: dict[LinkId, float] = {}
         r_min: dict[LinkId, float] = {}
         for lk, (tx, rx) in self._links.items():
-            a, b = self._nodes[tx.node], self._nodes[rx.node]
-            dv = np.asarray(b.velocity_mps) - np.asarray(a.velocity_mps)
-            dp = np.asarray(b.position_m) - np.asarray(a.position_m)
-            v_rel[lk] = float(np.linalg.norm(dv))
-            r_min[lk] = _min_distance(dp, dv, self._horizon_s)
+            v_rel[lk] = self._max_speed(rx.node, tx.node)
+            r_min[lk] = self._closest(tx.node, rx.node)
         p_r: dict[PanelId, float] = {}
         p_v: dict[PanelId, float] = {}
-        linked = {s.node for pair in self._links.values() for s in pair}
+        linked = sorted({s.node for pair in self._links.values() for s in pair})
         for pid, p in self._panels.items():
             c = np.asarray(p.center_m)
-            dists = [
-                _min_distance(
-                    np.asarray(self._nodes[nd].position_m) - c,
-                    np.asarray(self._nodes[nd].velocity_mps),
-                    self._horizon_s,
-                )
-                for nd in sorted(linked)
-            ]
-            speeds = [float(np.linalg.norm(self._nodes[nd].velocity_mps)) for nd in sorted(linked)]
+            dists = [self._closest(None, nd, c) for nd in linked]
+            speeds = [self._max_speed(nd) for nd in linked]
             p_r[pid] = min(dists) if dists else math.inf
             p_v[pid] = max(speeds) if speeds else 0.0
+        moving = any(bool(np.any(sg.v != 0.0)) for segs in self._segments.values() for sg in segs)
         return MotionBounds(
-            static=not any(nd.moving for nd in self._nodes.values()),
+            static=not moving,
             v_rel_max_mps=v_rel,
             v_perp_max_mps=dict(v_rel),
             r_min_m=r_min,
             panel_r_min_m=p_r,
             panel_v_rel_max_mps=p_v,
         )
+
+
+def _conforms(model: FakePropagation) -> PropagationModel:
+    """Static check (mypy): ``FakePropagation`` structurally satisfies the 1.1 protocol."""
+    return model

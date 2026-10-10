@@ -7,6 +7,8 @@
   ``engine/scheduler.py``, ``engine/events.py`` or ``engine/commands.py`` may import
   ``time``, ``datetime`` or ``perf_counter``.
 * Speed of light: no literal 299792458 / 3e8 / 2.998e8 (any spelling) outside ``units.py``.
+  Inside ``units.py`` exactly two are allowed: ``C0 = 299_792_458.0`` and (D4)
+  ``C_LEGACY_V1 = 3.0e8``; ``C_LEGACY_V1`` may be used only by ``physics/legacy.py``.
 * No global RNG: no ``np.random.seed``, legacy ``np.random.<dist>``/``RandomState``,
   stdlib ``random`` or spawn-order-dependent ``.spawn()`` in any Python tree (section 6.1).
 
@@ -37,6 +39,7 @@ LAYER_OF: dict[str, int] = {
     "timebase": 0,
     "errors": 0,
     "contracts": 0,
+    "sysinfo": 0,  # D12: platform probes shared by cli.py and record/manifest.py
     "rng": 1,
     "scenario": 1,
     "physics": 2,
@@ -398,6 +401,64 @@ def test_oracle_isolation_teeth():
     assert oracle_violations("from sremu.units import C0\n", "tests.oracles.k1", False) == []
 
 
+UNITS_C_LITERALS = {"C0": 299_792_458.0, "C_LEGACY_V1": 3.0e8}  # DESIGN 3.1 and D4
+C_LEGACY_NAME = "C_LEGACY_V1"
+C_LEGACY_USERS = ("src/sremu/units.py", "src/sremu/physics/legacy.py")  # D4
+
+
+def units_c_literal_violations(source: str, label: str = "units.py") -> list[str]:
+    """Speed-of-light literals in ``units.py``: each must be the whole value of a module-level
+    assignment to a name in :data:`UNITS_C_LITERALS`, with exactly that value, once."""
+    hits = {
+        tok.start[0]
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+        if tok.type == tokenize.NUMBER and C_LITERAL_RE.match(tok.string.replace("_", ""))
+    }
+    errors: list[str] = []
+    seen: dict[str, int] = {}
+    for node in ast.parse(source).body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        if value is None or not isinstance(target, ast.Name):
+            continue
+        lines = set(range(value.lineno, (value.end_lineno or value.lineno) + 1))
+        if not lines & hits:
+            continue
+        hits -= lines
+        name = target.id
+        if name not in UNITS_C_LITERALS:
+            errors.append(f"{label}:{node.lineno}: speed-of-light literal assigned to {name}")
+            continue
+        if not (isinstance(value, ast.Constant) and value.value == UNITS_C_LITERALS[name]):
+            errors.append(
+                f"{label}:{node.lineno}: {name} must be the literal {UNITS_C_LITERALS[name]!r}"
+            )
+        seen[name] = seen.get(name, 0) + 1
+    errors += [
+        f"{label}:{ln}: speed-of-light literal outside an allowed name" for ln in sorted(hits)
+    ]
+    for name in UNITS_C_LITERALS:
+        if seen.get(name, 0) != 1:
+            errors.append(f"{label}: {name} must be assigned a speed-of-light literal exactly once")
+    return errors
+
+
+def c_legacy_used(source: str) -> bool:
+    """Whether ``source`` references ``C_LEGACY_V1`` (name, attribute or import)."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Name) and node.id == C_LEGACY_NAME:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == C_LEGACY_NAME:
+            return True
+        if isinstance(node, ast.ImportFrom) and any(a.name == C_LEGACY_NAME for a in node.names):
+            return True
+    return False
+
+
 def test_speed_of_light_literal_only_in_units():
     errors = []
     this = Path(__file__).resolve()
@@ -412,9 +473,64 @@ def test_speed_of_light_literal_only_in_units():
                 path.read_text(encoding="utf-8"), str(path.relative_to(REPO))
             )
     assert not errors, "\n".join(errors)
-    # units.py defines it exactly once
-    units_hits = c_literal_violations((PKG / "units.py").read_text(encoding="utf-8"), "units.py")
-    assert len(units_hits) == 1
+    # units.py: exactly C0 = 299792458.0 and the D4 legacy constant C_LEGACY_V1 = 3e8
+    units_src = (PKG / "units.py").read_text(encoding="utf-8")
+    assert len(c_literal_violations(units_src, "units.py")) == 2
+    assert units_c_literal_violations(units_src) == []
+    from sremu import units
+
+    assert units.C0 == 299_792_458.0
+    assert units.C_LEGACY_V1 == 3.0e8
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 3.0e8\nC_OTHER = 3e8\n",  # a third name
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 2.998e8\n",  # wrong legacy value
+        "C0 = 3e8\nC_LEGACY_V1 = 3.0e8\n",  # C0 must stay exact
+        "C0 = 299_792_458.0\n",  # legacy constant missing
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 3.0e8\nC_LEGACY_V1 = 3.0e8\n",  # twice
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 3.0e8\nx = 2 * 3e8\n",  # stray literal
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 3.0e8 * 1.0\n",  # not a plain literal
+        "C0 = 299_792_458.0\nC_LEGACY_V1 = 3.0e8\ndef f():\n    return 3e8\n",  # in a def
+    ],
+)
+def test_d4_units_speed_of_light_teeth(src):
+    assert units_c_literal_violations(src)
+
+
+def test_d4_units_speed_of_light_accepts_spec_form():
+    src = (
+        "from typing import Final\n"
+        "C0: Final[float] = 299_792_458.0\n"
+        '"""C0 docstring mentioning 3e8 as text"""\n'
+        "C_LEGACY_V1: Final[float] = 3.0e8\n"
+    )
+    assert units_c_literal_violations(src) == []
+
+
+def test_d4_c_legacy_v1_used_only_by_physics_legacy():
+    users = [
+        path.relative_to(REPO).as_posix()
+        for path in _py_files(PKG)
+        if path.relative_to(REPO).as_posix() not in C_LEGACY_USERS
+        and c_legacy_used(path.read_text(encoding="utf-8"))
+    ]
+    assert not users, f"C_LEGACY_V1 used outside physics/legacy.py: {users}"
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "from sremu.units import C_LEGACY_V1\n",
+        "from sremu import units\nc = units.C_LEGACY_V1\n",
+        "from sremu.units import C_LEGACY_V1 as c\n",
+    ],
+)
+def test_d4_c_legacy_v1_users_teeth(src):
+    assert c_legacy_used(src)
+    assert not c_legacy_used("from sremu.units import C0\nc = C0\n")
 
 
 @pytest.mark.parametrize(

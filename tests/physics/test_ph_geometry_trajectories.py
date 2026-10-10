@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sremu import rng as sremu_rng
 from sremu.errors import ConfigurationError, GeometryError
 from sremu.physics.antennas import CosPower, Isotropic, Tabulated, antenna_from_spec
 from sremu.physics.geometry import (
@@ -21,7 +22,6 @@ from sremu.physics.geometry import (
     TraceTrajectory,
     Waypoints,
     angles_to_node,
-    keyed_generator,
     segment_hits_polygon,
     trajectory_from_spec,
 )
@@ -98,7 +98,7 @@ def test_trajectories_are_analytic_functions_of_time():
 
 def test_rwp_1d_is_pure_in_time_and_keyed():
     def legs(i: int) -> np.random.Generator:
-        return keyed_generator(7, "mobility", "mu", counter=i)
+        return sremu_rng.generator(7, "mobility", "mu", counter=i)  # D14
 
     a = RandomWaypoint1D([0, 0, 0], [10, 0, 0], 1.0, legs)
     b = RandomWaypoint1D([0, 0, 0], [10, 0, 0], 1.0, legs)
@@ -110,11 +110,13 @@ def test_rwp_1d_is_pure_in_time_and_keyed():
     assert np.all(step <= 1.0 * (times[1] - times[0]) + 1e-12)  # no jumps faster than v
     assert np.all((pa[:, 0] >= 0) & (pa[:, 0] <= 10)) and np.all(pa[:, 1:] == 0)
     other = RandomWaypoint1D(
-        [0, 0, 0], [10, 0, 0], 1.0, lambda i: keyed_generator(8, "mobility", "mu", counter=i)
+        [0, 0, 0], [10, 0, 0], 1.0, lambda i: sremu_rng.generator(8, "mobility", "mu", counter=i)
     )
     assert not np.array_equal(other.position(50.0), a.position(50.0))
     # waypoint i depends only on (seed, purpose, name, i)
-    assert a.waypoint(3)[0] == pytest.approx(10 * keyed_generator(7, "mobility", "mu", 3).random())
+    assert a.waypoint(3)[0] == pytest.approx(
+        10 * sremu_rng.generator(7, "mobility", "mu", counter=3).random()
+    )
 
 
 def test_trace_spline_reproduces_cubic_and_refuses_extrapolation(tmp_path: Path):

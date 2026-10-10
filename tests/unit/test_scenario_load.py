@@ -261,7 +261,7 @@ def test_missing_assume_mag_is_an_error():
 
 
 def test_trace_file_is_an_input_with_its_data_class(tmp_path):
-    (tmp_path / "walk.csv").write_text("t_s,x_m,y_m,z_m\n0,5,0,0\n1,5,1,0\n", encoding="utf-8")
+    (tmp_path / "walk.csv").write_text("t,x,y,z\n0,5,0,0\n1,5,1,0\n", encoding="utf-8")
     doc = read_document(QUICK)
     doc["nodes"][1].pop("position_m")
     doc["nodes"][1]["trajectory"] = {"model": "trace", "file": "walk.csv", "data_class": "MEAS"}

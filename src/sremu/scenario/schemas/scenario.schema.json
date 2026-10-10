@@ -1796,7 +1796,7 @@
     },
     "TraceTrajectory": {
       "additionalProperties": false,
-      "description": "CSV trace ``t_s,x_m,y_m,z_m`` (cubic spline, no extrapolation); path relative to the\nscenario file.",
+      "description": "CSV trace with header ``t,x,y,z`` (s, m; section 5.10): C2 cubic spline through the\nrows, no extrapolation, so the rows must cover [0, duration] (guard TRACE_COVERAGE);\npath relative to the scenario file.",
       "properties": {
         "data_class": {
           "enum": [

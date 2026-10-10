@@ -6,6 +6,8 @@
   ``golden``, ``statistical``, ``integration``, ``experimental``), so the CI selection
   ``-m "unit or physics or runtime or io or golden"`` never silently drops a test.
 * Skips ``needs_private_data`` tests when ``$SREMU_PRIVATE_DATA`` is not set.
+* Restores ``NUMBA_DISABLE_INTEL_SVML`` and ``NUMBA_CACHE_DIR`` after every test, so an
+  in-process CLI call (deterministic mode, D-4/D15) cannot leak into later tests.
 * Fixtures: ``repo_root``, ``rng`` (keyed Philox generator per test, never the global RNG)
   and ``backend_name`` (parametrized over ``$SREMU_BACKENDS``, default both backends).
 """
@@ -62,6 +64,25 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(getattr(pytest.mark, tier))
         if item.get_closest_marker("needs_private_data") and not have_private:
             item.add_marker(skip_private)
+
+
+NUMBA_ENV_KEYS = ("NUMBA_DISABLE_INTEL_SVML", "NUMBA_CACHE_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _restore_numba_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore the numba environment after every test.
+
+    An in-process CLI invocation applies deterministic mode (D-4, D15) to ``os.environ``;
+    without this, ``NUMBA_CACHE_DIR`` would leak into later tests of the same worker (numba
+    re-reads its configuration before each compilation).
+    """
+    for key in NUMBA_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
 
 
 @pytest.fixture(scope="session")

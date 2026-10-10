@@ -67,8 +67,11 @@ def _absolute_h(model: ScenePropagation, t: Fraction, states: np.ndarray) -> com
 
 def test_contract_isinstance_and_links():
     m = _scene()
-    assert isinstance(m, PropagationModel)
+    assert isinstance(m, PropagationModel)  # contract 1.1 member set (D11)
     assert m.links() == (LINK,)
+    assert m.link_fc_hz(LINK) == FC
+    with pytest.raises(UnknownTarget):
+        m.link_fc_hz("ap.tx0->nobody.rx0")
 
 
 @pytest.mark.parametrize("tiles", [(1, 1), (2, 3), (5, 2)])
@@ -269,7 +272,7 @@ def test_contract_structural_gap_gamma_path():
         [panel],
     )
     pb = m.snapshot(Fraction(0)).paths[LINK]
-    assert pb.kind.tolist() == [PathKind.LOS, PathKind.RIS_TILE]
+    assert pb.kind.tolist() == [PathKind.LOS, PathKind.RIS_GAP]  # D10: structural gap path
     tx, rx = np.array([-1.0, 0.3, 2.0]), np.array([1.4, -0.2, 1.6])
     strip_u = grid.gap_strips()[0]
     assert strip_u[1] - strip_u[0] == pytest.approx(0.01)
@@ -289,17 +292,26 @@ def test_contract_structural_gap_gamma_path():
     off = m.combine(snap, {"ris0": PanelConfig("ris0", np.zeros(60, np.int16), enabled=False)})
     none = m.combine(snap, {})[LINK]
     assert on.amp[1] == pb.amp[1]
+    # D10: the gap path keeps tile key -1; every RIS_TILE path has a key >= 0
+    assert on.kind[1] == PathKind.RIS_GAP and on.tile[1] == -1
+    assert np.all(on.tile[on.kind == PathKind.RIS_TILE] >= 0)
+    assert np.all(on.tile[on.kind != PathKind.RIS_TILE] == -1)
     for lp in (off[LINK], none):
         assert lp.amp[0] == pb.amp[0] and lp.amp[1] == 0 and np.all(lp.amp[lp.tile >= 0] == 0)
         assert np.array_equal(lp.delay_s, on.delay_s) and np.array_equal(lp.kind, on.kind)
 
 
 def test_contract_from_scenario_rejects_environment_without_wp3():
+    """D18: an enabled environment entry whose WP3 module is missing raises (never drops)."""
+    import importlib.util
+
+    if importlib.util.find_spec("sremu.physics.ground") is not None:
+        pytest.skip("WP3 sremu.physics.ground is present")
     doc = {
         "nodes": [],
         "environment": {"ground": {"eps_r": 15, "sigma_s_per_m": 1e-3, "polarization": "H"}},
     }
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError, match=r"sremu\.physics\.ground"):
         ScenePropagation.from_scenario(doc)
 
 

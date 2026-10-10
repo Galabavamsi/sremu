@@ -1,0 +1,20 @@
+# BPSK TX/RX pair ported from v1 (examples/bpsk_txrx; DESIGN.md 8.2). SIM geometry: two
+# isotropic nodes 3 m apart in free space, LOS only, no RIS. Carrier and rate are the v1
+# values: f_c = 2.4e9 - 1800 - 800 - 450 Hz = 2399996950 Hz, f_s = 5880 S/s.
+schema_version: "1.0"
+name: bpsk_txrx
+seed: 7
+description: "v1 BPSK TX/RX pair (5880 S/s, 200-symbol header + 38 BPSK symbols)"
+nodes:
+  - id: node_1
+    position_m: [0.0, 0.0, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: tx0, direction: tx, fc_hz: 2399996950.0, rate_sps: "5880", occupied_bw_hz: 1176.0}
+  - id: node_2
+    position_m: [3.0, 0.0, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: rx0, direction: rx, fc_hz: 2399996950.0, rate_sps: "5880"}
+run: {mode: lockstep, coupling: barrier, duration_s: "1"}
+record: {iq: true, events: true, metrics: true}

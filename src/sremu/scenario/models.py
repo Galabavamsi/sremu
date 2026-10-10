@@ -7,7 +7,10 @@ Field names are frozen by section 9.2. Rules (section 9.1):
 * **Exact quantities** (sample rates and every time that maps to a sample: durations, event
   times, periods, latencies) are strings or ints parsed to ``Fraction``
   (``"23.04e6"``, ``"1/200"``, ``"5e-3"``). Floats are rejected (:class:`FloatNotExactError`,
-  which is both a ``SchemaError`` and a ``TypeError``, R1). In JSON they serialize as exact
+  which is both a ``SchemaError`` and a ``TypeError``, R1). The loader accepts exactly the
+  strings the JSON Schema ``pattern`` (:data:`EXACT_PATTERN`) accepts: the whole string must
+  match, so surrounding whitespace (``" 1e6"``, ``"5e-3\\n"``) is rejected, not stripped.
+  In JSON they serialize as exact
   decimal strings (``"0.0005"``) or, when the value has no finite decimal expansion, as
   ``"p/q"``.
 * Other numbers are finite JSON numbers: strings and bools are not coerced to numbers, and
@@ -141,14 +144,22 @@ def parse_exact_field(value: Any) -> Fraction:
             {"hint": hint},
         )
     if isinstance(value, str):
-        text = value.strip()
-        if not _EXACT_RE.match(text):
+        # The whole string must match EXACT_PATTERN, as the JSON Schema "pattern" requires:
+        # no stripping, and fullmatch (re's "$" alone would accept a trailing newline).
+        if _EXACT_RE.fullmatch(value) is None:
+            if value != value.strip() and _EXACT_RE.fullmatch(value.strip()) is not None:
+                raise PydanticCustomError(
+                    "exact_whitespace",
+                    "'{text}' has surrounding whitespace; exact quantities are written without "
+                    "it (the JSON Schema pattern rejects it too)",
+                    {"text": value},
+                )
             raise PydanticCustomError(
                 "exact_syntax",
                 "'{text}' is not an exact quantity (decimal like '23.04e6' or ratio like '1/200')",
                 {"text": value},
             )
-        return Fraction(text)
+        return Fraction(value)
     raise PydanticCustomError(
         "exact_type",
         "expected a string or int for an exact quantity, got {t}",
@@ -500,8 +511,9 @@ class Rwp2dTrajectory(_Model):
 
 
 class TraceTrajectory(_Model):
-    """CSV trace ``t_s,x_m,y_m,z_m`` (cubic spline, no extrapolation); path relative to the
-    scenario file."""
+    """CSV trace with header ``t,x,y,z`` (s, m; section 5.10): C2 cubic spline through the
+    rows, no extrapolation, so the rows must cover [0, duration] (guard TRACE_COVERAGE);
+    path relative to the scenario file."""
 
     model: Literal["trace"]
     file: str = Field(min_length=1)

@@ -57,6 +57,7 @@ SECTION_3_4_NAMES = [
     "TxRing",
     "RemoteControllerProxy",
     "RenderBackend",
+    "PanelGeometry",  # contract 1.1 (D11)
 ]
 FROZEN = [
     "PathBundle",
@@ -81,11 +82,12 @@ FROZEN = [
     "CsiView",
     "MotionBounds",
     "AsyncMetadata",
+    "PanelGeometry",
 ]
 
 
 def test_contract_version_and_all_names():
-    assert c.CONTRACT_VERSION == "1.0"
+    assert c.CONTRACT_VERSION == "1.1"  # lead decisions v1.2 (D11)
     for name in SECTION_3_4_NAMES:
         assert hasattr(c, name), name
     for name in c.__all__:
@@ -105,8 +107,9 @@ def test_mutable_records_per_spec():
 
 
 def test_path_kind_values():
-    assert [int(k) for k in c.PathKind] == [0, 1, 2, 3, 4, 5]
+    assert [int(k) for k in c.PathKind] == [0, 1, 2, 3, 4, 5, 6]
     assert c.PathKind.RIS_TILE == 4
+    assert c.PathKind.RIS_GAP == 6  # D10
 
 
 def _bundle(**kw):
@@ -166,8 +169,6 @@ def test_ris_coefficients_forms_and_shapes():
         gamma=None,
     )
     assert (b.n_states, b.separable) == (3, False)
-    with pytest.raises(ValueError):
-        _ris(B=np.zeros((2, 2, 6), np.complex128))  # both forms
     with pytest.raises(ValueError):
         _ris(C=None, gamma=None)  # neither form
     with pytest.raises(ValueError):

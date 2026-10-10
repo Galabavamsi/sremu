@@ -19,7 +19,7 @@ from fractions import Fraction
 import numpy as np
 
 from sremu.channel.fd import kaiser_fd_spec
-from sremu.channel.interp import PanelGeometry, make_link_job, plan_link
+from sremu.channel.interp import PanelPolicyInput, make_link_job, plan_link
 from sremu.channel.render_numpy import get_backend
 from sremu.channel.ring import TxRingBuffer
 from sremu.contracts import (
@@ -203,17 +203,10 @@ class MobileScene:
     window_s: tuple[float, float]
     f_s: Fraction
 
-    def geometry(self, model: FakePropagation) -> PanelGeometry:
-        p = model.panels[self.panel]
-        return PanelGeometry(
-            self.panel,
-            p.n_u * p.pitch_u_m,
-            p.n_v * p.pitch_v_m,
-            p.n_u,
-            p.n_v,
-            self.fc_hz,
-            len(model.links()),
-        )
+    def geometry(self, model: FakePropagation) -> PanelPolicyInput:
+        """Policy input of the scene's panel: the contract geometry (D11), the carrier and
+        one RIS row per link."""
+        return PanelPolicyInput(model.panel_geometry(self.panel), self.fc_hz, len(model.links()))
 
 
 def _scene(

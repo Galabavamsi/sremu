@@ -1,0 +1,36 @@
+# Remote-controller example (examples/controller_remote; DESIGN.md 4.9, 8.5, 8.7). The
+# quickstart scene (SIM geometry: one AP, one user, one ideal 1-bit 16 x 16 RIS, 1 MS/s tone)
+# with one EXTERNAL barrier controller, "probe": every 10 ms the emulator sends it a
+# ctrl.barrier with the user's RX power over the last 1 ms; it answers with a timed
+# ris.set_config (1 ms later) and ctrl.ack. The controller runs in another process
+# (controller_remote.py) and attaches by name.
+schema_version: "1.0"
+name: controller_remote
+seed: 3
+description: "Quickstart scene driven by an external barrier controller over the control socket"
+nodes:
+  - id: ap
+    position_m: [4.330127019, -2.5, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 1.0e4}
+  - id: mu
+    position_m: [4.698463104, 1.710100717, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}
+ris:
+  - id: ris0
+    pose: {center_m: [0, 0, 0], normal: [1, 0, 0], u_axis: [0, 1, 0]}
+    grid: {n_u: 16, n_v: 16, pitch_u_m: 0.0428, pitch_v_m: 0.0428}
+    states: {library: ideal_antipodal}
+    initial: {fill: 0}
+controllers:
+  - name: probe
+    kind: external
+    period_s: "1e-2"
+    min_latency_s: "1e-3"
+    latency: {fixed_s: "1e-3"}
+    observation: {fields: [rx_power_dbm, ris_state], window_s: "1e-3"}
+run: {duration_s: "0.1"}
+traffic: [{stream: ap.tx0, generator: tone, params: {freq_hz: 1.0e3}}]

@@ -1,5 +1,7 @@
 """WP5: thermal noise (PH-21, G5 emulator side) on the shared Philox stream (I5, I2a).
 
+The PH-21 tests run on both backends (D23) through the module-level D20 API
+``sremu.impair.noise.noise(rx_key, k0, n, sigma, backend=...)`` with ``sigma**2 = E|w|**2``.
 Oracles: Random123 Philox4x32-10 known-answer vectors (the generator noise depends on), the
 closed-form floor ``k_B*T0*F*f_s`` (-113.975 dBm at 1 MS/s, F = 0 dB), and the sampling
 distribution of the estimators (tolerances as stated in DESIGN.md section 10).
@@ -14,8 +16,10 @@ import numpy as np
 import pytest
 
 from sremu import rng
+from sremu.errors import ConfigurationError
 from sremu.impair.noise import (
     NOISE_LANE,
+    noise,
     noise_numba,
     noise_numpy,
     normals_numba,
@@ -102,35 +106,38 @@ def test_i2a_noise_thread_count_bitwise() -> None:
     assert all(np.array_equal(outs[0], o) for o in outs[1:])
 
 
-def test_ph21_noise_power_minus113p975dbm_at_1msps() -> None:
+def test_ph21_noise_power_minus113p975dbm_at_1msps(backend_name: str) -> None:
     fs = 1e6
     sigma = thermal_sigma(fs, 0.0)
     floor_dbm = 10 * math.log10(K_B * 290.0 * fs) + 30
     assert floor_dbm == pytest.approx(-113.975, abs=0.001)  # PH-21 oracle value
     assert sigma**2 == pytest.approx(K_B * 290.0 * fs, rel=1e-15)
-    w = noise_numba(_key("mu.rx0"), 0, 10**6, sigma).astype(np.complex128)
+    w = noise(_key("mu.rx0"), 0, 10**6, sigma, backend=backend_name).astype(np.complex128)
     p_dbm = 10 * math.log10(float(np.mean(np.abs(w) ** 2))) + 30
     assert p_dbm == pytest.approx(-113.975, abs=0.05)
-    # each quadrature carries half the power and they are uncorrelated
+    # sigma**2 = E|w|**2 is the TOTAL complex variance (D20): I and Q carry sigma**2/2 each
+    # (+-5 sigma of the variance estimator over 1e6 samples is +-0.71 %)
+    assert np.var(w.real) / sigma**2 == pytest.approx(0.5, rel=0.0071)
+    assert np.var(w.imag) / sigma**2 == pytest.approx(0.5, rel=0.0071)
     assert np.var(w.real) / np.var(w.imag) == pytest.approx(1.0, abs=0.01)
     assert abs(np.mean(w.real * w.imag)) / sigma**2 <= 0.005
     # noise figure adds exactly F dB
     assert 10 * math.log10(thermal_sigma(fs, 7.0) ** 2) + 30 == pytest.approx(-106.975, abs=0.001)
 
 
-def test_ph21_cross_receiver_correlation_below_5_sigma() -> None:
+def test_ph21_cross_receiver_correlation_below_5_sigma(backend_name: str) -> None:
     n = 10**5
-    w1 = noise_numba(_key("rx1.rx0"), 0, n, 1.0).astype(np.complex128)
-    w2 = noise_numba(_key("rx2.rx0"), 0, n, 1.0).astype(np.complex128)
+    w1 = noise(_key("rx1.rx0"), 0, n, 1.0, backend=backend_name).astype(np.complex128)
+    w2 = noise(_key("rx2.rx0"), 0, n, 1.0, backend=backend_name).astype(np.complex128)
     rho = abs(np.vdot(w2, w1)) / math.sqrt(np.vdot(w1, w1).real * np.vdot(w2, w2).real)
     assert rho <= 0.016
     # same RX, disjoint indices: independent as well
-    w3 = noise_numba(_key("rx1.rx0"), n, n, 1.0).astype(np.complex128)
+    w3 = noise(_key("rx1.rx0"), n, n, 1.0, backend=backend_name).astype(np.complex128)
     assert abs(np.vdot(w3, w1)) / n <= 0.016
 
 
-def test_ph21_box_muller_is_gaussian() -> None:
-    w = noise_numpy((11, 12), 0, 400_000, math.sqrt(2.0)).astype(np.complex128)
+def test_ph21_box_muller_is_gaussian(backend_name: str) -> None:
+    w = noise((11, 12), 0, 400_000, math.sqrt(2.0), backend=backend_name).astype(np.complex128)
     x = np.concatenate([w.real, w.imag])  # unit-variance components
     assert abs(x.mean()) <= 5 / math.sqrt(x.size)
     assert x.var() == pytest.approx(1.0, abs=5 * math.sqrt(2 / x.size))
@@ -146,6 +153,25 @@ def test_g5_emulator_side_thermal_noise_1e7_samples() -> None:
     w = noise_numba(_key("g5.rx0"), 0, 10**7, math.sqrt(K_B * 290.0 * fs)).astype(np.complex128)
     p_db = 10 * math.log10(float(np.mean(np.abs(w) ** 2)) / (K_B * 290.0 * fs))
     assert abs(p_db) <= 0.01
+
+
+def test_d20_module_level_noise_api() -> None:
+    """D20: ``sremu.impair.noise.noise`` is the module-level NoiseFn (default numba_cpu); the
+    backend modules' ``noise`` and the backend objects return the same samples."""
+    from sremu.channel import render_numba, render_numpy
+
+    key, k0, n, sigma = _key("api.rx0"), 2**33 + 5, 4096, 0.37
+    ref_nb = noise_numba(key, k0, n, sigma)
+    ref_np = noise_numpy(key, k0, n, sigma)
+    assert np.array_equal(noise(key, k0, n, sigma), ref_nb)
+    assert np.array_equal(noise(key, k0, n, sigma, backend="numba_cpu"), ref_nb)
+    assert np.array_equal(noise(key, k0, n, sigma, backend="numpy_ref"), ref_np)
+    assert np.array_equal(render_numba.noise(key, k0, n, sigma), ref_nb)
+    assert np.array_equal(render_numpy.noise(key, k0, n, sigma), ref_np)
+    assert np.array_equal(render_numba.NumbaCpuBackend().noise(key, k0, n, sigma), ref_nb)
+    assert noise(key, k0, n, sigma).dtype == np.complex64
+    with pytest.raises(ConfigurationError):
+        noise(key, k0, n, sigma, backend="cuda")  # type: ignore[arg-type]
 
 
 def test_noise_argument_validation() -> None:

@@ -288,6 +288,77 @@ def test_manifest_without_git(tmp_path, monkeypatch):
     assert (m.git_commit, m.git_dirty, m.dirty_patch_sha256) == (None, None, None)
 
 
+def test_d12_manifest_host_fields_come_from_sysinfo(tmp_path, monkeypatch):
+    """D12: every host probe of the manifest is ``sremu.sysinfo``'s. Patching the sysinfo
+    probes (an EC2 DMI directory, a governor file, fake versions) changes the manifest
+    accordingly; the expected values are the fixture's, not sysinfo's output."""
+    from sremu import sysinfo
+
+    dmi = tmp_path / "dmi"
+    dmi.mkdir()
+    (dmi / "sys_vendor").write_text("Amazon EC2\n", encoding="utf-8")
+    (dmi / "product_name").write_text("c6i.metal\n", encoding="utf-8")
+    (dmi / "board_asset_tag").write_text("i-0123456789abcdef0\n", encoding="utf-8")
+    gov = tmp_path / "scaling_governor"
+    gov.write_text("performance\n", encoding="utf-8")
+    real_aws, real_gov = sysinfo.aws_instance, sysinfo.read_governor
+    monkeypatch.setattr(sysinfo, "aws_instance", lambda dmi_dir=dmi: real_aws(dmi_dir))
+    monkeypatch.setattr(sysinfo, "power_plan_or_governor", lambda: real_gov(gov))
+    monkeypatch.setattr(sysinfo, "cpu_model", lambda: "Test CPU @ 1.00GHz")
+    monkeypatch.setattr(sysinfo, "gpus", lambda: ["Test GPU, 1.0, 1 MiB"])
+    monkeypatch.setattr(sysinfo, "dist_version", lambda dist: f"{dist}-9.9")
+    monkeypatch.setattr(sysinfo, "numba_threads", lambda: 3)
+    monkeypatch.setattr(sysinfo, "numba_svml_disabled", lambda: True)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    res = load_scenario(REPO / "scenarios" / "quickstart.yaml")
+    m = ManifestRecorder(res, tmp_path / "run", repo_dir=plain).finish()
+    assert m.aws_instance is not None
+    assert m.aws_instance.model_dump() == {"type": "c6i.metal", "id": "i-0123456789abcdef0"}
+    assert m.power_plan_or_governor == "performance"
+    assert m.cpu_model == "Test CPU @ 1.00GHz"
+    assert m.gpu == ["Test GPU, 1.0, 1 MiB"]
+    assert m.versions == {
+        "python": platform.python_version(),
+        **{k: f"{d}-9.9" for k, d in [("numpy", "numpy"), ("scipy", "scipy"),
+                                      ("numba", "numba"), ("pydantic", "pydantic"),
+                                      ("pyzmq", "pyzmq"), ("torch", "torch")]},
+    }  # fmt: skip
+    assert (m.threads, m.numba_disable_svml) == (3, True)
+    assert m.logical_cpus == os.cpu_count() and m.platform == platform.platform()
+    # not on EC2 (DMI vendor differs): null
+    (dmi / "sys_vendor").write_text("Some Vendor\n", encoding="utf-8")
+    m2 = ManifestRecorder(res, tmp_path / "run2", repo_dir=plain).finish()
+    assert m2.aws_instance is None
+
+
+def test_d12_manifest_has_no_private_host_probes():
+    """D12: record/manifest.py imports sremu.sysinfo and defines no probe of its own (no
+    registry, powercfg, nvidia-smi, DMI or package-metadata access)."""
+    import ast
+
+    import sremu.record.manifest as man
+
+    src = Path(man.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+            imported |= {f"{node.module}.{a.name}" for a in node.names}
+    assert "sremu.sysinfo" in imported
+    assert not {"winreg", "importlib.metadata"} & imported
+    for needle in ("powercfg", "nvidia-smi", "/proc/cpuinfo", "dmi/id", "scaling_governor"):
+        assert needle not in src, needle
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    probes = {"_run", "_dist_version", "_cpu_model", "_power_plan_or_governor", "_gpus",
+              "_aws_instance", "_numba_svml_disabled", "_numba_threads"}  # fmt: skip
+    assert not probes & defined
+
+
 def test_host_load_sampler():
     s = HostLoadSampler()
     a = s.sample()

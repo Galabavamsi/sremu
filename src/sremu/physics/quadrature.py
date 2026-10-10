@@ -12,18 +12,28 @@ Forcing ``point`` with a pitch above lambda/2 warns (``ValidityWarning``). Table
 ``includes_cell_pattern=True`` force ``point`` (the pattern is not counted twice).
 
 Richardson check (``po_patch`` only): on up to 8 representative links (nearest, farthest,
-most oblique incidence, most oblique reflection, four pseudo-random), the received power is
+most oblique incidence, most oblique reflection, four pseudo-random ones keyed through
+``sremu.rng``, purpose ``trial``, name ``richardson/<panel>/<link>``, D14), the received power is
 computed at ``Delta`` and ``Delta/2``. The power metric is evaluated for two configuration-
 independent cases: all cells with Gamma = 1 (``P_uni = |sum_n b_n|^2``) and the coherent
 (focused) configuration (``P_foc = (sum_n |b_n|)^2``); ``P_uni`` is skipped when it lies
 more than 60 dB below ``P_foc`` (a numerical null). If the largest change exceeds
 ``richardson_tol_db`` (0.05 dB), ``Delta`` is halved, at most twice; then
 ``RefinementNotConverged`` is raised. The accepted ``Delta`` and its estimate are recorded.
+
+Model form (section 5.4; PH-04, PH-26). The two cell models are not numerically equivalent:
+a ``po_patch`` cell carries the sub-aperture factor of its uniform patch, which ``point``
+omits. Near specular they agree (PH-26: <= 0.05 dB). For a lambda/2 cell at 45 deg retro the
+continuous factor ``sinc(p (sin theta_i + sin theta_s)/lambda)`` is -8.92 dB (the Delta -> 0
+limit); the shipped Delta <= lambda/5 (3 x 3 sub-cells) gives the 3-point midpoint value
+``(1 + 2 cos(pi sqrt(2)/3))/3`` = -8.11 dB (D6 regression value, single angle). At finite
+range the angles vary across the panel and the factor is that of each cell's local angles.
+For electrically large cells the Richardson-converged ``po_patch`` value is the reported one
+(D5: 1 m^2 plate, 3.5 GHz, 5 m near anomalous, -88.128 dB at Delta = lambda/40, +-0.10 dB).
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
 import warnings
 from collections.abc import Sequence
@@ -32,12 +42,14 @@ from typing import Literal
 
 import numpy as np
 
+from sremu import rng as _rng
 from sremu.errors import ConfigurationError, RefinementNotConverged, ValidityWarning
 from sremu.physics.antennas import Antenna, Isotropic
 from sremu.physics.geometry import PanelGrid
 from sremu.physics.ris_kernel import Backend, Obliquity, accumulate_cells, k1_terms
 
 __all__ = [
+    "RICHARDSON_RNG_PURPOSE",
     "CellModel",
     "LinkSample",
     "Quadrature",
@@ -47,6 +59,7 @@ __all__ = [
     "representative_links",
     "resolve_cell_model",
     "richardson_check",
+    "richardson_link_key",
     "subdivisions",
 ]
 
@@ -215,9 +228,29 @@ class LinkSample:
     ant_rx: Antenna = field(default_factory=Isotropic)
 
 
-def representative_links(samples: Sequence[LinkSample], grid: PanelGrid, n: int = 8) -> list[int]:
+RICHARDSON_RNG_PURPOSE = "trial"
+"""Keyed purpose of the pseudo-random Richardson link choice (D14; name
+``richardson/<panel>/<link>``, i.e. study ``richardson``, trial ``<panel>/<link>``)."""
+
+
+def richardson_link_key(seed: int, panel: str, link: str) -> int:
+    """64-bit ``sremu.rng`` key of one link for the pseudo-random part of the Richardson
+    choice (D14): ``derive_key(seed, "trial", "richardson/<panel>/<link>").u64``. A pure
+    function of the link's own name, so the choice does not depend on link order."""
+    return _rng.derive_key(int(seed), RICHARDSON_RNG_PURPOSE, f"richardson/{panel}/{link}").u64
+
+
+def representative_links(
+    samples: Sequence[LinkSample],
+    grid: PanelGrid,
+    n: int = 8,
+    *,
+    seed: int = 0,
+    panel: str = "",
+) -> list[int]:
     """Indices of up to ``n`` representative links: nearest, farthest, most oblique
-    incidence, most oblique reflection, then pseudo-random ones (blake2b of the name)."""
+    incidence, most oblique reflection, then pseudo-random ones in the order of
+    :func:`richardson_link_key` (``sremu.rng`` derivation, D14)."""
     if not samples:
         return []
     c = grid.pose.center_m
@@ -240,7 +273,7 @@ def representative_links(samples: Sequence[LinkSample], grid: PanelGrid, n: int 
             order.append(idx)
     rest = sorted(
         (i for i in range(len(samples)) if i not in order),
-        key=lambda i: hashlib.blake2b(samples[i].name.encode(), digest_size=8).digest(),
+        key=lambda i: (richardson_link_key(seed, panel, samples[i].name), i),
     )
     order.extend(rest[: max(0, n - len(order))])
     return order[:n]
@@ -304,9 +337,12 @@ def richardson_check(
     max_halvings: int = 2,
     obliquity: Obliquity = "sqrt",
     backend: Backend = "numpy_ref",
+    seed: int = 0,
+    panel: str = "",
 ) -> RichardsonResult:
-    """Richardson refinement check for a ``po_patch`` panel (section 5.4)."""
-    idx = representative_links(samples, grid)
+    """Richardson refinement check for a ``po_patch`` panel (section 5.4). ``seed`` and
+    ``panel`` key the pseudo-random link choice (:func:`representative_links`, D14)."""
+    idx = representative_links(samples, grid, seed=seed, panel=panel)
     chosen = [samples[i] for i in idx]
     if not chosen:
         return RichardsonResult(0, 0.0, (), ())

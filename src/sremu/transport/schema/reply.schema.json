@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sremu:control:v1:reply",
+  "title": "sremu control reply, schema version 1 (DESIGN.md section 8.5)",
+  "description": "Emulator-to-client reply to one request, routed back on the ROUTER socket. 'id' echoes the request id (null when the request could not be parsed). Success replies carry op-specific fields; command receipts carry status, seq, t_req (exact string, s) and k_req (sample per affected RX stream). Error replies carry error.code, an ErrorCode name such as LATE_COMMAND, SCHEMA_ERROR, TOO_LARGE, UNKNOWN_TARGET, LOOKAHEAD_VIOLATION or NOT_PERMITTED.",
+  "type": "object",
+  "required": ["v", "id", "ok"],
+  "properties": {
+    "v": {"const": 1},
+    "id": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}]},
+    "ok": {"type": "boolean"}
+  },
+  "if": {"required": ["ok"], "properties": {"ok": {"const": false}}},
+  "then": {
+    "required": ["error"],
+    "properties": {
+      "error": {
+        "type": "object", "required": ["code", "msg"], "additionalProperties": false,
+        "properties": {
+          "code": {"enum": ["NONE", "TIMEOUT", "LATE_COMMAND", "BROKEN_CHAIN", "OVERFLOW", "ALIGNMENT",
+                            "BAD_PACKET", "SCHEMA_ERROR", "LOOKAHEAD_VIOLATION", "UNKNOWN_TARGET",
+                            "OUT_OF_DOMAIN", "TOO_LARGE", "NOT_PERMITTED", "RATE_MISMATCH"]},
+          "msg": {"type": "string"}
+        }
+      },
+      "status": {"enum": ["rejected"]}
+    }
+  },
+  "else": {
+    "properties": {
+      "status": {"enum": ["scheduled", "applied", "late_applied", "rejected", "superseded"]},
+      "seq": {"type": "integer", "minimum": 0},
+      "t_req": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+      "k_req": {"type": "object", "additionalProperties": {"type": "integer"}},
+      "t_wall_recv_ns": {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+    }
+  }
+}

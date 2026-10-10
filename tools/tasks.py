@@ -4,6 +4,7 @@ Usage::
 
     python tools/tasks.py ci [pytest args...]          # CI tier, <= 8 min
     python tools/tasks.py nightly [pytest args...]     # statistical/integration/validation_smoke
+    python tools/tasks.py paper-junit PATH.xml [pytest args...]  # CI + nightly -> junit + meta
     python tools/tasks.py goldens [--regenerate]       # MATLAB goldens (WP4) + Python side
     python tools/tasks.py bench [sremu bench args...]  # benchmarks (WP11)
     python tools/tasks.py paper-data [args...]         # release tier via the paper pipeline (WP12)
@@ -11,12 +12,19 @@ Usage::
 
 Every task runs with the interpreter that runs this script and sets
 ``NUMBA_DISABLE_INTEL_SVML=1`` (deterministic mode, D-4) unless already set. A task whose
-implementation does not exist yet exits with code 3.
+implementation does not exist yet exits with code 3. pytest tasks use ``-n 8`` xdist workers
+when pytest-xdist is installed (D21: a 16-worker run crashed).
+
+``paper-junit`` (D21) runs the CI and nightly markers with ``--junitxml=PATH`` and writes the
+sidecar ``<stem>.meta.json`` next to it: ``{"sremu_commit": <git rev-parse HEAD>,
+"sremu_dirty": <git status --porcelain is non-empty>}``, both read before the tests run.
+These two read-only git calls are the only git use of this script.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -29,7 +37,9 @@ NOT_IMPLEMENTED = 3
 PYTEST_NO_TESTS = 5  # pytest exit code when nothing is collected
 CI_MARKERS = "unit or physics or runtime or io or golden"
 NIGHTLY_MARKERS = "statistical or integration or validation_smoke"  # DESIGN.md 2.6
+PAPER_MARKERS = f"({CI_MARKERS}) or ({NIGHTLY_MARKERS})"  # D21: what the paper's junit pins
 BUDGET_S = {"ci": 8 * 60, "nightly": 30 * 60}
+XDIST_WORKERS = 8  # D21
 
 
 def _env() -> dict[str, str]:
@@ -54,7 +64,7 @@ def _xdist_args() -> list[str]:
         import xdist  # noqa: F401
     except ImportError:
         return []
-    return ["-n", "auto"]
+    return ["-n", str(XDIST_WORKERS)]
 
 
 def _pytest(markers: str, extra: list[str], budget_s: float | None = None) -> int:
@@ -77,6 +87,55 @@ def task_ci(extra: list[str]) -> int:
 
 def task_nightly(extra: list[str]) -> int:
     return _pytest(NIGHTLY_MARKERS, extra, BUDGET_S["nightly"])
+
+
+def _git_state(repo: Path = REPO) -> tuple[str, bool]:
+    """``(HEAD commit, dirty)`` of ``repo`` from two read-only git calls (paper-junit only)."""
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("git not found on PATH")
+
+    def call(*args: str) -> str:
+        res = subprocess.run(
+            [git, "-C", str(repo), *args], capture_output=True, text=True, check=False
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
+        return res.stdout
+
+    commit = call("rev-parse", "HEAD").strip()
+    dirty = bool(call("status", "--porcelain").strip())
+    return commit, dirty
+
+
+def meta_path(junit: Path) -> Path:
+    """Sidecar of a junit file: ``<stem>.meta.json`` in the same directory."""
+    return junit.with_name(f"{junit.stem}.meta.json")
+
+
+def task_paper_junit(extra: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="tasks.py paper-junit",
+        description="CI + nightly tiers with --junitxml and a {sremu_commit, sremu_dirty} sidecar.",
+    )
+    parser.add_argument("junit", type=Path, help="junit XML file to write")
+    args, rest = parser.parse_known_args(extra)
+    junit = args.junit if args.junit.is_absolute() else Path.cwd() / args.junit
+    try:
+        commit, dirty = _git_state(REPO)
+    except RuntimeError as exc:
+        print(f"[tasks] paper-junit: cannot read the sremu commit: {exc}", file=sys.stderr)
+        return 1
+    junit.parent.mkdir(parents=True, exist_ok=True)
+    rc = _pytest(
+        PAPER_MARKERS,
+        [f"--junitxml={junit}", *rest],
+        BUDGET_S["ci"] + BUDGET_S["nightly"],
+    )
+    meta = {"sremu_commit": commit, "sremu_dirty": dirty}
+    meta_path(junit).write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    print(f"[tasks] wrote {junit} and {meta_path(junit)} (commit {commit}, dirty {dirty})")
+    return rc
 
 
 def task_goldens(extra: list[str]) -> int:
@@ -127,6 +186,7 @@ TASKS = {
     "goldens": task_goldens,
     "bench": task_bench,
     "paper-data": task_paper_data,
+    "paper-junit": task_paper_junit,
     "lint": task_lint,
 }
 

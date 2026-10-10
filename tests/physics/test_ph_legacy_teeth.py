@@ -13,7 +13,7 @@ from sremu.errors import NonPhysicalError
 from sremu.legacy import kernels as legacy_reexport
 from sremu.physics import legacy
 from sremu.physics.ris_kernel import k1_channel
-from sremu.units import C0
+from sremu.units import C0, C_LEGACY_V1
 from tests.physics._closed_forms import db20, make_panel
 
 pytestmark = pytest.mark.physics
@@ -38,8 +38,10 @@ def test_legacy_items_raise_without_allow_nonphysical():
     assert legacy_reexport.legacy_v2 is legacy.legacy_v2
 
 
-def test_legacy_v1_is_24p4db_above_k1_in_v1_default_geometry():
-    """v1 default configuration (T16 of pm_checks): 2.4 GHz, 16 x 16 cells at 6 cm pitch."""
+def test_legacy_v1_is_24p39db_above_k1_in_v1_default_geometry():
+    """D4 teeth: v1 default configuration (T16 of pm_checks): 2.4 GHz, 16 x 16 cells at 6 cm
+    pitch. ``legacy_v1`` uses v1's own c (``units.C_LEGACY_V1 = 3e8``); K1 uses ``C0``.
+    The gap is +24.39 +- 0.05 dB."""
     fc, pitch = 2399996950.0, 0.06
     pos = np.array(
         [
@@ -71,22 +73,27 @@ def test_legacy_v1_is_24p4db_above_k1_in_v1_default_geometry():
     assert abs(db20(h_k1) - (-99.36)) <= 0.005
     a_panel = (16 * pitch) ** 2
     h_v1 = legacy.legacy_v1(tx, rx, pos, a_panel, nrm, fc, allow_nonphysical=True)
-    # independent transcription of v1 total_nlos_gain (whole-panel area in every cell)
+    # independent transcription of v1 total_nlos_gain (whole-panel area in every cell) with
+    # v1's own speed of light, in the amplitude and in the phase (D4)
+    c_v1 = C_LEGACY_V1
     qv = legacy.WCL_Q
     p = (
-        (qv * a_panel * C0) ** 2
+        (qv * a_panel * c_v1) ** 2
         / (4 * math.pi * fc) ** 2
         * math.pi
         * np.abs(ci) ** (2 * qv)
         * (np.abs(cs) ** (2 * qv))
         / (ri**2 * rs**2)
     )
-    v1_ref = np.sum(bn * np.sqrt(p) * np.exp(-2j * math.pi * fc * (ri + rs) / C0))
+    v1_ref = np.sum(bn * np.sqrt(p) * np.exp(-2j * math.pi * fc * (ri + rs) / c_v1))
     assert abs(h_v1 - v1_ref) <= 1e-12 * abs(v1_ref)
-    # Teeth: v1 overstates the RIS path by about 24 dB (spec: +24.4 dB with v1's own c = 3e8;
-    # with units.C0, the only c allowed, the gap of this non-focused sum is 24.48 dB)
+    # Teeth (D4): v1 overstates the RIS path by +24.39 +- 0.05 dB vs K1
     gap = db20(h_v1) - db20(h_k1)
-    assert 24.3 <= gap <= 24.6, gap
+    assert abs(gap - 24.39) <= 0.05, gap
+    # the teeth bite only with v1's own c: the same transcription with C0 is 24.48 dB, outside
+    p0 = p * (C0 / c_v1) ** 2
+    v1_c0 = np.sum(bn * np.sqrt(p0) * np.exp(-2j * math.pi * fc * (ri + rs) / C0))
+    assert abs(db20(v1_c0) - db20(h_k1) - 24.39) > 0.05
 
 
 @pytest.mark.parametrize(("fc", "spec_db"), [(1e9, -0.52), (2.4e9, -8.1), (3.5e9, -11.4)])

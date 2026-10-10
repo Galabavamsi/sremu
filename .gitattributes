@@ -1,6 +1,10 @@
 # Source and docs: normalize to LF in the repository.
 * text=auto eol=lf
-# Hash-pinned data must stay byte-exact: no line-ending conversion at all.
+# CSV and JSON are always text with LF (DESIGN.md 2.2) ...
+*.csv text eol=lf
+*.json text eol=lf
+# ... except hash-pinned data, which must stay byte-exact: no line-ending conversion at all.
+# (These lines come after the *.csv / *.json rules so that they win for these paths.)
 data/validation/** -text
 tests/golden/** -text
 *.sigmf-data binary

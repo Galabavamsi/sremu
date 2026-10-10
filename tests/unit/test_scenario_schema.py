@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic_core import PydanticCustomError
 
+from sremu.errors import SchemaError
 from sremu.record.manifest import manifest_json_schema
 from sremu.scenario.load import parse_scenario, read_document
-from sremu.scenario.models import EXACT_PATTERN, exact_to_str
+from sremu.scenario.models import EXACT_PATTERN, exact_to_str, parse_exact_field
 from sremu.scenario.schema_export import (
     SCHEMA_FILES,
     packaged_schema_dir,
@@ -72,6 +74,30 @@ def _json_equal(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
+def ecma_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile a JSON Schema ``pattern`` with ECMA-262 semantics (the JSON Schema regex
+    dialect) for the constructs our schemas use: ``$`` (outside character classes) matches
+    only at the end of the input -- Python's ``$`` also matches before a final newline -- and
+    character classes are ASCII (``re.ASCII``)."""
+    out: list[str] = []
+    i, in_class = 0, False
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            out.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+        elif ch == "[":
+            in_class = True
+        elif ch == "$":
+            ch = r"\Z"
+        out.append(ch)
+        i += 1
+    return re.compile("".join(out), re.ASCII)
+
+
 def validate_instance(x: Any, schema: Any, root: Any = None, path: str = "$") -> list[str]:
     """Errors of instance ``x`` against a draft 2020-12 ``schema`` (subset)."""
     root = schema if root is None else root
@@ -96,7 +122,7 @@ def validate_instance(x: Any, schema: Any, root: Any = None, path: str = "$") ->
     if "enum" in schema and not any(_json_equal(x, e) for e in schema["enum"]):
         errs.append(f"{path}: {x!r} not in enum {schema['enum']}")
     if isinstance(x, str):
-        if "pattern" in schema and re.search(schema["pattern"], x) is None:
+        if "pattern" in schema and ecma_pattern(schema["pattern"]).search(x) is None:
             errs.append(f"{path}: {x!r} does not match {schema['pattern']}")
         if "minLength" in schema and len(x) < schema["minLength"]:
             errs.append(f"{path}: shorter than {schema['minLength']}")
@@ -185,6 +211,8 @@ def test_mini_validator_teeth():
         {"p": {"x": True}},
         {"e": "c"},
         {"s": "AB"},
+        {"s": "abc\n"},  # ECMA-262: "$" does not match before a final newline
+        {"s": " abc"},
         {"v": [1]},
         {"v": [1, "2"]},
         {"u": 3},
@@ -323,7 +351,63 @@ def test_exact_pattern_and_canonical_text(text, value):
 
 @pytest.mark.parametrize("text", ["1e6 ", "1/0", "1.5/2", "nan", "inf", "0x10", "1_000", "", "/3"])
 def test_exact_pattern_rejects(text):
-    assert re.fullmatch(EXACT_PATTERN, text) is None or text.strip() != text
+    assert re.fullmatch(EXACT_PATTERN, text) is None
+    with pytest.raises(PydanticCustomError):
+        parse_exact_field(text)
+
+
+# Candidate texts for the loader/schema agreement sweep: valid forms, whitespace in every
+# position, Unicode digits and look-alikes, and malformed numbers.
+EXACT_CANDIDATES = [
+    "5", "+5", "-5", "5.", ".5", "0.5", "5e3", "5E+3", "5e-03", "1/200", "01/0200", "-1/3",
+    "23.04e6", "2.304e-3",
+    " 5", "5 ", "\t5", "5\t", "5\n", "\n5", "5\r", "5\r\n", " 1/200 ", "1 /2", "1/ 2",
+    " 5", "5 ", "５", "٥", "5​",
+    "1_000", "1/0", "1/00", "1.5/2", "1/2/3", "1e", "e5", ".", "", "/3", "nan", "inf",
+    "0x10", "--5", "5-", "1e6 S/s",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("text", EXACT_CANDIDATES)
+def test_s9_1_exact_loader_accepts_exactly_what_the_json_schema_accepts(text):
+    """Strip-vs-schema consistency (section 9.1): the loader accepts an exact-quantity string
+    if and only if the exported JSON Schema (ECMA-262 ``pattern``) does; nothing is stripped,
+    and an accepted string's value is ``Fraction(text)``."""
+    exact_schema = scenario_json_schema()["$defs"]["RunModel"]["properties"]["duration_s"]
+    schema_ok = not validate_instance(text, exact_schema)
+    try:
+        value = parse_exact_field(text)
+        loader_ok = True
+    except PydanticCustomError:
+        loader_ok = False
+    assert loader_ok is schema_ok, (text, loader_ok, schema_ok)
+    if loader_ok:
+        assert value == Fraction(text)
+
+
+@pytest.mark.parametrize("text", [" 1e6", "1e6 ", "\t1e6", "1e6\n", "1e6\r\n", " 1e6 "])
+@pytest.mark.parametrize(
+    "where",
+    [
+        ("nodes", 0, "streams", 0, "rate_sps"),
+        ("run", "duration_s"),
+        ("controllers", 0, "period_s"),
+    ],
+)
+def test_s9_1_exact_strings_with_surrounding_whitespace_are_rejected(text, where):
+    """Surrounding whitespace is rejected by the loader (named in the message) and by the
+    JSON Schema alike, in every exact field (rates, durations, periods)."""
+    doc = read_document(REPO / "scenarios" / "lab_like_A.yaml")
+    node: Any = doc
+    for key in where[:-1]:
+        node = node[key]
+    node[where[-1]] = text
+    assert validate_instance(doc, scenario_json_schema()), (where, text)
+    with pytest.raises(SchemaError, match="surrounding whitespace"):
+        parse_scenario(doc)
+    node[where[-1]] = text.strip()  # control: the stripped text is valid in this field
+    assert validate_instance(doc, scenario_json_schema()) == []
+    parse_scenario(doc)
 
 
 def test_exact_to_str_is_decimal_when_finite():

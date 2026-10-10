@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sremu:dataplane:v1:frame",
+  "title": "sremu native data-plane frame header, version 1 (DESIGN.md section 8.3)",
+  "description": "Binary, not JSON: this file documents the 48-byte little-endian header of the two-part ZMQ message [header, payload] (TX ingress PUSH->PULL at tcp://127.0.0.1:5602; RX egress PULL from the endpoint returned by stream.open). The schema below validates a decoded header written as a JSON object (field names as in x-layout). Frames failing any check are dropped and counted as BAD_PACKET.",
+  "x-struct": "<IHHIIqIHHQQ",
+  "x-size-bytes": 48,
+  "x-layout": [
+    {"name": "magic", "type": "uint32", "note": "bytes b'SRMU' on the wire (uint32 0x554D5253)"},
+    {"name": "version", "type": "uint16", "note": "1"},
+    {"name": "flags", "type": "uint16", "note": "b0 SOB, b1 EOB, b2 HAS_TIME, b3 IDLE_UNTIL, b4 OVERFLOW_BEFORE, b5 LATE, b6 END_OF_STREAM; other bits must be 0"},
+    {"name": "stream_id", "type": "uint32", "note": "from stream.open"},
+    {"name": "seq", "type": "uint32", "note": "per-stream frame counter from 0; a gap -> SEQ_ERROR async"},
+    {"name": "first_sample", "type": "int64", "note": "absolute index at the stream rate (TX: iff HAS_TIME, else the frontier; IDLE_UNTIL: the idle-until index; RX: always)"},
+    {"name": "nsamps", "type": "uint32", "note": "<= 4194304 (2**22); 0 for IDLE_UNTIL"},
+    {"name": "nchan", "type": "uint16", "note": "1"},
+    {"name": "dtype", "type": "uint16", "note": "1 cf32_le (8 bytes/sample), 2 sc16_le (4 bytes/sample, full scale 32767)"},
+    {"name": "wall_ns", "type": "uint64", "note": "sender monotonic clock; metrics only"},
+    {"name": "reserved", "type": "uint64", "note": "0"}
+  ],
+  "type": "object",
+  "required": ["magic", "version", "flags", "stream_id", "seq", "first_sample", "nsamps", "nchan", "dtype", "wall_ns", "reserved"],
+  "additionalProperties": false,
+  "properties": {
+    "magic": {"const": 1431130707},
+    "version": {"const": 1},
+    "flags": {"type": "integer", "minimum": 0, "maximum": 127},
+    "stream_id": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "seq": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "first_sample": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+    "nsamps": {"type": "integer", "minimum": 0, "maximum": 4194304},
+    "nchan": {"const": 1},
+    "dtype": {"enum": [1, 2]},
+    "wall_ns": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "reserved": {"const": 0}
+  }
+}

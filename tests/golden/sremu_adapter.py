@@ -4,26 +4,32 @@ noise) and the frozen scenario field names of DESIGN.md section 9.2 / state-libr
 section 9.4. Every place that depends on an API not frozen by the spec is isolated here so
 that integration needs one edit at most.
 
-Assumptions (also listed as contract change requests in the WP4 report):
+Conventions this adapter relies on. A1, A2, A3 and A5 were WP4 assumptions in contract 1.0
+and are normative since the lead decisions v1.2 / contract 1.1 (decision ids in brackets):
 
-* A1 ``PanelConfig.state`` is ordered ``n = iv*n_u + iu`` with ``iu`` along ``pose.u_axis``
-  and ``iv`` along ``normal x u_axis`` (the ``FakePanel`` convention of WP0).
-* A2 Physical tiles (``ris[].tiles``) add an inert ``gap_m`` between adjacent tiles; cells
-  are centred on ``pose.center_m``.
-* A3 A PropagationModel is built by ``sremu.physics.propagation.from_scenario(scenario)``
-  where ``scenario`` is ``sremu.scenario.models.Scenario.model_validate(dict)``; if
-  ``from_scenario`` rejects that object it is retried with the path of a YAML file.
+* A1 [D17] Cell order: ``PanelConfig.state`` (and every golden cell CSV: ``G1_cells.csv``,
+  ``G2_G3_cells.csv``, ``G7_cells.csv``, column ``n``) is ordered ``n = iv*n_u + iu`` with
+  ``iu`` along ``pose.u_axis`` and ``iv`` along ``normal x u_axis``
+  (``sremu.contracts.PanelGeometry.cell_index``).
+* A2 [D17] Physical tiles (``ris[].tiles``) add an extra inert ``gap_m``, so the spacing
+  across a tile boundary is pitch + gap; the cell array is centred on ``pose.center_m``;
+  the quadrature area of a cell is its pitch area (``PanelGeometry.cell_centres_m``).
+* A3 [D18] A PropagationModel is built by the module-level
+  ``sremu.physics.propagation.from_scenario(scenario)`` with
+  ``scenario = sremu.scenario.models.Scenario.model_validate(dict)``; if that fails it is
+  retried with the path of a JSON scenario file (JSON keeps exact quantities quoted).
 * A4 ``antenna.boresight`` is a direction; every boresight used here also passes through the
   aimed point, so a "point" reading gives the same pattern.
-* A5 The render backends expose module-level ``render(job, out)`` (and ``noise``) in
-  ``sremu.channel.render_numpy`` / ``sremu.channel.render_numba``; ``noise`` may instead live
-  in ``sremu.impair.noise``.
+* A5 [D20] The render backends expose module-level ``render(job, out)`` in
+  ``sremu.channel.render_numpy`` / ``sremu.channel.render_numba``; ``noise(rx_key, k0, n,
+  sigma)`` lives in ``sremu.impair.noise`` with ``sigma**2 = E|w|**2``.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import math
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -271,25 +277,18 @@ class LinkCoefficients:
 
 
 def _build_model(scn: dict[str, Any], workdir: Path) -> Any:
-    import yaml
-
     models = importlib.import_module("sremu.scenario.models")
     prop = importlib.import_module("sremu.physics.propagation")
-    factory = getattr(prop, "from_scenario", None)
-    if factory is None:
-        for obj in vars(prop).values():
-            if (
-                isinstance(obj, type)
-                and obj.__module__ == prop.__name__
-                and callable(getattr(obj, "from_scenario", None))
-            ):
-                factory = obj.from_scenario
-                break
-    if factory is None:
-        raise AdapterError("sremu.physics.propagation has no from_scenario (assumption A3)")
+    factory = getattr(prop, "from_scenario", None)  # D18: module level, nothing else
+    if not callable(factory):
+        raise AdapterError(
+            "sremu.physics.propagation has no module-level from_scenario (D18, assumption A3)"
+        )
     scenario_cls = getattr(models, "Scenario", None)
-    path = workdir / f"{scn['name']}.yaml"
-    path.write_text(yaml.safe_dump(scn, sort_keys=False), encoding="utf-8")
+    # JSON, not YAML: an unquoted YAML scalar such as 1e6 may load as a float, and floats are
+    # rejected for exact quantities (section 3.1); JSON keeps every string quoted
+    path = workdir / f"{scn['name']}.json"
+    path.write_text(json.dumps(scn, indent=1), encoding="utf-8")
     errors: list[str] = []
     if scenario_cls is not None:
         try:
@@ -316,7 +315,7 @@ def evaluate_links(
 ) -> dict[str, LinkCoefficients]:
     """Evaluate every link at time ``t``: snapshot -> combine -> sum amp*exp(-j2 pi fc tau).
 
-    ``states``: per panel id, the (N,) state of every physical cell (order of A1). Uses
+    ``states``: per panel id, the (N,) state of every physical cell (D17 order, A1). Uses
     only ``PropagationModel.snapshot/combine`` and ``LinkPaths`` from ``sremu.contracts``.
     """
     with tempfile.TemporaryDirectory(prefix="sremu_golden_") as tmp:

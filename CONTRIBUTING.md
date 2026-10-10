@@ -3,6 +3,19 @@
 `docs/DESIGN.md` is the authoritative specification. Where this file and the spec differ,
 the spec wins.
 
+## 0. Install (offline, editable; DESIGN.md D13)
+
+Use the project interpreter `.venv\Scripts\python.exe` (Python 3.12). With the virtual
+environment active:
+
+```powershell
+uv pip install --offline --no-deps -e .
+```
+
+Without activating it, add `--python .venv\Scripts\python.exe`. New packages are installed
+only through `uv pip install --python .venv\Scripts\python.exe <pkg>` and reported to the
+lead (dependency lists change only through a CCR).
+
 ## 1. Ownership (DESIGN.md 2.2 and 14)
 
 Every file has exactly one owning work package (WP). Edit only the files your WP owns plus
@@ -12,8 +25,9 @@ change request (CCR).
 | Area | Owner |
 |---|---|
 | `pyproject.toml`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE-PENDING.md`, `.gitignore`, `.gitattributes`, `.github/` | WP0 |
-| `src/sremu/{__init__,units,timebase,contracts,errors,cli}.py`, `py.typed`, `testing/` | WP0 |
-| `tools/tasks.py`, `tests/conftest.py`, `tests/_prop.py`, `tests/unit/test_{timebase*,layering,cli,units,contracts,packaging,fake_*}.py` | WP0 |
+| `src/sremu/{__init__,units,timebase,contracts,errors,cli,sysinfo}.py`, `py.typed`, `testing/` | WP0 |
+| `tools/tasks.py`, `tests/conftest.py`, `tests/_prop.py`, `tests/unit/test_{timebase*,layering,cli,units,contracts*,packaging,sysinfo,fake_*}.py`, `docs/contracts_changelog.md` | WP0 |
+| `src/sremu/commands/<name>.py` | the owner of command `<name>` (DESIGN.md 2.5, D12) |
 | `rng.py`, `scenario/`, `record/manifest.py`, `scenarios/{quickstart,lab_like_A}.yaml`, `data/states/` | WP1 |
 | `physics/` (core), `states` CLI | WP2 |
 | `physics/{ground,walls,diffraction,diffuse}.py`, `physics/experimental/` | WP3 |
@@ -29,7 +43,8 @@ change request (CCR).
 
 **CCRs.** `contracts.py`, `cli.py` and the dependency lists in `pyproject.toml` change only
 through a CCR: describe the change and the reason in your WP report; the lead applies it,
-bumps `CONTRACT_VERSION` and records it in the changelog.
+bumps `CONTRACT_VERSION` and records it in `docs/contracts_changelog.md` (current version:
+1.1).
 
 **Git.** Agents never run git (no commit, branch, checkout, stash or reset). The lead
 commits after each stage (DESIGN.md A4).
@@ -37,10 +52,13 @@ commits after each stage (DESIGN.md A4).
 ## 2. Layering (DESIGN.md 2.3; enforced by `tests/unit/test_layering.py`)
 
 ```
-units, timebase, errors, contracts
+units, timebase, errors, contracts, sysinfo
   -> rng, scenario -> physics -> channel, impair -> engine, metrics, legacy
   -> api, record, transport, control, ml, compat -> analysis, experiments -> cli, commands
 ```
+
+`sysinfo` (D12) holds the platform probes (CPU, power plan or governor, GPU, AWS instance,
+numba state) shared by `cli.py` and `record/manifest.py`.
 
 - Import only from your own layer or lower layers (also inside `TYPE_CHECKING` blocks).
 - `sremu.testing` imports only the foundation layer; production code never imports it.
@@ -51,7 +69,9 @@ units, timebase, errors, contracts
 ## 3. Units and the time base (DESIGN.md 3.1, 4.1)
 
 - `sremu.units.C0` is the only speed of light. No other literal for c (299792458, 3e8,
-  2.998e8 in any spelling) may appear in any Python file; a token scan enforces it.
+  2.998e8 in any spelling) may appear in any Python file; a token scan enforces it. The one
+  exception (D4) is `units.C_LEGACY_V1 = 3.0e8`, defined in `units.py` and used only by
+  `physics/legacy.py` to reproduce the v1 emulator.
 - SI internally; dB and dBm only at I/O boundaries (`units.*_to_db`, `w_to_dbm`, ...).
 - Every dimensional field name carries a unit suffix: `_hz _sps _m _s _dbm _db _deg _rad _mps _w`.
 - Rates and every time that maps to a sample are exact `Fraction`s. Scenario values are
@@ -92,7 +112,9 @@ must not import `time`, `datetime` or `perf_counter`. Wall clock is allowed only
   marker of its `tests/<dir>` automatically.
 - Every `tests/<dir>` is a package (`__init__.py`); import helpers as `tests._prop` or
   `tests.oracles...`.
-- `python tools/tasks.py ci` must pass, and stay within 8 minutes, before a WP is done.
+- `python tools/tasks.py ci` (8 xdist workers, D21) must pass, and stay within 8 minutes,
+  before a WP is done. `python tools/tasks.py paper-junit PATH.xml` runs the CI and nightly
+  tiers into a junit file plus a `{sremu_commit, sremu_dirty}` sidecar for the paper.
 - Property tests may use hypothesis directly; `tests/_prop.py` is the seeded fallback.
 - The fakes in `sremu.testing` (`FakePropagation`, `FakeEngine`) let you test against the
   contracts before the real components land.
@@ -105,6 +127,11 @@ a plain function (typer builds the options from its signature) or a `typer.Typer
 subcommands (`states`). Until the module exists the command prints "not yet implemented"
 and exits with code 3. Arguments after the command name, including `--help`, are
 forwarded to your command.
+
+Deterministic mode (the default; `--no-deterministic` turns it off) sets
+`NUMBA_DISABLE_INTEL_SVML=1` and `NUMBA_CACHE_DIR=<default cache>-nosvml` before any command
+module, and so numba, is imported (D-4, D15). A command module must therefore not be
+imported by `cli.py` itself.
 
 ## 8. Package data
 

@@ -24,6 +24,7 @@ This is the single spec the agents implement. It merges `physics_validation.md`,
 - **D4 Legacy v1 constant.** `units.C_LEGACY_V1 = 3.0e8` (documented; used only by `physics/legacy.py`); the literal grep test allows it in `units.py` only. `legacy_v1` teeth: +24.39 ± 0.05 dB vs K1 in the v1 default geometry.
 - **D5 PH-04 near anomalous** is evaluated with Richardson-converged `po_patch`; oracle −88.128 dB (Δ = λ/40) ± 0.10 dB. Single-level values are not asserted.
 - **D6 PH-26** regression value: 8.11 dB point-minus-patch at 45° retro with Δ ≤ λ/5 (3×3 sub-cells), ±0.1 dB; the Δ→0 sinc limit 8.92 dB is documented.
+- **D6b PH-26 at 2 m** (after Stage B gates): the 8.11 dB oracle is checked in the far field (200 m), where it equals the closed-form 3-point sub-aperture factor; the PH-26 row's 2 m geometry is pinned as a regression value 7.68 ± 0.1 dB, whose correctness is established by the per-cell local 3-point prediction test (≤ 0.05 dB).
 - **D7 PH-17 teeth** uses the T9 window (0.2 s at 10 kS/s): −148.3 ± 1 Hz.
 - **D8 PH-16.** Phases are reduced modulo 2π before Γ is formed; the 1e-15|h| tolerance applies.
 - **D9 Energy diagnostic** is not part of `Snapshot.diag`. `ris_kernel.energy_budget()` is an on-demand diagnostic (PH-23, `sremu validate --energy`).

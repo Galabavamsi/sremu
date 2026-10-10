@@ -15,6 +15,16 @@ coefficients returned here INCLUDE the propagation phase (see ``tests/oracles/rf
 
 Antenna patterns are callables ``g(u) -> power gain`` of an (M, 3) array of unit vectors
 pointing from the antenna toward the far point (:func:`isotropic`, :func:`cos_power`).
+
+Panel cell conventions (D17, normative since contract 1.1): cell index ``n = iv*n_u + iu``
+with ``iu`` along ``u_axis`` and ``iv`` along ``normal x u_axis``; physical tiles add an
+extra inert gap, so the spacing across a tile boundary is pitch + gap; the cell array is
+centred on the panel centre; the quadrature area of a cell is its pitch area
+(:func:`make_panel`).
+
+Speed of light: every kernel uses ``units.C0`` except :func:`legacy_v1_h`, which transcribes
+the v1 code and therefore uses v1's own ``c = 3e8`` (``units.C_LEGACY_V1``, D4). That legacy
+constant is used by no other oracle.
 """
 
 from __future__ import annotations
@@ -22,18 +32,22 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.special import exp1
 
-from sremu.units import C0
+from sremu.units import C0, C_LEGACY_V1
 from tests.oracles.rf import wavelength, wavenumber
 
 __all__ = [
     "AntennaPattern",
     "Panel",
+    "RichardsonResult",
+    "V1Scene",
     "cos_power",
+    "dirichlet_factor",
     "disk_kirchhoff_onaxis_h",
     "ellingson_area_gain_h",
     "ellingson_qgamma_h",
@@ -45,17 +59,25 @@ __all__ = [
     "k1_frequency_response",
     "k1_h",
     "k1_terms",
+    "legacy_v1_h",
     "legacy_v2_h",
+    "local_subaperture_factor",
     "los_h",
     "make_panel",
     "make_panel_extent",
+    "ph04_geometry",
+    "plate_k1_integral_h",
     "plate_monostatic_h_abs",
+    "po_patch_h",
     "po_plate_bound_h_abs",
     "rect_solid_angle_onaxis",
+    "richardson_po_patch",
+    "subaperture_factor",
     "subdivide",
     "table_angles_rad",
     "tang_eq8_h_abs",
     "tang_eq12_h",
+    "v1_default_scene",
     "wcl_eq2_amplitude",
     "wcl_eq2_over_k1_power_ratio",
 ]
@@ -201,6 +223,23 @@ def subdivide(panel: Panel, pitch_u: float, pitch_v: float, max_sub_m: float) ->
     )
 
 
+def ph04_geometry(
+    d_m: float, out_deg: float, inc_deg: float = 30.0
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """PH-04 / ``pm_checks.py`` T2 geometry about a panel at the origin with normal +z.
+
+    Tx at ``d_m`` from the centre, ``inc_deg`` from the normal on the -x side; Rx at ``d_m``,
+    ``out_deg`` from the normal (+x side for positive angles). Specular is
+    ``out_deg = inc_deg``; the near-anomalous case is (5 m, -10 deg).
+    """
+    inc = math.radians(inc_deg)
+    o = math.radians(out_deg)
+    return (
+        np.array([-d_m * math.sin(inc), 0.0, d_m * math.cos(inc)]),
+        np.array([d_m * math.sin(o), 0.0, d_m * math.cos(o)]),
+    )
+
+
 # --------------------------------------------------------------------------- K1
 
 
@@ -264,7 +303,7 @@ def k1_terms(
 
 
 def k1_h(
-    tx: ArrayLike, rx: ArrayLike, panel: Panel, fc_hz: float, gamma: ArrayLike = 1.0, **kw
+    tx: ArrayLike, rx: ArrayLike, panel: Panel, fc_hz: float, gamma: ArrayLike = 1.0, **kw: Any
 ) -> complex:
     """K1 RIS-path coefficient (section 5.3), summed in f64 (see :func:`k1_terms`)."""
     return complex(np.sum(k1_terms(tx, rx, panel, fc_hz, gamma, **kw)))
@@ -302,7 +341,7 @@ def k1_frequency_response(
     fc_hz: float,
     f_offset_hz: ArrayLike,
     gamma: ArrayLike = 1.0,
-    **kw,
+    **kw: Any,
 ) -> NDArray[np.complex128]:
     """Exact wideband K1 response ``H(f) = sum_q a_q exp(-j 2 pi (f_c + f) tau_q)``.
 
@@ -442,6 +481,189 @@ def focus_phases(
     return ph * (-1j if huygens_j else 1.0)
 
 
+# --------------------------------------------------------------------------- aperture refinement
+# Section 5.4: ``po_patch`` splits each physical cell into ceil(p/Delta) sub-cells per axis (a
+# midpoint rule for the uniform-patch PO integral); PH-04 (D5) and PH-26 (D6) are checked
+# against the functions below. :func:`plate_k1_integral_h` is the Delta -> 0 limit computed
+# without any cell machinery (tensor Gauss-Legendre), so it is independent of
+# :func:`make_panel` / :func:`subdivide`.
+
+
+def po_patch_h(
+    tx: ArrayLike,
+    rx: ArrayLike,
+    panel: Panel,
+    fc_hz: float,
+    pitch_u: float,
+    pitch_v: float,
+    max_sub_m: float,
+    gamma: ArrayLike = 1.0,
+    **kw: Any,
+) -> complex:
+    """K1 with ``cell_model="po_patch"``: sub-cells of side <= ``max_sub_m`` (section 5.4)."""
+    return k1_h(tx, rx, subdivide(panel, pitch_u, pitch_v, max_sub_m), fc_hz, gamma, **kw)
+
+
+@dataclass(frozen=True)
+class RichardsonResult:
+    """Outcome of the section 5.4 Richardson rule.
+
+    ``h`` at the accepted sub-cell size ``delta_m``, ``h_half`` at ``delta_m/2``,
+    ``est_db = |P(delta) - P(delta/2)|`` (the manifest's ``richardson_db``) and the number of
+    halvings applied to the starting size.
+    """
+
+    h: complex
+    h_half: complex
+    delta_m: float
+    est_db: float
+    halvings: int
+
+
+def richardson_po_patch(
+    tx: ArrayLike,
+    rx: ArrayLike,
+    panel: Panel,
+    fc_hz: float,
+    pitch_u: float,
+    pitch_v: float,
+    gamma: ArrayLike = 1.0,
+    *,
+    max_sub_wavelengths: float = 0.2,
+    tol_db: float = 0.05,
+    max_halvings: int = 2,
+    **kw: Any,
+) -> RichardsonResult:
+    """Section 5.4 Richardson check for ``po_patch`` on one link.
+
+    Start at ``Delta = max_sub_wavelengths * lambda`` (lambda/5); compare the power at Delta
+    and Delta/2; while ``|dP| > tol_db`` halve Delta, at most ``max_halvings`` times. Raises
+    ``RuntimeError`` (``RefinementNotConverged`` in sremu) when the last pair still differs
+    by more than ``tol_db``.
+    """
+    delta = max_sub_wavelengths * wavelength(fc_hz)
+    h = po_patch_h(tx, rx, panel, fc_hz, pitch_u, pitch_v, delta, gamma, **kw)
+    for halvings in range(max_halvings + 1):
+        h_half = po_patch_h(tx, rx, panel, fc_hz, pitch_u, pitch_v, delta / 2, gamma, **kw)
+        est = abs(20.0 * math.log10(abs(h_half) / abs(h)))
+        if est <= tol_db:
+            return RichardsonResult(h, h_half, delta, est, halvings)
+        delta, h = delta / 2, h_half
+    raise RuntimeError(
+        f"po_patch not converged after {max_halvings} halvings: |dP| = {est:.4f} dB > {tol_db}"
+    )
+
+
+def plate_k1_integral_h(
+    tx: ArrayLike,
+    rx: ArrayLike,
+    center: ArrayLike,
+    normal: ArrayLike,
+    u_axis: ArrayLike,
+    L_u: float,
+    L_v: float,
+    fc_hz: float,
+    gamma: complex = 1.0,
+    n_nodes: int = 64,
+    *,
+    obliquity: str = "geo",
+) -> complex:
+    """Continuous-aperture K1 of a uniformly reflecting ``L_u x L_v`` plate (isotropic antennas).
+
+    ``h = j Gamma / (4 pi) * integral o(theta_i, theta_s) exp(-jk(r_i + r_s)) / (r_i r_s) dA``
+    over the plate, by an ``n_nodes x n_nodes`` tensor Gauss-Legendre rule. This is the
+    Delta -> 0 limit of ``po_patch`` (section 5.4) and of the point model under refinement;
+    the integrand is smooth, so the rule converges spectrally (check by raising
+    ``n_nodes``). Back-side points contribute 0 (the plate must not straddle the visibility
+    boundary for spectral convergence).
+    """
+    n, u, v = _frame(normal, u_axis)
+    x, w = np.polynomial.legendre.leggauss(n_nodes)
+    su, sv = 0.5 * L_u * x, 0.5 * L_v * x
+    gu, gv = np.meshgrid(su, sv)
+    wts = np.outer(0.5 * L_v * w, 0.5 * L_u * w).ravel()  # rows v, columns u
+    c = np.asarray(center, dtype=float)
+    pts = c[None, :] + gu.ravel()[:, None] * u[None, :] + gv.ravel()[:, None] * v[None, :]
+    vi = np.asarray(tx, dtype=float)[None, :] - pts
+    vs = np.asarray(rx, dtype=float)[None, :] - pts
+    r_i = np.sqrt(np.einsum("ij,ij->i", vi, vi))
+    r_s = np.sqrt(np.einsum("ij,ij->i", vs, vs))
+    cos_i = (vi @ n) / r_i
+    cos_s = (vs @ n) / r_s
+    vis = (cos_i > 0.0) & (cos_s > 0.0)
+    ci = np.where(vis, cos_i, 0.0)
+    cs = np.where(vis, cos_s, 0.0)
+    if obliquity == "geo":
+        o = np.sqrt(ci * cs)
+    elif obliquity == "kirchhoff":
+        o = 0.5 * (ci + cs)
+    else:
+        raise ValueError(obliquity)
+    k = wavenumber(fc_hz)
+    f = o / (4.0 * math.pi * r_i * r_s) * np.exp(-1j * k * (r_i + r_s))
+    return complex(1j * complex(gamma) * np.sum(wts * f))
+
+
+def dirichlet_factor(m: int, psi: ArrayLike) -> NDArray[np.float64]:
+    """Normalized array factor of ``m`` equal points with phase step ``psi`` (rad).
+
+    ``sin(m psi/2) / (m sin(psi/2))`` (points centred on the origin, so it is real and signed),
+    with its limit ``cos(m psi/2)/cos(psi/2)`` where ``sin(psi/2) = 0`` (1 at ``psi = 0``).
+    """
+    p = np.asarray(psi, dtype=float)
+    s = np.sin(p / 2.0)
+    small = np.abs(s) < 1e-15
+    safe = np.where(small, 1.0, s)
+    out = np.sin(m * p / 2.0) / (m * safe)
+    return np.where(small, np.cos(m * p / 2.0) / np.cos(p / 2.0), out)
+
+
+def subaperture_factor(
+    pitch_over_lambda: ArrayLike, sin_sum: ArrayLike, m: int | None = None
+) -> NDArray[np.float64]:
+    """Far-field factor of a uniform cell relative to its centre point, along one axis.
+
+    With ``x = (p/lambda)(sin theta_i + sin theta_s)`` (directions from the cell toward Tx and
+    Rx, signed along the axis): the continuous patch gives ``sinc(x)`` (``m`` None, the
+    Delta -> 0 limit) and ``m`` equal sub-cells give :func:`dirichlet_factor` with
+    ``psi = 2 pi x / m``. The point-minus-patch difference is ``-20 log10 |factor|``
+    (section 5.4: -0.98 / -3.92 / -8.92 / -16.47 dB at 15 / 30 / 45 / 60 deg retro for
+    lambda/2 cells; D6: 3 x 3 sub-cells at 45 deg retro give -8.11 dB).
+    """
+    x = np.asarray(pitch_over_lambda, dtype=float) * np.asarray(sin_sum, dtype=float)
+    if m is None:
+        return np.sinc(x)
+    return dirichlet_factor(m, 2.0 * math.pi * x / m)
+
+
+def local_subaperture_factor(
+    tx: ArrayLike,
+    rx: ArrayLike,
+    panel: Panel,
+    fc_hz: float,
+    pitch_u: float,
+    pitch_v: float,
+    m_u: int | None,
+    m_v: int | None,
+) -> NDArray[np.float64]:
+    """Per-cell product of the u and v :func:`subaperture_factor` at each cell's own angles.
+
+    ``sin_sum`` along u is ``(r_i^ + r_s^) . u`` with ``r_i^``/``r_s^`` the unit vectors from
+    the cell toward Tx/Rx (likewise for v). A near-field panel whose cells see different
+    angles is described, to first order, by ``sum_n a_n F_n`` with ``a_n`` the point-model
+    terms and ``F_n`` these factors.
+    """
+    t = np.asarray(tx, dtype=float)
+    r = np.asarray(rx, dtype=float)
+    vi = t[None, :] - panel.cells
+    vs = r[None, :] - panel.cells
+    w = vi / np.linalg.norm(vi, axis=1)[:, None] + vs / np.linalg.norm(vs, axis=1)[:, None]
+    lam = wavelength(fc_hz)
+    return subaperture_factor(pitch_u / lam, w @ panel.u, m_u) * subaperture_factor(
+        pitch_v / lam, w @ panel.v, m_v
+    )
+
+
 # --------------------------------------------------------------------------- closed forms
 
 
@@ -518,6 +740,78 @@ def disk_kirchhoff_onaxis_h(d_m: float, R_m: float, fc_hz: float) -> complex:
 
 
 # --------------------------------------------------------------------------- legacy (teeth)
+
+
+def legacy_v1_h(
+    tx: ArrayLike,
+    rx: ArrayLike,
+    panel: Panel,
+    fc_hz: float,
+    panel_area_m2: float,
+    gamma: ArrayLike = 1.0,
+    q: float = 0.285,
+    c_m_per_s: float = C_LEGACY_V1,
+) -> complex:
+    """v1 ``total_nlos_gain`` (section 5.14 ``legacy_v1``; D4 teeth), transcribed from v1.
+
+    Per cell, with ``P_T = G_T = G_R = epsilon = 1`` and the WHOLE panel area ``A`` in every
+    cell::
+
+        p = (q A c)^2 / (4 pi f_c)^2 * pi * |cos theta_i|^(2q) |cos theta_s|^(2q) / (r_i r_s)^2
+        h = sum_n Gamma_n sqrt(p) exp(-j 2 pi f_c (r_i + r_s) / c)
+
+    ``abs(cos)`` admits back-side cells; there is no Huygens j. ``c`` is v1's own constant
+    ``c = 3e8`` m/s (``units.C_LEGACY_V1``, documented legacy value, D4), in both the
+    amplitude and the phase: with ``units.C0`` instead, the v1-minus-K1 difference in the v1
+    default geometry moves by about +0.09 dB, outside the D4 tolerance of 0.05 dB.
+    Source: ``pm_lib.v1_total_nlos_gain`` (literal transcription of v1
+    ``channel_functions.py::total_nlos_gain``).
+    """
+    g = _geometry(tx, rx, panel)
+    gam = np.asarray(gamma, dtype=complex)
+    gam_q = gam[panel.parent] if gam.ndim else np.full(panel.n, complex(gam))
+    scale = (q * panel_area_m2 * c_m_per_s) ** 2 / (4.0 * math.pi * fc_hz) ** 2
+    p = scale * math.pi * np.abs(g.cos_i) ** (2 * q) * np.abs(g.cos_s) ** (2 * q)
+    p = p / (g.r_i**2 * g.r_s**2)
+    phase = np.exp(-2j * math.pi * fc_hz * (g.r_i + g.r_s) / c_m_per_s)
+    return complex(np.sum(gam_q * np.sqrt(p) * phase))
+
+
+@dataclass(frozen=True)
+class V1Scene:
+    """v1's default configuration (``pm_checks.py`` T16): what the D4 teeth are measured on."""
+
+    tx: NDArray[np.float64]
+    rx: NDArray[np.float64]
+    panel: Panel
+    fc_hz: float
+    gamma: complex
+    panel_area_m2: float
+
+
+def v1_default_scene() -> V1Scene:
+    """The v1 default geometry: 16 x 16 cells (50 mm elements, 10 mm gaps: 60 mm pitch) in the
+    plane x = 0 with normal +x, first cell centre at (0, 5.035, 5.035) m, Tx (5, 2, 5) m,
+    Rx (15, 8, 5) m, f_c = 2399996950 Hz, every Gamma = exp(j pi/4).
+
+    Cell order is D17 (``iu`` along +y, ``iv`` along +z), which is also v1's loop order.
+    ``panel_area_m2`` is the whole-panel area (16 x 60 mm)^2 that v1 puts in every cell.
+    K1 here uses ``cell_model="point"`` (pitch/lambda = 0.48 <= 1/2).
+    """
+    pitch = 0.06
+    first = 5.0 + 0.05 / 2 + 0.01
+    centre = first + 7.5 * pitch
+    panel = make_panel(
+        [0.0, centre, centre], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 16, 16, pitch, pitch
+    )
+    return V1Scene(
+        tx=np.array([5.0, 2.0, 5.0]),
+        rx=np.array([15.0, 8.0, 5.0]),
+        panel=panel,
+        fc_hz=2399996950.0,
+        gamma=complex(np.exp(1j * math.pi / 4)),
+        panel_area_m2=(16 * pitch) ** 2,
+    )
 
 
 def legacy_v2_h(

@@ -9,15 +9,25 @@ DESIGN.md sections 4.3 (D-1), 4.4 and 4.5. Normative definitions implemented her
   ``c(n) = frac(f_c*tau_a) + w(n)*f_c*(tau_b - tau_a)``. ``frac(f_c*tau_a)`` is computed with an
   error-free (Dekker) product, so large absolute phases never lose precision.
   A degenerate interval (``t_b <= t_a``: static scene, event-only snapshots) has ``w = 0``.
-* **Error budget** ``eps_rel = 1e-3`` (|dh|/|h|, -60 dB), shared by the T_u rule, the tile rule,
-  PH-18 and ``verify_interp``: curvature ``k*rdd*T_u**2/8 <= eps`` with ``rdd <= v_perp**2/r_min``
-  gives ``T_curv = sqrt(8*eps*r_min/(k*v_perp**2))``; the residual midpoint dip
-  ``dphi**2/8 <= eps`` with ``dphi = 2*pi*v_rel*D_t*T_u/(lambda*R_min)`` gives
-  ``D_t <= sqrt(8*eps)*lambda*R_min/(2*pi*v_rel*T_u)``.
+* **Error budget** ``eps_rel = 1e-3`` (|dh|/|h|, -60 dB) is the TOTAL interpolation error
+  target of PH-18 and ``verify_interp``. Lead decision D1 splits it in half between the two
+  rules, ``eps_chord = eps_tile = eps_rel/2``, so the two error sources together stay within
+  ``eps_rel``:
+
+  - curvature (chord) ``k*rdd*T_u**2/8 <= eps_chord`` with ``rdd <= v_perp**2/r_min`` gives
+    ``T_curv = sqrt(8*(eps_rel/2)*r_min/(k*v_perp**2))``;
+  - tile residual midpoint dip ``dphi**2/8 <= eps_tile`` gives
+    ``dphi_res <= sqrt(8*eps_rel/2) = 0.0632`` rad, and with
+    ``dphi = 2*pi*v_rel*D_t*T_u/(lambda*R_min)`` the tile side
+    ``D_t <= sqrt(8*eps_rel/2)*lambda*R_min/(2*pi*v_rel*T_u)``.
 * **Policy** (:func:`choose_policy`): ``T_u0 = min(T_curv, 10 ms, scenario value)``; for
   m = 0..4, ``T_u = T_u0/2**m``, tile counts from D_t, cost
-  ``c_geo*Q*R/T_u + c_rot*tiles*R*f_s`` (defaults 5 ns, 3 ns); pick the minimum cost. Static
-  scenes get one tile per panel and event-only snapshots.
+  ``c_geo*Q*R/T_u + c_rot*tiles*R*f_s`` (defaults 5 ns, 3 ns); pick the minimum cost among the
+  candidates whose tile residual meets ``eps_tile``. Static scenes get one tile per panel and
+  event-only snapshots. Panels enter as :class:`PanelPolicyInput`: the contract
+  :class:`~sremu.contracts.PanelGeometry` (D11/D17; extents include physical-tile gaps) plus
+  the panel's carrier and RIS row count (:func:`panel_policy_inputs` derives them from a
+  ``PropagationModel`` snapshot; :func:`choose_policy_for_model` does the whole step).
 * **Narrowband test** per link: ``pi*B*dtau <= 0.05`` with dtau the spread over all paths and
   tiles at both interval ends. Narrowband links share one envelope delay (group 0);
   otherwise paths are clustered so that within a cluster ``pi*B*delta <= 0.05``.
@@ -27,8 +37,8 @@ DESIGN.md sections 4.3 (D-1), 4.4 and 4.5. Normative definitions implemented her
 
 [ENG] choices: T_u is quantized down to a multiple of 1 us (exact ``Fraction``; a bound below
 1 us is quantized on a finer grid, never rounded up); candidates
-whose tile count is capped by the cell count and whose residual bound then exceeds ``eps``
-are infeasible.
+whose tile count is capped by the cell count and whose residual bound then exceeds
+``eps_tile = eps_rel/2`` are infeasible.
 """
 
 from __future__ import annotations
@@ -49,6 +59,7 @@ from sremu.contracts import (
     LinkPaths,
     MotionBounds,
     PanelConfig,
+    PanelGeometry,
     PanelId,
     PropagationModel,
     Snapshot,
@@ -64,7 +75,9 @@ from .fd import DEFAULT_FD_TARGET_DB, choose_fd
 __all__ = [
     "C_GEO_S",
     "C_ROT_S",
+    "EPS_CHORD",
     "EPS_REL",
+    "EPS_TILE",
     "M_MAX",
     "NB_EPS_RAD",
     "T_U_MAX_S",
@@ -74,10 +87,12 @@ __all__ = [
     "IntervalGrid",
     "LinkPlan",
     "PanelGeometry",
+    "PanelPolicyInput",
     "PolicyCandidate",
     "SnapshotPolicy",
     "TilePlan",
     "choose_policy",
+    "choose_policy_for_model",
     "delay_spread_s",
     "double_double",
     "frac_cycles_of_index",
@@ -86,6 +101,7 @@ __all__ = [
     "interval_grid",
     "is_narrowband",
     "make_link_job",
+    "panel_policy_inputs",
     "plan_groups",
     "plan_link",
     "residual_bound_rel",
@@ -99,7 +115,13 @@ __all__ = [
 ]
 
 EPS_REL: Final[float] = 1e-3
-"""Shared interpolation error target |dh|/|h| (-60 dB)."""
+"""Total interpolation error target |dh|/|h| (-60 dB): PH-18 and ``verify_interp``."""
+
+EPS_CHORD: Final[float] = EPS_REL / 2.0
+"""Share of ``EPS_REL`` given to the chord (curvature) rule, ``eps_rel/2`` (D1)."""
+
+EPS_TILE: Final[float] = EPS_REL / 2.0
+"""Share of ``EPS_REL`` given to the tile-residual rule, ``eps_rel/2`` (D1)."""
 
 T_U_MAX_S: Final[Fraction] = Fraction(1, 100)
 """Largest snapshot period, 10 ms."""
@@ -237,8 +259,11 @@ def weights(grid: IntervalGrid, n: NDArray[np.int64]) -> NDArray[np.float64]:
 # --------------------------------------------------------------------------- error budget
 
 
-def t_curv_s(r_min_m: float, v_perp_mps: float, fc_hz: float, eps: float = EPS_REL) -> float:
-    """Curvature bound ``T_curv = sqrt(8*eps*r_min/(k*v_perp**2))`` in s (inf if static)."""
+def t_curv_s(r_min_m: float, v_perp_mps: float, fc_hz: float, eps: float = EPS_CHORD) -> float:
+    """Curvature bound ``T_curv = sqrt(8*eps*r_min/(k*v_perp**2))`` in s (inf if static).
+
+    ``eps`` is the chord share of the budget, by default ``eps_rel/2`` (D1).
+    """
     if v_perp_mps <= 0.0:
         return math.inf
     if not r_min_m > 0.0:
@@ -248,9 +273,12 @@ def t_curv_s(r_min_m: float, v_perp_mps: float, fc_hz: float, eps: float = EPS_R
 
 
 def tile_side_max_m(
-    r_min_m: float, v_rel_mps: float, fc_hz: float, t_u_s: float, eps: float = EPS_REL
+    r_min_m: float, v_rel_mps: float, fc_hz: float, t_u_s: float, eps: float = EPS_TILE
 ) -> float:
-    """Largest tile side ``D_t = sqrt(8*eps)*lambda*R_min/(2*pi*v_rel*T_u)`` in m."""
+    """Largest tile side ``D_t = sqrt(8*eps)*lambda*R_min/(2*pi*v_rel*T_u)`` in m.
+
+    ``eps`` is the tile-residual share of the budget, by default ``eps_rel/2`` (D1).
+    """
     if v_rel_mps <= 0.0 or t_u_s <= 0.0:
         return math.inf
     lam = C0 / fc_hz
@@ -267,27 +295,79 @@ def residual_bound_rel(
 
 
 @dataclass(frozen=True)
-class PanelGeometry:
-    """What the policy needs to know about one RIS panel.
+class PanelPolicyInput:
+    """What the T_u/tile policy needs about one RIS panel (D11).
 
-    ``size_u_m``/``size_v_m``: panel extent, m. ``n_u``/``n_v``: physical cells per axis.
-    ``fc_hz``: highest carrier of any linked TX stream, Hz. ``n_rows``: RIS rows R.
-    ``n_quad``: quadrature points Q (defaults to ``n_u*n_v``).
+    ``geometry``: the contract :class:`~sremu.contracts.PanelGeometry` of the panel (D17;
+    ``PropagationModel.panel_geometry``). The policy uses its outer extents
+    (``extent_u_m``/``extent_v_m``, physical-tile gaps included, so the tile side bound is
+    conservative), its cell counts and its quadrature points Q (``n_quad``).
+    ``fc_hz``: the panel's carrier, Hz: the largest ``link_fc_hz`` of the panel's links.
+    ``n_rows``: RIS rows R (``RISCoefficients.n_rows``).
     """
 
-    panel: PanelId
-    size_u_m: float
-    size_v_m: float
-    n_u: int
-    n_v: int
+    geometry: PanelGeometry
     fc_hz: float
     n_rows: int
-    n_quad: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.geometry, PanelGeometry):
+            raise ConfigurationError(
+                "PanelPolicyInput.geometry must be a sremu.contracts.PanelGeometry"
+            )
+        fc = float(self.fc_hz)
+        if not (math.isfinite(fc) and fc > 0.0):
+            raise ConfigurationError(f"PanelPolicyInput.fc_hz must be > 0, got {self.fc_hz!r}")
+        rows = self.n_rows
+        if isinstance(rows, bool) or int(rows) != rows or int(rows) < 1:
+            raise ConfigurationError(f"PanelPolicyInput.n_rows must be an int >= 1, got {rows!r}")
+        object.__setattr__(self, "fc_hz", fc)
+        object.__setattr__(self, "n_rows", int(rows))
+
+    @property
+    def panel(self) -> PanelId:
+        """Panel id."""
+        return self.geometry.panel
+
+    @property
+    def size_u_m(self) -> float:
+        """Outer extent along ``u_axis`` (gaps included), m."""
+        return self.geometry.extent_u_m
+
+    @property
+    def size_v_m(self) -> float:
+        """Outer extent along ``v_axis`` (gaps included), m."""
+        return self.geometry.extent_v_m
+
+    @property
+    def n_u(self) -> int:
+        """Physical cells along ``u_axis``."""
+        return self.geometry.n_u
+
+    @property
+    def n_v(self) -> int:
+        """Physical cells along ``v_axis``."""
+        return self.geometry.n_v
 
     @property
     def q(self) -> int:
-        """Quadrature points Q."""
-        return int(self.n_quad) if self.n_quad is not None else self.n_u * self.n_v
+        """Quadrature points Q per row and snapshot."""
+        return self.geometry.n_quad
+
+
+def panel_policy_inputs(model: PropagationModel, snap: Snapshot) -> tuple[PanelPolicyInput, ...]:
+    """Policy inputs of every panel in ``snap`` (panels without RIS rows are skipped).
+
+    Geometry from ``model.panel_geometry``; carrier = the largest ``model.link_fc_hz`` over the
+    links of the panel's rows; R = ``RISCoefficients.n_rows``.
+    """
+    out = []
+    for pid, rc in snap.ris.items():
+        if rc.n_rows == 0:
+            continue
+        fc = max(model.link_fc_hz(lk) for lk, _variant in rc.rows)
+        out.append(PanelPolicyInput(model.panel_geometry(pid), fc, rc.n_rows))
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -322,8 +402,11 @@ class SnapshotPolicy:
     """Chosen snapshot period and tiles (logged in the manifest, section 3.6).
 
     ``t_u_s``: snapshot period, s (exact), or None for a static scene (event-only snapshots).
-    ``curvature_bound_rel``/``residual_bound_rel``: bounds achieved by the choice.
-    ``feasible`` is False when no candidate met the budget (the smallest T_u is used).
+    ``t_curv_s``: the curvature bound for the chord share ``eps_rel/2``, s.
+    ``curvature_bound_rel``/``residual_bound_rel``: bounds achieved by the choice (each at
+    most ``eps_rel/2`` when ``feasible``); :attr:`total_bound_rel` is their sum (at most
+    ``eps_rel``, D1). ``feasible`` is False when no candidate met the tile budget (the
+    smallest T_u is used). ``eps_rel``: the total budget the policy was run with.
     """
 
     t_u_s: Fraction | None
@@ -335,6 +418,12 @@ class SnapshotPolicy:
     residual_bound_rel: float
     feasible: bool = True
     candidates: tuple[PolicyCandidate, ...] = field(default=())
+    eps_rel: float = EPS_REL
+
+    @property
+    def total_bound_rel(self) -> float:
+        """Chord plus tile-residual bound (D1: at most ``eps_rel`` when feasible)."""
+        return self.curvature_bound_rel + self.residual_bound_rel
 
     def to_manifest(self) -> dict[str, object]:
         """JSON-ready summary (exact times as ``p/q`` strings)."""
@@ -346,8 +435,12 @@ class SnapshotPolicy:
             "tiles": {p: [tp.tiles_u, tp.tiles_v] for p, tp in self.tiles.items()},
             "cost": self.cost,
             "t_curv_s": self.t_curv_s,
+            "eps_rel": self.eps_rel,
+            "eps_chord": self.eps_rel / 2.0,
+            "eps_tile": self.eps_rel / 2.0,
             "curvature_bound_rel": self.curvature_bound_rel,
             "residual_bound_rel": self.residual_bound_rel,
+            "total_bound_rel": self.total_bound_rel,
             "feasible": self.feasible,
         }
 
@@ -374,7 +467,7 @@ def _quantize_down(t_s: float, quantum: Fraction) -> Fraction:
 
 def choose_policy(
     bounds: MotionBounds,
-    panels: Sequence[PanelGeometry],
+    panels: Sequence[PanelPolicyInput],
     link_fc_hz: Mapping[LinkId, float],
     f_s: Fraction | int | float,
     *,
@@ -385,27 +478,38 @@ def choose_policy(
     c_rot_s: float = C_ROT_S,
     m_max: int = M_MAX,
 ) -> SnapshotPolicy:
-    """Choose ``T_u`` and the tile grids (section 4.4 policy).
+    """Choose ``T_u`` and the tile grids (section 4.4 policy with the D1 budget split).
 
-    ``bounds``: the model's motion bounds. ``panels``: geometry of every panel.
-    ``link_fc_hz``: carrier of each link (for the non-RIS curvature bound). ``f_s``: the RX
-    rate used in the cost. ``t_u_scenario_s``: a scenario value, which may only lower T_u.
+    ``bounds``: the model's motion bounds. ``panels``: one :class:`PanelPolicyInput` per
+    panel. ``link_fc_hz``: carrier of each link (for the non-RIS curvature bound). ``f_s``:
+    the RX rate used in the cost. ``t_u_scenario_s``: a scenario value, which may only lower
+    T_u. ``eps``: the TOTAL budget ``eps_rel``; the chord and tile rules each get ``eps/2``.
     """
     fs = float(f_s)
+    for p in panels:
+        if not isinstance(p, PanelPolicyInput):
+            raise ConfigurationError(
+                "choose_policy: panels must be PanelPolicyInput (contracts.PanelGeometry plus "
+                f"carrier and row count), got {type(p).__name__}"
+            )
+    if not (math.isfinite(eps) and eps > 0.0):
+        raise ConfigurationError(f"eps_rel must be > 0, got {eps!r}")
+    eps_chord = eps / 2.0  # D1
+    eps_tile = eps / 2.0  # D1
     if bounds.static:
         tiles = {p.panel: TilePlan(p.panel, 1, 1, math.inf, 0.0) for p in panels}
-        return SnapshotPolicy(None, 0, tiles, 0.0, math.inf, 0.0, 0.0, True, ())
+        return SnapshotPolicy(None, 0, tiles, 0.0, math.inf, 0.0, 0.0, True, (), eps)
     tc = math.inf
     for lk, fc in link_fc_hz.items():
         v = bounds.v_perp_max_mps.get(lk, bounds.v_rel_max_mps.get(lk, 0.0))
         r = bounds.r_min_m.get(lk, math.inf)
         if v > 0.0 and math.isfinite(r):
-            tc = min(tc, t_curv_s(r, v, fc, eps))
+            tc = min(tc, t_curv_s(r, v, fc, eps_chord))
     for p in panels:
         v = bounds.panel_v_rel_max_mps.get(p.panel, 0.0)
         r = bounds.panel_r_min_m.get(p.panel, math.inf)
         if v > 0.0 and math.isfinite(r):
-            tc = min(tc, t_curv_s(r, v, p.fc_hz, eps))
+            tc = min(tc, t_curv_s(r, v, p.fc_hz, eps_chord))
     t0 = t_u_max_s
     if math.isfinite(tc):
         t0 = min(t0, _quantize_down(tc, T_U_QUANTUM_S))
@@ -424,7 +528,7 @@ def choose_policy(
         for p in panels:
             v = bounds.panel_v_rel_max_mps.get(p.panel, 0.0)
             r = bounds.panel_r_min_m.get(p.panel, math.inf)
-            dt = tile_side_max_m(r, v, p.fc_hz, tus, eps) if math.isfinite(r) else math.inf
+            dt = tile_side_max_m(r, v, p.fc_hz, tus, eps_tile) if math.isfinite(r) else math.inf
             if math.isinf(dt):
                 nu = nv = 1
                 rb = 0.0
@@ -433,7 +537,7 @@ def choose_policy(
                 nv = min(max(1, math.ceil(p.size_v_m / dt)), p.n_v)
                 side = max(p.size_u_m / nu, p.size_v_m / nv)
                 rb = residual_bound_rel(side, r, v, p.fc_hz, tus) if v > 0.0 else 0.0
-                if rb > eps * (1.0 + 1e-12):
+                if rb > eps_tile * (1.0 + 1e-12):
                     feasible = False
             plans[p.panel] = TilePlan(p.panel, nu, nv, dt, rb)
             cost += c_geo_s * p.q * p.n_rows / tus + c_rot_s * nu * nv * p.n_rows * fs
@@ -457,7 +561,51 @@ def choose_policy(
             curv = max(curv, (2 * math.pi * p.fc_hz / C0) * v * v / r * tus * tus / 8.0)
     resid = max((tp.residual_bound_rel for tp in best.tiles.values()), default=0.0)
     return SnapshotPolicy(
-        best.t_u_s, best.m, best.tiles, best.cost, tc, curv, resid, best.feasible, tuple(cands)
+        best.t_u_s,
+        best.m,
+        best.tiles,
+        best.cost,
+        tc,
+        curv,
+        resid,
+        best.feasible,
+        tuple(cands),
+        eps,
+    )
+
+
+def choose_policy_for_model(
+    model: PropagationModel,
+    f_s: Fraction | int | float,
+    *,
+    t_s: Fraction | int = 0,
+    eps: float = EPS_REL,
+    t_u_max_s: Fraction = T_U_MAX_S,
+    t_u_scenario_s: Fraction | None = None,
+    c_geo_s: float = C_GEO_S,
+    c_rot_s: float = C_ROT_S,
+    m_max: int = M_MAX,
+) -> SnapshotPolicy:
+    """:func:`choose_policy` for a ``PropagationModel``: its motion bounds, the panel inputs
+    of its snapshot at ``t_s`` (:func:`panel_policy_inputs`) and every link's carrier.
+
+    The keyword arguments are those of :func:`choose_policy`. Apply the result with
+    ``model.with_render_tiles({p: (tp.tiles_u, tp.tiles_v) for p, tp in pol.tiles.items()})``.
+    """
+    t = parse_exact(t_s, name="t_s")
+    panels = panel_policy_inputs(model, model.snapshot(t))
+    fcs = {lk: model.link_fc_hz(lk) for lk in model.links()}
+    return choose_policy(
+        model.motion_bounds(),
+        panels,
+        fcs,
+        f_s,
+        eps=eps,
+        t_u_max_s=t_u_max_s,
+        t_u_scenario_s=t_u_scenario_s,
+        c_geo_s=c_geo_s,
+        c_rot_s=c_rot_s,
+        m_max=m_max,
     )
 
 
@@ -518,7 +666,11 @@ def group_envelope_delays(
     tau: NDArray[np.float64], group: NDArray[np.int16]
 ) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
     """Group labels (sorted) and each group's envelope delay ``(min + max)/2`` in s."""
-    labels = np.unique(np.asarray(group, dtype=np.int64))
+    grp = np.asarray(group, dtype=np.int64)
+    if grp.size and int(grp.min()) == int(grp.max()):  # one group (every narrowband link)
+        env = 0.5 * (float(np.min(tau)) + float(np.max(tau)))
+        return np.array([int(grp[0])], dtype=np.int64), np.array([env], dtype=np.float64)
+    labels = np.unique(grp)
     out = np.empty(labels.shape[0], dtype=np.float64)
     for i, g in enumerate(labels):
         sel = tau[group == g]

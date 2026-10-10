@@ -30,11 +30,15 @@ The audits of v1 and v2 and the design decisions that replace their behaviour ar
 
 ## Install (offline, editable)
 
+With the project virtual environment active (`.venv\Scripts\activate`):
+
 ```powershell
-uv pip install --python .venv\Scripts\python.exe -e . --no-deps
-# or: pip install -e . --no-build-isolation --no-deps
+uv pip install --offline --no-deps -e .
 sremu info
 ```
+
+Without activating it, add `--python .venv\Scripts\python.exe` to the `uv` command. The
+pip equivalent is `pip install -e . --no-build-isolation --no-deps`.
 
 Python >= 3.12. Core dependencies: numpy, scipy, numba, pydantic, pyyaml, pyzmq, typer,
 matplotlib. Extras: `dev`, `ml`, `sigmf`, `parquet`, `gpu`.
@@ -42,10 +46,14 @@ matplotlib. Extras: `dev`, `ml`, `sigmf`, `parquet`, `gpu`.
 ## Tasks
 
 ```powershell
-python tools/tasks.py ci        # unit, physics, runtime, io and golden tests (<= 8 min)
+python tools/tasks.py ci        # unit, physics, runtime, io and golden tests (<= 8 min, -n 8)
 python tools/tasks.py nightly   # statistical and integration tests
 python tools/tasks.py lint      # ruff and mypy
+python tools/tasks.py paper-junit ..\paper\data\sremu-junit.xml   # CI + nightly junit for the paper
 ```
+
+`paper-junit` also writes `<stem>.meta.json` with `{sremu_commit, sremu_dirty}` next to the
+junit file, so the paper pipeline can check which commit the results came from.
 
 ## Documentation
 

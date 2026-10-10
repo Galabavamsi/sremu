@@ -1,26 +1,32 @@
 """WP5: geometric Doppler, tiles/interpolation, invariance and the T_u/tile policy.
 
 PH-17 (T9 geometry of ``pm_checks.py``), PH-18 (auto T_u and tiles vs brute force per
-element per sample, plus ``verify_interp``), PH-19 (T_u and chunk invariance) on
-``FakePropagation``. Oracles: closed-form path lengths of constant-velocity nodes, the
-per-element K1-like sum of ``FakePanel`` (``_render_support.ris_brute``) and the section 4.4
-error-budget formulas.
+element per sample, plus ``verify_interp``; D23: every PH-18 test runs on both backends),
+PH-19 (T_u and chunk invariance) on ``FakePropagation``, and the section 4.4 policy with the
+D1 budget split (``eps_chord = eps_tile = eps_rel/2``) and the D11 panel inputs. Oracles:
+closed-form path lengths of constant-velocity nodes, the per-element K1-like sum of
+``FakePanel`` (``_render_support.ris_brute``) and the section 4.4 / D1 error-budget formulas.
 """
 
 from __future__ import annotations
 
 import math
 from fractions import Fraction
+from types import SimpleNamespace
 
 import numba
 import numpy as np
 import pytest
 
 from sremu.channel.interp import (
+    C_GEO_S,
+    EPS_CHORD,
     EPS_REL,
-    PanelGeometry,
+    EPS_TILE,
+    PanelPolicyInput,
     choose_policy,
     interval_grid,
+    panel_policy_inputs,
     residual_bound_rel,
     t_curv_s,
     tile_side_max_m,
@@ -28,7 +34,16 @@ from sremu.channel.interp import (
     weights,
 )
 from sremu.channel.render_numpy import get_backend
-from sremu.contracts import FDSpec, LinkJob, MotionBounds, PanelConfig, PathKind, SegmentJob
+from sremu.contracts import (
+    FDSpec,
+    LinkJob,
+    MotionBounds,
+    PanelConfig,
+    PanelGeometry,
+    PathKind,
+    SegmentJob,
+)
+from sremu.errors import ConfigurationError
 from sremu.testing.scenes import doppler_t9
 from sremu.units import C0
 
@@ -116,15 +131,17 @@ def test_ph17_ris_path_doppler_at_t0_and_chord_phase_bound(backend_name: str) ->
     f_D(t0) = 325.192 Hz +- 0.01 Hz, and the phase error stays within k*rdd*T_u**2/8 + 1e-6."""
     model = doppler_t9(with_panel=True, tiles=1)
     fs = Fraction(10_000)
-    t_u = Fraction(1, 1000)  # the scenario may only lower T_u (auto is about 1.56 ms)
-    geo = PanelGeometry("ris0", 0.5, 0.5, 12, 12, FC_T9, 1)
+    # the scenario may only lower T_u: auto is 778 us under D1 (eps_rel/2 for the chord)
+    t_u = Fraction(1, 2000)
+    geo = PanelPolicyInput(model.panel_geometry("ris0"), FC_T9, 1)
     pol = choose_policy(model.motion_bounds(), [geo], {LINK_T9: FC_T9}, fs)
     assert pol.t_u_s is not None and t_u <= pol.t_u_s
     n = 10_000
     ring = const_ring("tx.tx0", fs, n + 64)
     be = get_backend(backend_name)  # type: ignore[arg-type]
     y = np.zeros(n, np.complex128)
-    for m in range(n // 10):
+    spi = 5  # samples per snapshot interval
+    for m in range(n // spi):
         ta, tb = m * t_u, (m + 1) * t_u
         da = model.snapshot(ta).ris["ris0"].tile_delay_s[:, 0]
         db = model.snapshot(tb).ris["ris0"].tile_delay_s[:, 0]
@@ -141,9 +158,8 @@ def test_ph17_ris_path_doppler_at_t0_and_chord_phase_bound(backend_name: str) ->
             np.zeros(1, np.int16),
             FDSpec.integer(),
         )
-        be.render(
-            SegmentJob("rx.rx0", fs, 10 * m, 10 * m + 10, ta, tb, [lj]), y[10 * m : 10 * m + 10]
-        )
+        k = spi * m
+        be.render(SegmentJob("rx.rx0", fs, k, k + spi, ta, tb, [lj]), y[k : k + spi])
     c = np.array([25.0, 10.0, 0.0])
     t = np.arange(n) / 1e4
     rx = np.stack([50.0 - 30.0 * t, np.zeros(n), np.zeros(n)], axis=1)
@@ -170,7 +186,9 @@ def test_ph17_ris_path_doppler_at_t0_and_chord_phase_bound(backend_name: str) ->
 
 @pytest.mark.parametrize("scene_fn", [lab_walk, vehicle, wcl_corridor], ids=lambda f: f.__name__)
 @pytest.mark.parametrize("policy_rate", ["render", "1e6"])
-def test_ph18_auto_tiles_vs_brute_force_per_element(scene_fn, policy_rate: str) -> None:
+def test_ph18_auto_tiles_vs_brute_force_per_element(
+    backend_name: str, scene_fn, policy_rate: str
+) -> None:
     """Auto (T_u, tiles) renderer vs per-element per-sample brute force: |dh|/|h| <= 1e-3;
     verify_interp reports the same maximum to 10%."""
     sc = scene_fn()
@@ -191,6 +209,7 @@ def test_ph18_auto_tiles_vs_brute_force_per_element(scene_fn, policy_rate: str) 
         SpanSpec(model, cfg, sc.link, sc.fc_hz, ring, sc.f_s, pol.t_u_s, kinds=RIS_KINDS),
         k_lo,
         k_hi,
+        backend_name,
     )
     t = np.arange(k_lo, k_hi) / float(sc.f_s)
     gam = np.asarray(model.panels[sc.panel].gamma)[st.astype(np.int64)]
@@ -206,31 +225,12 @@ def test_ph18_auto_tiles_vs_brute_force_per_element(scene_fn, policy_rate: str) 
     assert max(vi) == pytest.approx(rel.max(), rel=0.10)
 
 
-_PH18_BUDGET_SPLIT = (
-    "open issue (WP5 review): the section 4.4 policy gives the full eps_rel to the chord "
-    "(curvature) bound and up to eps_rel to the tile residual bound, so their sum can exceed "
-    "the PH-18 limit. Vehicle at 2e4 S/s picks T_u = 778 us, 2x2 tiles: chord alone 0.997e-3 "
-    "(9x9 tiles), with the tile residual 1.004e-3 / 1.0055e-3 at focus 0.06 / 0.07 s. Needs a "
-    "spec decision (e.g. split eps between the two rules); the tolerance is not weakened."
-)
-
-
-@pytest.mark.parametrize(
-    "t_focus",
-    [
-        0.03,
-        0.04,
-        0.05,
-        pytest.param(0.06, marks=pytest.mark.xfail(strict=True, reason=_PH18_BUDGET_SPLIT)),
-        pytest.param(0.07, marks=pytest.mark.xfail(strict=True, reason=_PH18_BUDGET_SPLIT)),
-    ],
-)
-def test_ph18_vehicle_focus_sweep_vs_brute_force(t_focus: float) -> None:
-    """(review) PH-18 vehicle scene at the render rate, panel focused at other times on the
-    pass (window +-15 ms around the focus): |dh|/|h| <= 1e-3 per element per sample."""
+def _vehicle_focus_error(t_focus: float, backend: str, eps: float = EPS_REL) -> float:
+    """Max |dh|/|h| of the auto (T_u, tiles) vehicle render (policy run with total budget
+    ``eps``) vs the per-element brute force, +-15 ms around the panel focus time."""
     sc = vehicle()
     m1 = sc.build(1, 1)
-    pol = choose_policy(m1.motion_bounds(), [sc.geometry(m1)], {sc.link: sc.fc_hz}, sc.f_s)
+    pol = choose_policy(m1.motion_bounds(), [sc.geometry(m1)], {sc.link: sc.fc_hz}, sc.f_s, eps=eps)
     assert pol.feasible and pol.t_u_s is not None
     tp = pol.tiles[sc.panel]
     model = sc.build(tp.tiles_u, tp.tiles_v)
@@ -246,23 +246,64 @@ def test_ph18_vehicle_focus_sweep_vs_brute_force(t_focus: float) -> None:
         SpanSpec(model, cfg, sc.link, sc.fc_hz, ring, sc.f_s, pol.t_u_s, kinds=RIS_KINDS),
         k_lo,
         k_hi,
+        backend,
     )
     t = np.arange(k_lo, k_hi) / float(sc.f_s)
     gam = np.asarray(model.panels[sc.panel].gamma)[st.astype(np.int64)]
     h = ris_brute(model, sc.panel, sc.link, gam, t, sc.fc_hz)
-    assert float(np.max(np.abs(y - h) / np.abs(h))) <= EPS_REL
+    return float(np.max(np.abs(y - h) / np.abs(h)))
 
 
-def test_ph18_verify_interp_whole_channel_and_static_scene() -> None:
+@pytest.mark.parametrize("t_focus", [0.03, 0.04, 0.05, 0.06, 0.07])
+def test_ph18_vehicle_focus_sweep_vs_brute_force(backend_name: str, t_focus: float) -> None:
+    """(review) PH-18 vehicle scene at the render rate, panel focused at other times on the
+    pass (window +-15 ms around the focus): |dh|/|h| <= 1e-3 per element per sample. Focus
+    0.06 / 0.07 s were strict xfails under the v1.0 policy (each rule had the full eps_rel);
+    D1 splits the budget so the chord and tile errors together stay within eps_rel."""
+    assert _vehicle_focus_error(t_focus, backend_name) <= EPS_REL
+
+
+def test_d1_teeth_full_budget_per_rule_exceeds_the_ph18_limit() -> None:
+    """Teeth for D1: giving EACH rule the full eps_rel (the v1.0 policy, emulated by a total
+    budget of 2*eps_rel) picks T_u = 778 us and 2 x 2 tiles for the vehicle, and the chord
+    plus tile errors then exceed the PH-18 limit at focus 0.06 s."""
+    sc = vehicle()
+    m1 = sc.build(1, 1)
+    old = choose_policy(
+        m1.motion_bounds(), [sc.geometry(m1)], {sc.link: sc.fc_hz}, sc.f_s, eps=2 * EPS_REL
+    )
+    assert old.t_u_s == Fraction(778, 10**6)
+    assert (old.tiles[sc.panel].tiles_u, old.tiles[sc.panel].tiles_v) == (2, 2)
+    assert _vehicle_focus_error(0.06, "numpy_ref", eps=2 * EPS_REL) > EPS_REL
+
+
+def test_ph18_verify_interp_reports_the_rendered_midpoint_error(backend_name: str) -> None:
+    """verify_interp's h_interp is what the renderer produces at the interval midpoint: for a
+    DC tone (integer delay) the rendered midpoint sample's error against the exact midpoint
+    channel equals the reported value, for the whole channel and for the RIS tiles only; a
+    static interval (t_a == t_b) interpolates exactly."""
     sc = lab_walk()
     model = sc.build(4, 4)
     st = focus_states(model, sc.panel, sc.link, sc.t_focus_s, sc.fc_hz)
     cfg = {sc.panel: PanelConfig(sc.panel, st)}
-    t_a, t_b = Fraction(2, 10), Fraction(2, 10) + Fraction(1, 1000)
-    whole = verify_interp(model, cfg, t_a, t_b, {sc.link: sc.fc_hz})[sc.link]
-    ris = verify_interp(model, cfg, t_a, t_b, {sc.link: sc.fc_hz}, kinds=RIS_KINDS)[sc.link]
-    assert 0.0 < whole and 0.0 < ris
-    # a static interval (t_a == t_b) interpolates exactly
+    t_a, t_b = Fraction(2, 10), Fraction(2, 10) + Fraction(1, 1000)  # 20 samples at 20 kS/s
+    k_mid = 4010  # (t_a + t_b)/2 * f_s: w = 1/2 exactly
+    assert Fraction(k_mid) / sc.f_s == (t_a + t_b) / 2
+    ring = const_ring("tx.tx0", sc.f_s, 4100)
+    for kinds in (None, RIS_KINDS):
+        rep = verify_interp(model, cfg, t_a, t_b, {sc.link: sc.fc_hz}, kinds=kinds)[sc.link]
+        y = render_span(
+            SpanSpec(model, cfg, sc.link, sc.fc_hz, ring, sc.f_s, t_b - t_a, kinds=kinds),
+            k_mid,
+            k_mid + 1,
+            backend_name,
+        )[0]
+        mid = model.combine(model.snapshot((t_a + t_b) / 2), cfg)[sc.link]
+        sel = np.ones(mid.n_paths, bool) if kinds is None else np.isin(mid.kind, kinds)
+        cyc = sc.fc_hz * mid.delay_s[sel]
+        h_true = complex(np.sum(mid.amp[sel] * np.exp(-2j * np.pi * (cyc - np.rint(cyc)))))
+        assert 0.0 < rep
+        assert abs(y - h_true) / abs(h_true) == pytest.approx(rep, rel=1e-6)
     assert verify_interp(model, cfg, t_a, t_a, {sc.link: sc.fc_hz})[sc.link] == 0.0
 
 
@@ -347,37 +388,52 @@ def _bounds(v: float, r: float, static: bool = False) -> MotionBounds:
     )
 
 
-def test_ph18_policy_error_budget_and_minimum_cost() -> None:
+def _geo(n_u: int, n_v: int, pitch_u: float, pitch_v: float, **kw) -> PanelGeometry:
+    return PanelGeometry.from_cells(
+        "ris0", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), n_u, n_v, pitch_u, pitch_v, **kw
+    )
+
+
+def test_d1_policy_error_budget_split_and_minimum_cost() -> None:
+    """D1: T_curv and D_t use eps_rel/2 each (dphi_res = sqrt(8*eps_rel/2) = 0.0632 rad), the
+    chosen candidate is the cheapest feasible one, and chord + tile bound <= eps_rel."""
     fc = 3.5e9
-    geo = PanelGeometry("ris0", 1.08, 1.08, 25, 25, fc, 1)
+    geo = PanelPolicyInput(_geo(25, 25, 1.08 / 25, 1.08 / 25), fc, 1)
     pol = choose_policy(_bounds(1.5, 0.45), [geo], {"a.tx0->b.rx0": fc}, Fraction(10**6))
+    assert EPS_CHORD == EPS_TILE == EPS_REL / 2
     k = 2 * math.pi * fc / C0
-    tc = math.sqrt(8 * EPS_REL * 0.45 / (k * 1.5**2))  # closed form
+    tc = math.sqrt(8 * (EPS_REL / 2) * 0.45 / (k * 1.5**2))  # closed form, D1
     assert pol.t_curv_s == pytest.approx(tc, rel=1e-12)
+    assert pol.t_curv_s == pytest.approx(t_curv_s(0.45, 1.5, fc), rel=1e-15)
+    assert math.sqrt(8 * EPS_REL / 2) == pytest.approx(0.0632, abs=5e-5)  # D1 residual phase
     assert len(pol.candidates) == 5
     t0 = pol.candidates[0].t_u_s
     assert t0 <= Fraction(tc) and Fraction(tc) - t0 < Fraction(1, 10**6)  # quantized down to 1 us
     for c in pol.candidates:
         assert c.t_u_s == t0 / 2**c.m
         tp = c.tiles["ris0"]
-        dt = math.sqrt(8 * EPS_REL) * (C0 / fc) * 0.45 / (2 * math.pi * 1.5 * float(c.t_u_s))
+        dt = math.sqrt(8 * EPS_REL / 2) * (C0 / fc) * 0.45 / (2 * math.pi * 1.5 * float(c.t_u_s))
         assert tp.tile_side_max_m == pytest.approx(dt, rel=1e-12)
         assert tp.tiles_u == min(math.ceil(1.08 / dt), 25)
         if tp.tiles_u > 1:  # minimal: one tile fewer would violate the side bound
             assert 1.08 / (tp.tiles_u - 1) > dt
-        # a tile of side D_t exactly meets the residual budget dphi**2/8 = eps
+        # a tile of side D_t exactly meets the tile budget dphi**2/8 = eps_rel/2
         assert residual_bound_rel(dt, 0.45, 1.5, fc, float(c.t_u_s)) == pytest.approx(
-            EPS_REL, rel=1e-12
+            EPS_REL / 2, rel=1e-12
         )
     best = min((c for c in pol.candidates if c.feasible), key=lambda c: c.cost)
     assert pol.m == best.m and pol.cost == best.cost
-    assert pol.curvature_bound_rel <= EPS_REL and pol.residual_bound_rel <= EPS_REL
+    assert pol.curvature_bound_rel <= EPS_REL / 2 and pol.residual_bound_rel <= EPS_REL / 2
+    assert pol.total_bound_rel <= EPS_REL
+    man = pol.to_manifest()
+    assert man["eps_chord"] == man["eps_tile"] == EPS_REL / 2
+    assert man["total_bound_rel"] == pol.curvature_bound_rel + pol.residual_bound_rel
     assert t_curv_s(0.45, 0.0, fc) == math.inf and tile_side_max_m(0.45, 0.0, fc, 1e-3) == math.inf
 
 
-def test_ph18_policy_cap_scenario_lowering_and_static() -> None:
+def test_d1_policy_cap_scenario_lowering_and_static() -> None:
     fc = 1e9
-    geo = PanelGeometry("ris0", 10.0, 0.15, 67, 1, fc, 1)
+    geo = PanelPolicyInput(_geo(67, 1, 10.0 / 67, 0.15), fc, 1)
     slow = choose_policy(_bounds(0.01, 2.0), [geo], {"a.tx0->b.rx0": fc}, 5000)
     assert slow.candidates[0].t_u_s == Fraction(1, 100)  # 10 ms cap
     lower = choose_policy(
@@ -393,19 +449,77 @@ def test_ph18_policy_cap_scenario_lowering_and_static() -> None:
     assert static.to_manifest()["t_u_s"] is None
 
 
-def test_ph18_policy_never_rounds_t_u_above_the_curvature_bound() -> None:
-    """(review) T_u0 = min(T_curv, 10 ms) must not exceed T_curv, also when T_curv < 1 us
-    (the [ENG] 1 us quantum is refined instead of rounding up)."""
+def test_d11_policy_consumes_the_contract_panel_geometry() -> None:
+    """D11/D17: the policy reads the contract PanelGeometry. The tile-side bound applies to the
+    outer extent INCLUDING the inert tile gaps (pitch + gap across a tile boundary), Q
+    (``n_quad``) enters the geometry cost, and :func:`panel_policy_inputs` takes the panel's
+    carrier as the largest carrier of its rows' links and R from the RIS coefficients."""
+    fc = 3.5e9
+    bounds = _bounds(1.5, 0.45)
+    fs = Fraction(10**6)
+    flat = _geo(24, 24, 0.045, 0.045)
+    gapped = _geo(24, 24, 0.045, 0.045, n_tiles_u=2, n_tiles_v=2, gap_m=0.3)
+    quad = _geo(24, 24, 0.045, 0.045, n_quad=4 * 576)
+    assert flat.extent_u_m == pytest.approx(1.08, rel=1e-15)
+    assert gapped.extent_u_m == pytest.approx(1.38, rel=1e-15)
+    pf, pg, pq = (
+        choose_policy(bounds, [PanelPolicyInput(geo, fc, 1)], {}, fs)
+        for geo in (flat, gapped, quad)
+    )
+    differs = False
+    for cf, cg, cq in zip(pf.candidates, pg.candidates, pq.candidates, strict=True):
+        dt = cf.tiles["ris0"].tile_side_max_m
+        assert cg.tiles["ris0"].tile_side_max_m == dt
+        nf, ng = cf.tiles["ris0"].tiles_u, cg.tiles["ris0"].tiles_u
+        assert nf == min(math.ceil(1.08 / dt), 24)
+        assert ng == min(math.ceil(1.38 / dt), 24)
+        differs |= ng != nf
+        # Q enters only the geometry term: c_geo*(4N - N)*R/T_u more
+        extra = C_GEO_S * 3 * 576 / float(cf.t_u_s)
+        assert cq.cost - cf.cost == pytest.approx(extra, rel=1e-9)
+        assert cq.tiles["ris0"].tiles_u == nf
+    assert differs  # the gaps change the tile count for some candidate
+
+    class _Model:
+        def link_fc_hz(self, link: str) -> float:
+            return {"a.tx0->b.rx0": 3.5e9, "c.tx0->b.rx0": 3.6e9}[link]
+
+        def panel_geometry(self, panel: str) -> PanelGeometry:
+            assert panel == "ris0"
+            return gapped
+
+    rows = (("a.tx0->b.rx0", 0), ("c.tx0->b.rx0", 0), ("a.tx0->b.rx0", 1))
+    snap = SimpleNamespace(
+        ris={
+            "ris0": SimpleNamespace(n_rows=3, rows=rows),
+            "ris1": SimpleNamespace(n_rows=0, rows=()),  # no RIS rows: skipped
+        }
+    )
+    (inp,) = panel_policy_inputs(_Model(), snap)  # type: ignore[arg-type]
+    assert inp.geometry is gapped and inp.panel == "ris0"
+    assert inp.fc_hz == 3.6e9 and inp.n_rows == 3
+    assert (inp.size_u_m, inp.size_v_m) == (gapped.extent_u_m, gapped.extent_v_m)
+    assert (inp.n_u, inp.n_v, inp.q) == (24, 24, 576)
+    for bad in ((gapped, 0.0, 1), (gapped, fc, 0), (gapped, fc, 1.5), ("ris0", fc, 1)):
+        with pytest.raises(ConfigurationError):
+            PanelPolicyInput(*bad)  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError):  # a bare geometry lacks the carrier and R
+        choose_policy(bounds, [gapped], {}, fs)  # type: ignore[list-item]
+
+
+def test_d1_policy_never_rounds_t_u_above_the_curvature_bound() -> None:
+    """(review) T_u0 = min(T_curv, 10 ms) must not exceed T_curv (chord share eps_rel/2), also
+    when T_curv < 1 us (the [ENG] 1 us quantum is refined instead of rounding up)."""
     fc = 3.5e9
     k = 2 * math.pi * fc / C0
     for v, r in ((1.5, 0.45), (30.0, 5.0), (2.0e4, 1.0), (1.0e6, 0.5)):
         pol = choose_policy(_bounds(v, r), [], {"a.tx0->b.rx0": fc}, Fraction(10**6))
-        tc = math.sqrt(8 * EPS_REL * r / (k * v * v))
+        tc = math.sqrt(8 * (EPS_REL / 2) * r / (k * v * v))
         t0 = pol.candidates[0].t_u_s
         assert 0 < t0 <= Fraction(tc)
         # quantized down by less than one 1 us step (or 0.1 % below 1 us)
         assert tc - float(t0) < (1e-6 if tc >= 1e-6 else 1e-3 * tc)
-        assert k * (v * v / r) * float(t0) ** 2 / 8 <= EPS_REL
+        assert k * (v * v / r) * float(t0) ** 2 / 8 <= EPS_REL / 2
 
 
 def test_d1_weights_closed_form_and_degenerate_interval() -> None:

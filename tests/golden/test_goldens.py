@@ -187,6 +187,86 @@ def test_g1_oracle_panel_geometry_matches_matlab_cells(geometry):
         assert np.array_equal(state, ts[tv, tu])
 
 
+def _d17_panels():
+    """Every golden per-cell file as (label, cells CSV columns, PanelGeometry, position tol)."""
+    from sremu.contracts import PanelGeometry
+
+    out = []
+    c1 = load_csv("G1_cells.csv")
+    for geom, g in load_meta("G1_lab_polar")["parameters"]["geometries"].items():
+        m = c1["geometry"] == geom
+        cols = {k: v[m] for k, v in c1.items()}
+        pg = PanelGeometry.from_cells(
+            geom,
+            g["center_m"],
+            g["normal"],
+            g["u_axis"],
+            g["n_u"],
+            g["n_v"],
+            g["pitch_u_m"],
+            g["pitch_v_m"],
+            n_tiles_u=g["n_tiles_u"],
+            n_tiles_v=g["n_tiles_v"],
+            gap_m=g["gap_m"],
+        )
+        out.append((f"G1/{geom}", cols, pg, 1e-12))
+    prm = load_meta("G2_beam_pattern")["parameters"]
+    pan = prm["panel"]
+    pg = PanelGeometry.from_cells(
+        "G2_G3",
+        pan["center_m"],
+        pan["normal"],
+        pan["u_axis"],
+        prm["n_u"],
+        prm["n_v"],
+        prm["pitch_m"],
+        prm["pitch_m"],
+    )
+    out.append(("G2_G3", load_csv("G2_G3_cells.csv"), pg, 1e-12))
+    pan = load_meta("G7_fm_etsi")["parameters"]["panel"]
+    pg = PanelGeometry.from_cells(
+        "G7",
+        pan["center_m"],
+        pan["normal"],
+        pan["u_axis"],
+        pan["n_u"],
+        pan["n_v"],
+        pan["pitch_u_m"],
+        pan["pitch_v_m"],
+    )
+    out.append(("G7", load_csv("G7_cells.csv"), pg, 1e-9))  # 80 km coordinates
+    return out
+
+
+@pytest.mark.parametrize("panel", _d17_panels(), ids=lambda p: p[0])
+def test_d17_golden_cell_files_follow_the_contract_cell_order(panel):
+    """D17: each golden cell file lists cell n = iv*n_u + iu in row n (iu along u_axis, iv
+    along normal x u_axis), at the centres of ``sremu.contracts.PanelGeometry`` (centred
+    array, inert tile gaps). So a golden state column can be passed to
+    ``PanelConfig.state`` unchanged."""
+    _, cols, pg, tol_m = panel
+    n = np.arange(pg.n_cells)
+    assert cols["n"].size == pg.n_cells
+    assert np.array_equal(cols["n"].astype(np.int64), n)
+    iu, iv = cols["iu"].astype(np.int64), cols["iv"].astype(np.int64)
+    assert np.array_equal(iu, n % pg.n_u) and np.array_equal(iv, n // pg.n_u)
+    pos = np.stack([cols["x"], cols["y"], cols["z"]], axis=1)
+    assert np.max(np.abs(pos - pg.cell_centres_m())) <= tol_m
+
+
+def test_d17_golden_tile_states_follow_the_physical_tile_index():
+    """G1 lab layouts: the per-cell state equals the state of its physical tile
+    ``tv*n_tiles_u + tu`` (``PanelGeometry.physical_tile_of_cell``)."""
+    for label, cols, pg, _ in _d17_panels():
+        if not label.startswith("G1/lab"):
+            continue
+        g = load_meta("G1_lab_polar")["parameters"]["geometries"][label.removeprefix("G1/")]
+        tile_state = np.asarray(g["tile_states"]).ravel()  # row-major (tv, tu)
+        assert np.array_equal(
+            cols["state"].astype(np.int64), tile_state[pg.physical_tile_of_cell()]
+        )
+
+
 def test_g1_oracle_k1_and_los_match_matlab():
     """Independent oracle K1 (tests/oracles/ris.py) vs the MATLAB toolbox path: rel <= 1e-9."""
     r = _g1_rows()
@@ -530,7 +610,7 @@ def test_g6_harness_statistics_accept_sos_and_reject_ar1(rng):
 
 
 def _g6_provider():
-    """WP3 diffuse SoS series provider (no frozen contract yet; see the WP4 CCR)."""
+    """WP3 diffuse SoS series provider: ``sremu.physics.diffuse.sos_gain`` (D19)."""
     if not sa.module_available("sremu.physics.diffuse"):
         return None
     import importlib
@@ -540,7 +620,7 @@ def _g6_provider():
 
 @pytest.mark.xfail(
     _g6_provider() is None,
-    reason="awaiting WP3: sremu.physics.diffuse.sos_gain(key, t_s, f_D, n_sinusoids) (CCR)",
+    reason="awaiting WP3: sremu.physics.diffuse.sos_gain(key, t_s, max_doppler_hz, n) (D19)",
     strict=False,
 )
 def test_g6_sremu_diffuse_sos_matches_golden_statistics():

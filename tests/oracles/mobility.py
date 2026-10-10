@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from fractions import Fraction
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -20,6 +21,9 @@ from sremu.units import C0
 
 __all__ = [
     "ber_bpsk",
+    "block_constant_alias_hz",
+    "block_constant_jump_rad",
+    "block_constant_mean_doppler_hz",
     "chord_phase_error_rad",
     "clopper_pearson",
     "corr_5sigma",
@@ -55,6 +59,55 @@ def radial_speed_mps(p_node: ArrayLike, v_node: ArrayLike, p_ref: ArrayLike) -> 
 def doppler_hz(v_approach_mps: float, fc_hz: float) -> float:
     """Doppler shift ``f_D = v*fc/C0``, positive on approach (section 3.1)."""
     return v_approach_mps * fc_hz / C0
+
+
+# --------------------------------------------------------------------------- block_constant teeth
+
+
+def _wrap_rad(x: float) -> float:
+    """Principal value in (-pi, pi]."""
+    y = math.remainder(x, 2.0 * math.pi)
+    return math.pi if y == -math.pi else y
+
+
+def block_constant_jump_rad(fc_hz: float, v_approach_mps: float, block_s: Fraction) -> float:
+    """Carrier-phase jump of the v2 staircase at each block boundary: ``k v T`` (unwrapped).
+
+    v2 holds the geometry constant over each block of ``T`` s, so the LOS phase ``-k d(t)``
+    stays flat inside a block and jumps by ``k v T`` at its end (4.401 rad in T9).
+    """
+    return 2.0 * math.pi * fc_hz / C0 * v_approach_mps * float(block_s)
+
+
+def block_constant_alias_hz(fc_hz: float, v_approach_mps: float, block_s: Fraction) -> float:
+    """Long-run apparent frequency of the staircase: ``wrap(k v T) / (2 pi T)``.
+
+    -149.77 Hz for the T9 case (3.5 GHz, 30 m/s, 2 ms blocks): NOT the PH-17 teeth value,
+    which is the mean over the finite T9 window (:func:`block_constant_mean_doppler_hz`).
+    """
+    jump = _wrap_rad(block_constant_jump_rad(fc_hz, v_approach_mps, block_s))
+    return jump / (2.0 * math.pi * float(block_s))
+
+
+def block_constant_mean_doppler_hz(
+    fc_hz: float, v_approach_mps: float, block_s: Fraction, fs_hz: Fraction, n_samples: int
+) -> float:
+    """PH-17 teeth (D7): mean instantaneous frequency of the v2 staircase over a sample window.
+
+    Samples ``n = 0 .. n_samples-1`` at ``fs_hz``; the instantaneous frequency is the wrapped
+    phase step between neighbouring samples times ``fs/(2 pi)``. Inside a block the step is 0;
+    each of the ``floor((n_samples - 1)/(fs T))`` block boundaries crossed by the window
+    contributes ``wrap(k v T)`` (exact integer count with ``Fraction`` rates). The T9 window
+    (``pm_checks.py``: 0.2 s at 10 kS/s, 2 ms blocks, 30 m/s, 3.5 GHz) gives 99 boundaries
+    over 1999 steps: -148.33 Hz (the long-run alias is -149.77 Hz, see
+    :func:`block_constant_alias_hz`).
+    """
+    spb = Fraction(fs_hz) * Fraction(block_s)  # samples per block
+    if spb < 1:
+        raise ValueError("block shorter than one sample")
+    boundaries = math.floor(Fraction(n_samples - 1) / spb)
+    jump = _wrap_rad(block_constant_jump_rad(fc_hz, v_approach_mps, block_s))
+    return boundaries * jump * float(fs_hz) / (2.0 * math.pi * (n_samples - 1))
 
 
 # --------------------------------------------------------------------------- error budget (4.4)

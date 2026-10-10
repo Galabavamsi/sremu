@@ -170,6 +170,33 @@ def test_ph26_subdivide_preserves_area_and_parent():
         assert np.allclose(q.cells[q.parent == n].mean(axis=0), p.cells[n], atol=1e-15)
 
 
+def test_d17_make_panel_matches_the_contract_panel_geometry(rng):
+    """D17 (contract 1.1): the oracle panel and ``sremu.contracts.PanelGeometry`` agree on cell
+    order n = iv*n_u + iu, centring, tile gaps and pitch area (WP0 contract, not physics)."""
+    from sremu.contracts import PanelGeometry
+
+    for _ in range(20):
+        t_u, t_v = int(rng.integers(1, 4)), int(rng.integers(1, 3))
+        n_u, n_v = t_u * int(rng.integers(1, 6)), t_v * int(rng.integers(1, 5))
+        normal = rng.normal(size=3)
+        normal /= np.linalg.norm(normal)
+        u = np.cross(normal, rng.normal(size=3))
+        u /= np.linalg.norm(u)
+        centre = rng.normal(size=3)
+        pu, pv, gap = rng.uniform(0.005, 0.05), rng.uniform(0.005, 0.05), rng.uniform(0, 0.01)
+        p = make_panel(centre, normal, u, n_u, n_v, pu, pv, tiles=(t_u, t_v), gap_m=gap)
+        geo = PanelGeometry.from_cells(
+            "ris0", centre, normal, u, n_u, n_v, pu, pv, n_tiles_u=t_u, n_tiles_v=t_v, gap_m=gap
+        )
+        assert np.max(np.abs(p.cells - geo.cell_centres_m())) <= 1e-12
+        assert all(
+            geo.cell_index(int(a), int(b)) == n
+            for n, (a, b) in enumerate(zip(p.iu, p.iv, strict=True))
+        )
+        assert np.allclose(p.area, geo.cell_area_m2, rtol=1e-15)
+        assert np.allclose(p.v, geo.v_axis, atol=1e-15)
+
+
 def test_g1_panel_tile_gap_geometry():
     """Across a tile boundary the cell spacing is pitch + gap; inside a tile it is the pitch."""
     p = make_panel(

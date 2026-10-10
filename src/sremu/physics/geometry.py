@@ -10,7 +10,10 @@ Conventions (section 3.1, normative):
   signed by the ``u`` component. ``theta_i`` points from the cell toward the Tx, ``theta_s``
   from the cell toward the Rx; specular reflection is ``theta_s = -theta_i``. Off-plane
   directions are projected onto the (u, n) plane; the off-plane angle is reported.
-* Cell index of an ``n_u x n_v`` panel: ``n = iv * n_u + iu`` (row ``iv``, column ``iu``).
+* Cell index of an ``n_u x n_v`` panel (D17, normative): ``n = iv * n_u + iu`` with ``iu``
+  along ``u`` and ``iv`` along ``v = n x u``. Physical tiles add an inert ``gap_m`` (spacing
+  across a tile boundary is pitch + gap), the cell array is centred on the pose centre and
+  the quadrature area of a cell is its pitch area (``contracts.PanelGeometry``).
 
 Trajectories are analytic functions of continuous time (section 5.10): positions never
 depend on any update grid. Times may be exact ``Fraction`` (preferred) or floats.
@@ -75,11 +78,13 @@ def unit(v: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 def keyed_generator(seed: int, purpose: str, name: str, counter: int = 0) -> np.random.Generator:
-    """Keyed Philox generator of section 6.1 (no global RNG): ``sremu.rng.generator``.
+    """Alias of ``sremu.rng.generator(seed, purpose, name, counter=counter)`` (D14).
 
-    ``purpose`` must be registered in ``sremu.rng.PURPOSES`` (``mobility``, ``failure``,
-    ``trial``, ...); ``counter`` selects an independent stream (second 64-bit counter word),
-    so e.g. random-waypoint leg ``i`` is a pure function of ``(seed, purpose, name, i)``.
+    Every keyed generator of the physics core (mobility legs, failure maps) is derived by
+    ``sremu.rng`` (section 6.1); WP2 has no private key derivation. ``purpose`` must be
+    registered in ``sremu.rng.PURPOSES`` (``mobility``, ``failure``, ``trial``, ...);
+    ``counter`` selects an independent stream (second 64-bit counter word), so e.g.
+    random-waypoint leg ``i`` is a pure function of ``(seed, purpose, name, i)``.
     """
     return _rng.generator(int(seed), purpose, name, counter=int(counter))
 
@@ -519,12 +524,29 @@ class Waypoints(_VectorizedMixin):
         return bool(np.all(self.positions_m == self.positions_m[0]))
 
 
+def _exact_time(t: TimeLike) -> Fraction:
+    """Exact time: a ``Fraction`` or ``int`` as is, a float by its exact binary value."""
+    if isinstance(t, Fraction):
+        return t
+    if isinstance(t, int):
+        return Fraction(t)
+    x = float(t)
+    if not math.isfinite(x):
+        raise ConfigurationError(f"trajectory time must be finite, got {t!r}")
+    return Fraction(x)
+
+
 class _RandomWaypointBase(_VectorizedMixin):
     """Bettstetter random waypoint: legs drawn per leg index from a keyed generator.
 
     Waypoint ``w_i`` is drawn from ``leg_rng(i)`` (uniform over the domain); leg ``i`` goes
     from ``w_i`` to ``w_{i+1}`` at constant ``speed_mps``, then pauses ``pause_s``. Leg end
     times are accumulated in a fixed order, so positions are a pure function of time.
+
+    Leg boundaries are kept as exact ``Fraction`` sums of the (float) leg durations, and a
+    position is evaluated from the exact leg-relative time ``t - t_leg`` rounded once. So the
+    position error does not grow with the absolute time: ST-01's "no jump larger than
+    ``v*dt + 1e-12``" holds at t ~ 3e4 s, where ``float(t)`` alone is off by ~4e-12 s.
     """
 
     speed_mps: float
@@ -537,38 +559,48 @@ class _RandomWaypointBase(_VectorizedMixin):
             raise ConfigurationError("random waypoint speed_mps must be > 0")
         self._leg_rng = leg_rng
         self.speed_mps = float(speed_mps)
-        self.pause_s = float(pause_s)
-        if self.pause_s < 0.0:
+        self._pause_q = _exact_time(pause_s)
+        self.pause_s = float(self._pause_q)
+        if self._pause_q < 0:
             raise ConfigurationError("pause_s must be >= 0")
         self._wp: list[np.ndarray] = [self._draw(0)]
-        self._t_end: list[float] = []  # time at which leg i (incl. pause) ends
+        self._dur: list[float] = []  # moving duration of leg i, s
+        self._t_end_q: list[Fraction] = []  # exact time at which leg i (incl. pause) ends
+        self._t_move_end_q: list[Fraction] = []
+        self._t_end: list[float] = []  # float copies (leg_starts, breakpoints)
         self._t_move_end: list[float] = []
 
     def _draw(self, i: int) -> np.ndarray:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def _extend_to(self, t: float) -> None:
-        while not self._t_end or self._t_end[-1] <= t:
-            i = len(self._t_end)
+    def _extend_to(self, t: TimeLike) -> None:
+        tq = _exact_time(t)
+        while not self._t_end_q or self._t_end_q[-1] <= tq:
+            i = len(self._t_end_q)
             self._wp.append(self._draw(i + 1))
             d = float(np.linalg.norm(self._wp[i + 1] - self._wp[i]))
-            t0 = self._t_end[-1] if self._t_end else 0.0
-            tm = t0 + d / self.speed_mps
-            self._t_move_end.append(tm)
-            self._t_end.append(tm + self.pause_s)
+            dur = d / self.speed_mps
+            t0 = self._t_end_q[-1] if self._t_end_q else Fraction(0)
+            tm = t0 + Fraction(dur)
+            te = tm + self._pause_q
+            self._dur.append(dur)
+            self._t_move_end_q.append(tm)
+            self._t_end_q.append(te)
+            self._t_move_end.append(float(tm))
+            self._t_end.append(float(te))
 
     def position(self, t: TimeLike) -> np.ndarray:
-        tf = _as_float_time(t)
-        if tf < 0.0:
+        tq = _exact_time(t)
+        if tq < 0:
             return self._wp[0].copy()
-        self._extend_to(tf)
-        i = bisect.bisect_right(self._t_end, tf)
-        t0 = self._t_end[i - 1] if i > 0 else 0.0
-        tm = self._t_move_end[i]
+        self._extend_to(tq)
+        i = bisect.bisect_right(self._t_end_q, tq)
+        t0 = self._t_end_q[i - 1] if i > 0 else Fraction(0)
+        tm = self._t_move_end_q[i]
         a, b = self._wp[i], self._wp[i + 1]
-        if tf >= tm or tm == t0:
+        if tq >= tm or tm == t0:
             return b.copy()
-        return a + ((tf - t0) / (tm - t0)) * (b - a)
+        return a + (float(tq - t0) / self._dur[i]) * (b - a)
 
     def leg_starts(self, horizon_s: float) -> list[float]:
         """Leg start times in [0, horizon_s] (s)."""
@@ -578,7 +610,7 @@ class _RandomWaypointBase(_VectorizedMixin):
     def waypoint(self, i: int) -> np.ndarray:
         """Waypoint ``w_i`` (3,), m."""
         while len(self._wp) <= i:
-            self._extend_to(self._t_end[-1] if self._t_end else 0.0)
+            self._extend_to(self._t_end_q[-1] if self._t_end_q else 0)
         return self._wp[i].copy()
 
     def max_speed_mps(self, horizon_s: float) -> float:
@@ -777,7 +809,7 @@ def trajectory_from_spec(
     p = {k: v for k, v in spec.items() if k != "model"}
 
     def leg_rng(i: int) -> np.random.Generator:
-        return keyed_generator(seed, "mobility", node, counter=i)
+        return _rng.generator(int(seed), "mobility", node, counter=i)  # D14, section 6.2
 
     if model == "static":
         return Static(np.asarray(p.get("position_m", position_m), dtype=np.float64))

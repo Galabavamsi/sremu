@@ -24,6 +24,10 @@ Schema via ``sremu schema manifest``):
 * ``counters``, ``nondeterministic_inputs``, ``oracle_csi_used``;
 * ``argv``, ``t_start_utc``, ``t_end_utc``, ``wall_s``, ``host_load_samples``.
 
+**Host probes** (versions, CPU model, power plan or governor, GPUs, AWS instance, numba
+threads and SVML state) come from the layer-0 module :mod:`sremu.sysinfo` (D12), shared
+with ``sremu info``; this module has no probes of its own.
+
 **Git.** ``git_commit`` is ``HEAD`` of the repository containing the sremu sources (or the
 ``repo_dir`` given). The tree is dirty when ``git status --porcelain`` lists anything
 (modified, staged or untracked non-ignored files). ``dirty.patch`` is
@@ -47,12 +51,12 @@ import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sremu import sysinfo
 from sremu.contracts import CONTRACT_VERSION, COUNTER_NAMES, DataClass
 from sremu.rng import RNG_SCHEME
 from sremu.scenario.load import InputRecord, ResolvedScenario
@@ -261,121 +265,30 @@ def git_state(repo_dir: str | Path | None = None) -> GitState:
 # =========================================================================== environment
 
 
-def _run(args: list[str], timeout_s: float = 10.0) -> str | None:
-    try:
-        res = subprocess.run(args, capture_output=True, text=True, timeout=timeout_s, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return res.stdout.strip() if res.returncode == 0 else None
-
-
-def _dist_version(dist: str) -> str | None:
-    try:
-        return version(dist)
-    except PackageNotFoundError:
-        return None
-
-
-def _cpu_model() -> str | None:
-    if sys.platform == "win32":
-        import winreg
-
-        try:
-            key = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
-                return str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).strip()
-        except OSError:
-            pass
-    elif sys.platform.startswith("linux"):
-        try:
-            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
-                if line.startswith("model name"):
-                    return line.split(":", 1)[1].strip()
-        except OSError:
-            pass
-    elif sys.platform == "darwin":
-        out = _run(["sysctl", "-n", "machdep.cpu.brand_string"])
-        if out:
-            return out
-    return platform.processor() or None
-
-
-def _power_plan_or_governor() -> str | None:
-    if sys.platform == "win32":
-        out = _run(["powercfg", "/getactivescheme"])
-        if out:
-            m = re.search(r"\(([^)]*)\)\s*$", out)
-            return m.group(1) if m else out
-        return None
-    try:
-        return (
-            Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-            .read_text(encoding="utf-8")
-            .strip()
-        )
-    except OSError:
-        return None
-
-
-def _gpus() -> list[str]:
-    exe = shutil.which("nvidia-smi")
-    if exe is None:
-        return []
-    out = _run([exe, "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"])
-    return [line.strip() for line in out.splitlines() if line.strip()] if out else []
-
-
-def _aws_instance() -> AwsInstance | None:
-    base = Path("/sys/devices/virtual/dmi/id")
-    try:
-        if "Amazon EC2" not in (base / "sys_vendor").read_text(encoding="utf-8"):
-            return None
-    except OSError:
-        return None
-
-    def read(name: str) -> str | None:
-        try:
-            return (base / name).read_text(encoding="utf-8").strip() or None
-        except OSError:
-            return None
-
-    return AwsInstance(type=read("product_name"), id=read("board_asset_tag"))
-
-
-def _numba_svml_disabled() -> bool | None:
-    nb = sys.modules.get("numba")
-    if nb is not None:
-        return bool(getattr(nb.config, "DISABLE_INTEL_SVML", False))
-    env = os.environ.get("NUMBA_DISABLE_INTEL_SVML")
-    return None if env is None else env not in ("", "0")
-
-
-def _numba_threads() -> int | None:
-    nb = sys.modules.get("numba")
-    if nb is None:
-        return None
-    try:
-        return int(nb.get_num_threads())
-    except Exception:  # numba not fully initialised
-        return None
-
-
 def environment_info() -> dict[str, Any]:
-    """Platform fields of the manifest (versions, CPU, power plan, GPU, AWS instance)."""
+    """Platform fields of the manifest (versions, CPU, power plan, GPU, AWS instance).
+
+    Every host probe comes from :mod:`sremu.sysinfo` (layer 0, D12), the same functions
+    ``sremu info`` uses, so the manifest and ``sremu info`` never disagree. The probes are
+    looked up on the module at call time (``sysinfo.platform_info()``,
+    ``sysinfo.dist_version``).
+    """
     from sremu import __version__
 
     versions: dict[str, str | None] = {"python": platform.python_version()}
-    versions.update({k: _dist_version(d) for k, d in _VERSION_DISTS.items()})
+    versions.update({k: sysinfo.dist_version(d) for k, d in _VERSION_DISTS.items()})
+    host = sysinfo.platform_info()
+    aws = host["aws_instance"]
     return {
         "sremu_version": __version__,
         "contract_version": CONTRACT_VERSION,
         "versions": versions,
-        "platform": platform.platform(),
-        "cpu_model": _cpu_model(),
-        "logical_cpus": os.cpu_count(),
-        "power_plan_or_governor": _power_plan_or_governor(),
-        "gpu": _gpus(),
-        "aws_instance": _aws_instance(),
+        "platform": host["platform"],
+        "cpu_model": host["cpu_model"],
+        "logical_cpus": host["logical_cpus"],
+        "power_plan_or_governor": host["power_plan_or_governor"],
+        "gpu": list(host["gpu"]),
+        "aws_instance": None if aws is None else AwsInstance.model_validate(aws),
     }
 
 
@@ -535,9 +448,9 @@ class ManifestRecorder:
             "mode": sc.run.mode,
             "coupling": sc.run.coupling,
             "backend": sc.numerics.backend,
-            "threads": threads if threads is not None else _numba_threads(),
+            "threads": threads if threads is not None else sysinfo.numba_threads(),
             "deterministic": sc.numerics.deterministic,
-            "numba_disable_svml": _numba_svml_disabled(),
+            "numba_disable_svml": sysinfo.numba_svml_disabled(),
             "page_size": pages,
             "links": {},
             "verify_interp_max_rel": None,

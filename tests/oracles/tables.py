@@ -11,7 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 
-__all__ = ["ORACLE", "OracleValue"]
+__all__ = [
+    "ORACLE",
+    "PH17_T9_BLOCK_S",
+    "PH17_T9_FC_HZ",
+    "PH17_T9_FS",
+    "PH17_T9_RX0_M",
+    "PH17_T9_SPEED_MPS",
+    "PH17_T9_WINDOW_S",
+    "V_CFO_FS",
+    "V_CFO_TAU",
+    "OracleValue",
+]
 
 
 @dataclass(frozen=True)
@@ -40,7 +51,11 @@ ORACLE: dict[str, OracleValue] = {
     "PH03_slope_db_per_4x": _v("PH-03", 12.04, 0.01, "dB", "slope per 4x cells"),
     # PH-04 fixed aperture 1 m^2, 3.5 GHz, Gamma = 1
     "PH04_far_specular_200m_db": _v("PH-04", -115.280, 0.01, "dB", "far specular 200 m, any N"),
-    "PH04_near_anomalous_5m_db": _v("PH-04", -88.10, 0.10, "dB", "near anomalous 5 m, po_patch"),
+    # D5: Richardson-converged po_patch; the oracle value is po_patch at Delta = lambda/40
+    # (single-level values, e.g. Delta = lambda/5, are not asserted)
+    "PH04_near_anomalous_5m_db": _v(
+        "PH-04", -88.128, 0.10, "dB", "near anomalous 5 m, Richardson-converged po_patch (D5)"
+    ),
     "PH04_legacy_v2_db_per_4x": _v("PH-04", 12.04, 0.01, "dB", "teeth: legacy_v2 per 4x"),
     # PH-05 image theory
     "PH05_oblique_plate_db": _v("PH-05", 0.0, 0.3, "dB", "40 deg plate 12 m vs image"),
@@ -85,7 +100,10 @@ ORACLE: dict[str, OracleValue] = {
     # PH-17 Doppler (T9 geometry)
     "PH17_los_fd_hz": _v("PH-17", 350.242, 0.001, "Hz", "LOS 30 m/s, 3.5 GHz"),
     "PH17_ris_fd_hz": _v("PH-17", 325.192, 0.01, "Hz", "RIS path f_D(t0)"),
-    "PH17_block_constant_hz": _v("PH-17", -148.3, 1.0, "Hz", "teeth: block-constant alias"),
+    # D7: mean over the T9 window (0.2 s at 10 kS/s, 2 ms blocks); see PH17_T9 below
+    "PH17_block_constant_hz": _v(
+        "PH-17", -148.3, 1.0, "Hz", "teeth: block_constant mean f over the T9 window (D7)"
+    ),
     "PH17_phase_rad": _v("PH-17", 0.0, 1e-6, "rad", "phase vs -2 pi f_c d(t)/c over 1 s"),
     # PH-18 interpolation budget
     "PH18_eps_rel": _v("PH-18", 1e-3, 0.0, "1", "|dh|/|h| <= 1e-3"),
@@ -109,6 +127,16 @@ ORACLE: dict[str, OracleValue] = {
     "PH25_m_deg": _v("PH-25", 127.9, 0.05, "deg", "arg m lab pair"),
     # PH-26 point vs patch (16 x 16, lambda/2, 3.5 GHz, 2 m)
     "PH26_specular_db": _v("PH-26", 0.0, 0.05, "dB", "point vs patch at specular"),
+    # D6: 45 deg retro, Delta <= lambda/5 (3 x 3 sub-cells): point minus patch. 8.11 dB is the
+    # 3 x 3 sub-aperture factor of a lambda/2 cell in its far field (exactly reproduced by a
+    # single cell or by the panel in the far field; NOT by the 16 x 16 panel at 2 m, whose
+    # cells see 35..55 deg: 7.68 dB focused; see test_ph26_* and the WP4 report).
+    "PH26_retro45_db": _v("PH-26", 8.11, 0.1, "dB", "point - po_patch (3x3) at 45 deg retro (D6)"),
+    "PH26_retro45_sinc_limit_db": _v(
+        "PH-26", 8.92, 0.005, "dB", "documented Delta -> 0 sinc limit at 45 deg retro (D6)"
+    ),
+    # section 5.14 / D4: legacy_v1 teeth in the v1 default geometry (v1 uses c = 3e8)
+    "LEGACY_v1_vs_k1_db": _v("D4", 24.39, 0.05, "dB", "legacy_v1 - K1, v1 default geometry"),
     # RT oracles
     "RT05_samples_2km_23p04": _v("RT-05", 154.0, 0.5, "samples", "RX at 2 km vs near RX (approx)"),
     "RT09_v2_step_rad": _v(
@@ -152,3 +180,19 @@ V_CFO_FS = Fraction(5880)
 """V-CFO sample rate, S/s (section 10.10)."""
 V_CFO_TAU = Fraction(2, 1000)
 """v1 tick duration, s (11.76/11 at 5880 S/s)."""
+
+# PH-17 T9 geometry and window (``pm_checks.py`` T9; D7): Tx at the origin, Rx starting at
+# (50, 0, 0) m and moving at (-30, 0, 0) m/s, 3.5 GHz; the RIS path uses a 0.5 m x 0.5 m,
+# 12 x 12 panel centred at (25, 10, 0) m facing -y.
+PH17_T9_FC_HZ = 3.5e9
+"""T9 carrier, Hz."""
+PH17_T9_SPEED_MPS = 30.0
+"""T9 approach speed, m/s."""
+PH17_T9_RX0_M = (50.0, 0.0, 0.0)
+"""T9 Rx start position, m (Tx at the origin)."""
+PH17_T9_FS = Fraction(10_000)
+"""T9 sample rate, S/s."""
+PH17_T9_WINDOW_S = Fraction(1, 5)
+"""T9 window, s (2000 samples): the PH-17 teeth value is a mean over this window (D7)."""
+PH17_T9_BLOCK_S = Fraction(1, 500)
+"""v2 ``block_constant`` block length in T9, s (2 ms)."""

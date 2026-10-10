@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sremu:control:v1:telemetry",
+  "title": "sremu telemetry on the PUB socket, schema version 1 (DESIGN.md section 8.5)",
+  "description": "Two-part PUB messages [topic, JSON]. Topics: ris.applied (a final CommandRecord: applied, late_applied or superseded), cmd.late (a command applied late), cmd.rejected (a rejected command record, or a request refused by the transport such as a rate-limited command), stream.underflow, stream.overflow, metrics.window (one 100 ms metrics window) and sim.stall (a deadlock report). PUB may drop messages; nothing needed for correctness travels here.",
+  "type": "object",
+  "required": ["v", "topic"],
+  "properties": {
+    "v": {"const": 1},
+    "topic": {"enum": ["ris.applied", "cmd.late", "cmd.rejected", "stream.underflow", "stream.overflow", "metrics.window", "sim.stall"]}
+  },
+  "allOf": [
+    {"if": {"required": ["topic"], "properties": {"topic": {"enum": ["ris.applied", "cmd.late"]}}},
+     "then": {"required": ["record"], "properties": {"record": {"$ref": "#/$defs/record"}}}},
+    {"if": {"required": ["topic"], "properties": {"topic": {"const": "cmd.rejected"}}},
+     "then": {"anyOf": [{"required": ["record"], "properties": {"record": {"$ref": "#/$defs/record"}}},
+                        {"required": ["id", "error"]}]}},
+    {"if": {"required": ["topic"], "properties": {"topic": {"enum": ["stream.underflow", "stream.overflow"]}}},
+     "then": {"required": ["stream"], "properties": {"stream": {"type": "string"}}}},
+    {"if": {"required": ["topic"], "properties": {"topic": {"const": "metrics.window"}}},
+     "then": {"required": ["window"], "properties": {"window": {"type": "object"}}}},
+    {"if": {"required": ["topic"], "properties": {"topic": {"const": "sim.stall"}}},
+     "then": {"required": ["report"], "properties": {"report": {"type": "object"}}}}
+  ],
+  "$defs": {
+    "record": {
+      "description": "contracts.CommandRecord.to_dict(): exact times as 'p/q' strings.",
+      "type": "object",
+      "required": ["cmd_id", "seq", "src", "op", "panel", "t_req", "t_applied", "k_req", "k_applied",
+                   "lateness_samples", "status", "config_hash", "counterfactual"],
+      "properties": {
+        "cmd_id": {"type": "string"}, "seq": {"type": "integer"}, "src": {"type": "string"},
+        "op": {"type": "string"}, "panel": {"type": "string"},
+        "t_req": {"type": "string"}, "t_applied": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "k_req": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "k_applied": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "lateness_samples": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "status": {"enum": ["scheduled", "applied", "late_applied", "rejected", "superseded"]},
+        "config_hash": {"type": "string"}, "counterfactual": {"type": "boolean"}
+      }
+    }
+  }
+}

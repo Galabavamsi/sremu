@@ -13,12 +13,22 @@
   separable ``C[r, n]`` with ``gamma[s]`` when the table is angle-independent and every row
   sees the same alphabet. Efficiency is already applied to Gamma.
 * ``combine(snap, cfg)``: linear in Gamma; one RIS_TILE path per (panel, row, tile) with
-  amplitude ``g_k = sum_{n in k} B[r, s_n, n]`` and delay ``tau_tile``. The path set is fixed
-  (disabled or unconfigured panels keep zero-amplitude paths), so paths stay aligned
-  across configurations (transitions, interpolation).
-* ``ris_delay_s(panel, rx, t)``: ``|p_rx(t) - c_panel| / C0``.
+  amplitude ``g_k = sum_{n in k} B[r, s_n, n]`` and delay ``tau_tile``; every RIS_TILE
+  path carries a tile key >= 0 (D10). The path set is fixed (disabled or unconfigured
+  panels keep zero-amplitude paths), so paths stay aligned across configurations
+  (transitions, interpolation).
+* ``link_fc_hz(link)``: the carrier of the link's TX stream (D11).
+* ``panel_geometry(panel)``: the panel's ``contracts.PanelGeometry`` (D11, D17 cell order
+  ``n = iv*n_u + iu``; ``n_quad`` is the quadrature size Q after the Richardson check).
+* ``ris_delay_s(panel, rx, t, tile=None)``: ``|p_rx(t) - c_panel| / C0``, or from render
+  tile ``tile``'s reference point (the point of ``RISCoefficients.tile_delay_s``) (D11).
 * ``motion_bounds()``: speeds and closest approaches over ``[0, horizon_s]`` (exact for
   piecewise-linear trajectories).
+* ``with_render_tiles``, ``set_node_position``, ``set_node_trajectory``: contract 1.1 (D11).
+
+``Snapshot.diag`` carries ``max_off_plane_deg/<panel>``, ``quadrature_points/<panel>`` and
+``richardson_db/<panel>``. The energy budget is NOT part of it (D9): it is on demand
+(:meth:`ScenePropagation.energy_budget`, ``ris_kernel.energy_budget``, PH-23).
 
 **Mechanism hook (WP3 integration point).** ``mechanisms`` are objects with any of:
 ``los_factor(ctx) -> complex`` (multiplies the LOS ``V``: knife edge ``F(nu)``),
@@ -26,14 +36,24 @@
 exclude the propagation phase) and ``ris_hops(ctx, panel) -> list[RisHopSource]`` (ground
 image expansion on RIS hops, variants 1-3). ``ctx`` is a :class:`LinkContext`.
 
+**Scenario factory (D18).** :func:`from_scenario` attaches the WP3 mechanisms that the
+scenario's ``environment`` enables (``ground``, ``walls``, ``edges``, ``diffuse``; see
+:data:`WP3_MECHANISM_MODULES`). Each module is imported lazily, only when its environment
+entry is enabled, so WP2 does not depend on WP3. A module must provide
+``mechanism_from_scenario(spec, scenario, *, base_dir) -> mechanism | sequence | None``
+(:data:`MECHANISM_FACTORY`), where ``spec`` is the environment entry and ``scenario`` the
+whole scenario mapping. An enabled entry whose module is missing raises
+``ConfigurationError``.
+
 Inter-tile gaps are inert by default. A structural ``gap_gamma`` adds one fixed
-(non-configurable) path per (panel, link) with kind ``RIS_TILE`` in the ``PathBundle``
-(tile key -1 in ``combine``); its delay is the path through the panel centre.
+(non-configurable) path per (panel, link) with kind ``RIS_GAP`` in the ``PathBundle``
+(tile key -1 in ``combine``, D10); its delay is the path through the panel centre.
 """
 
 from __future__ import annotations
 
 import copy
+import importlib
 import itertools
 import math
 import warnings
@@ -41,10 +61,11 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import numpy as np
 
+from sremu import rng as _rng
 from sremu.contracts import (
     CsiView,
     Granularity,
@@ -53,9 +74,11 @@ from sremu.contracts import (
     MotionBounds,
     NodeId,
     PanelConfig,
+    PanelGeometry,
     PanelId,
     PathBundle,
     PathKind,
+    PropagationModel,
     RisCapabilities,
     RISCoefficients,
     Snapshot,
@@ -63,7 +86,6 @@ from sremu.contracts import (
     StreamSpec,
     check_link,
     link_id,
-    split_stream_id,
     stream_id,
 )
 from sremu.errors import ConfigurationError, GeometryError, UnknownTarget, ValidityWarning
@@ -73,7 +95,6 @@ from sremu.physics.geometry import (
     Pose,
     Trajectory,
     angles_to_node,
-    keyed_generator,
     point_rectangle_distance,
     trajectory_from_spec,
 )
@@ -93,13 +114,17 @@ from sremu.physics.ris_kernel import (
     Backend,
     Obliquity,
     accumulate_cells,
+    check_obliquity,
     k1_terms,
     tile_sums,
 )
+from sremu.physics.ris_kernel import energy_budget as _energy_budget
 from sremu.timebase import parse_exact
 from sremu.units import C0
 
 __all__ = [
+    "MECHANISM_FACTORY",
+    "WP3_MECHANISM_MODULES",
     "LinkContext",
     "NodeModel",
     "Numerics",
@@ -107,9 +132,27 @@ __all__ = [
     "RisHopSource",
     "ScenePropagation",
     "from_scenario",
+    "wp3_mechanisms",
 ]
 
 _OUT_OF_PLANE_TOL_DEG = 1.0
+
+WP3_MECHANISM_MODULES: Final[tuple[tuple[str, str], ...]] = (
+    ("ground", "sremu.physics.ground"),
+    ("walls", "sremu.physics.walls"),
+    ("edges", "sremu.physics.diffraction"),
+    ("diffuse", "sremu.physics.diffuse"),
+)
+"""(``environment`` key, WP3 module) pairs, in the order mechanisms are attached (D18)."""
+
+MECHANISM_FACTORY: Final[str] = "mechanism_from_scenario"
+"""Name of the factory each WP3 module provides (D18):
+``mechanism_from_scenario(spec, scenario, *, base_dir) -> mechanism | sequence | None``."""
+
+ENERGY_MAX_POINTS: Final[int] = 8192
+"""Default quadrature-size limit of :meth:`ScenePropagation.energy_budget`: the closed-form
+kernel costs O(Q^2) time per panel and TX (about 3 s at Q = 8192); its memory is bounded
+(row blocks, :func:`sremu.physics.ris_kernel.energy_budget`)."""
 
 
 @dataclass(frozen=True)
@@ -340,6 +383,7 @@ class ScenePropagation:
             includes_cell_pattern=p.table.includes_cell_pattern,
         )
         obliq: Obliquity = "none" if p.table.includes_cell_pattern else p.obliquity
+        check_obliquity(obliq, stacklevel=3)  # Kirchhoff: ValidityWarning at build time (D2)
         rich: RichardsonResult | None = None
         level = 0
         if resolved == "po_patch":
@@ -364,6 +408,8 @@ class ScenePropagation:
                 max_halvings=self.numerics.richardson_max_halvings,
                 obliquity=obliq,
                 backend=self.backend,
+                seed=self.seed,
+                panel=p.id,
             )
             level = rich.level
         quad = build_quadrature(
@@ -461,19 +507,40 @@ class ScenePropagation:
             raise UnknownTarget(f"unknown node {node!r}")
         return self._nodes[node].trajectory.position(parse_exact(t, name="t"))
 
-    def set_node_position(self, node: NodeId, t: Fraction, position_m: Sequence[float]) -> None:
-        """Apply a timed ``node.set_position`` event (node must use an external trajectory)."""
-        traj = self._nodes[node].trajectory
+    def _node(self, node: NodeId) -> NodeModel:
+        try:
+            return self._nodes[node]
+        except KeyError:
+            raise UnknownTarget(f"unknown node {node!r}") from None
+
+    def set_node_position(
+        self, node: NodeId, t: Fraction | int | str, position_m: Sequence[float]
+    ) -> None:
+        """Apply a timed ``node.set_position`` event: hold ``position_m`` (m) from exact time
+        ``t`` (s) on. The node must use an external trajectory (``ConfigurationError``
+        otherwise); events must arrive in time order; unknown nodes raise ``UnknownTarget``."""
+        traj = self._node(node).trajectory
         if not hasattr(traj, "set_position"):
             raise ConfigurationError(f"node {node!r} does not have an external trajectory")
-        traj.set_position(t, position_m)
+        traj.set_position(parse_exact(t, name="event time"), position_m)
 
-    def set_node_trajectory(self, node: NodeId, t: Fraction, traj: Trajectory) -> None:
-        """Apply a timed ``node.set_trajectory`` event (external trajectory nodes only)."""
-        cur = self._nodes[node].trajectory
+    def set_node_trajectory(self, node: NodeId, t: Fraction | int | str, traj: Any) -> None:
+        """Apply a timed ``node.set_trajectory`` event: from exact time ``t`` (s) on, follow
+        ``traj`` at the time since the event. ``traj`` is a
+        :class:`sremu.physics.geometry.Trajectory` or a section 9.2 trajectory mapping
+        (``{"model": "constant_velocity", ...}``, built with the scenario seed). External
+        trajectory nodes only; events in time order."""
+        cur = self._node(node).trajectory
         if not hasattr(cur, "set_trajectory"):
             raise ConfigurationError(f"node {node!r} does not have an external trajectory")
-        cur.set_trajectory(t, traj)
+        if isinstance(traj, Mapping):
+            traj = trajectory_from_spec(dict(traj), node=node, seed=self.seed)
+        if not isinstance(traj, Trajectory):
+            raise ConfigurationError(
+                f"node {node!r}: set_node_trajectory needs a physics.geometry.Trajectory or a "
+                f"trajectory mapping, got {type(traj).__name__}"
+            )
+        cur.set_trajectory(parse_exact(t, name="event time"), traj)
 
     def initial_config(self, pid: PanelId) -> PanelConfig:
         """The panel's initial configuration (scenario ``initial``), failures applied."""
@@ -538,6 +605,32 @@ class ScenePropagation:
         """All links in scenario order."""
         return tuple(self._links)
 
+    def link_fc_hz(self, link: LinkId) -> float:
+        """Carrier of the link's TX stream, Hz: the f_c of every propagation phase
+        ``exp(-j 2 pi f_c tau)`` of the link's paths (``LinkJob.fc_hz``; D11)."""
+        return float(self.link_streams(link)[0].fc_hz)
+
+    def panel_geometry(self, panel: PanelId) -> PanelGeometry:
+        """``contracts.PanelGeometry`` of ``panel`` (D11, D17): pose, cell grid in the order
+        ``n = iv*n_u + iu``, physical tiles and gap, and ``n_quad`` = Q of the resolved cell
+        model (sub-cells after the Richardson check for ``po_patch``)."""
+        st = self._state(panel)
+        g = st.model.grid
+        return PanelGeometry.from_cells(
+            panel,
+            g.pose.center_m.tolist(),
+            g.pose.normal.tolist(),
+            g.pose.u_axis.tolist(),
+            g.n_u,
+            g.n_v,
+            g.pitch_u_m,
+            g.pitch_v_m,
+            n_quad=st.quad.n_points,
+            n_tiles_u=g.n_tiles_u,
+            n_tiles_v=g.n_tiles_v,
+            gap_m=g.gap_m,
+        )
+
     def _context(self, lk: LinkId, t: Fraction, pos: Mapping[NodeId, np.ndarray]) -> LinkContext:
         tx, rx = self._links[lk]
         return LinkContext(
@@ -577,10 +670,10 @@ class ScenePropagation:
                         amps.append(complex(a))
                         taus.append(float(d))
                         kinds.append(int(k))
-            for a, d in gap_paths.get(lk, []):
+            for a, d in gap_paths.get(lk, []):  # structural gap reflections (D10)
                 amps.append(a)
                 taus.append(d)
-                kinds.append(int(PathKind.RIS_TILE))
+                kinds.append(int(PathKind.RIS_GAP))
             paths[lk] = PathBundle(
                 lk,
                 tq,
@@ -841,11 +934,13 @@ class ScenePropagation:
     ) -> Mapping[LinkId, LinkPaths]:
         """Per-link paths with the configurations applied (linear in Gamma).
 
-        Order: the link's non-RIS paths, then for each panel (scenario order) and each of the
-        link's rows (row order) one RIS_TILE path per tile. A panel that is disabled or has
-        no configuration keeps its tile paths with zero amplitude; so does its structural
-        gap path (``gap_gamma``), because a disabled panel is absent as a whole (RQ-12).
-        Tile keys are the flat (panel, row, tile) index ``offset_panel + r K + k``.
+        Order: the link's ``PathBundle`` paths (LOS, WP3 mechanism paths, then one RIS_GAP
+        structural gap path per panel with ``gap_gamma``), then for each panel (scenario
+        order) and each of the link's rows (row order) one RIS_TILE path per tile. A panel
+        that is disabled or has no configuration keeps its tile paths with zero amplitude;
+        so does its structural gap path, because a disabled panel is absent as a whole
+        (RQ-12). Tile keys (D10): the flat (panel, row, tile) index
+        ``offset_panel + r K + k`` (>= 0) for RIS_TILE paths, -1 for every other path.
         """
         amps_by_panel = self.tile_amplitudes(snap, cfg)
         gap_pids = [
@@ -873,7 +968,7 @@ class ScenePropagation:
             base = pb.amp
             if gap_off:  # gap paths are the last len(gap_pids) entries, in panel order
                 n0 = pb.n_paths - len(gap_pids)
-                if n0 < 0 or np.any(pb.kind[n0:] != PathKind.RIS_TILE):
+                if n0 < 0 or np.any(pb.kind[n0:] != PathKind.RIS_GAP):
                     raise ConfigurationError(f"link {lk}: snapshot does not match this model")
                 base = pb.amp.copy()
                 base[[n0 + i for i in gap_off]] = 0.0
@@ -906,14 +1001,94 @@ class ScenePropagation:
             )
         return out
 
-    def ris_delay_s(self, panel: PanelId, rx: StreamId, t: Fraction) -> float:
-        """tau_RIS->rx at the panel centre, s."""
+    def ris_delay_s(
+        self, panel: PanelId, rx: StreamId, t: Fraction | int | str, tile: int | None = None
+    ) -> float:
+        """tau_RIS->rx in s at exact time ``t`` (D11): from the panel centre (``tile`` None)
+        or from the reference point of render tile ``tile`` in [0, K), the centroid of the
+        tile's cells used in ``RISCoefficients.tile_delay_s`` (same expression, so the value
+        equals the RIS->rx part of the row-0 tile delay bitwise). Unknown panels or streams
+        raise ``UnknownTarget``; a tile outside [0, K) raises ``ConfigurationError``."""
         st = self._state(panel)
-        node, _ = split_stream_id(rx)
         if rx not in self._streams:
             raise UnknownTarget(f"unknown stream {rx!r}")
-        p = self.node_position(node, t)
-        return float(np.linalg.norm(p - st.model.grid.pose.center_m)) / C0
+        p = self.node_position(self._streams[rx].node, t)
+        if tile is None:
+            ref = st.model.grid.pose.center_m
+        else:
+            k_count = int(st.tile_ref.shape[0])
+            if isinstance(tile, bool) or int(tile) != tile or not 0 <= int(tile) < k_count:
+                raise ConfigurationError(f"panel {panel!r}: tile {tile!r} outside [0, {k_count})")
+            ref = st.tile_ref[int(tile)]
+        return float(_dist(np.asarray(ref, np.float64)[None, :], p)[0]) / C0
+
+    def energy_budget(
+        self,
+        t: Fraction | int | str = 0,
+        cfg: Mapping[PanelId, PanelConfig] | None = None,
+        *,
+        max_points: int = ENERGY_MAX_POINTS,
+    ) -> dict[str, dict[str, float]]:
+        """On-demand energy diagnostic (D9, PH-23; never part of ``Snapshot.diag``).
+
+        For every enabled panel and every linked TX stream: the far-zone scattered power
+        and the intercepted (incident) power of the panel's quadrature points, both relative
+        to P_T (:func:`sremu.physics.ris_kernel.energy_budget`), for the configuration
+        ``cfg[panel]`` (default: the panel's initial configuration). Keys
+        ``"<panel>/<tx_stream>"``; values ``p_scat``, ``p_inc``, ``ratio`` and ``ratio_db``.
+        With the default obliquity ``ratio <= 1`` for every passive configuration.
+
+        Needs a direction-independent Gamma (an angle-independent table; the coupling hook
+        is not included) and at most ``max_points`` quadrature points (the closed-form
+        kernel is O(Q^2) in time); otherwise ``ConfigurationError``.
+        """
+        tq = parse_exact(t, name="t")
+        txs = {tx.stream: tx for tx, _rx in self._links.values()}
+        out: dict[str, dict[str, float]] = {}
+        for pid, st in self._panels.items():
+            m = st.model
+            conf = (cfg or {}).get(pid) or self.initial_config(pid)
+            if not conf.enabled:
+                continue
+            if not m.table.angle_independent:
+                raise ConfigurationError(
+                    f"panel {pid}: the energy diagnostic needs a direction-independent Gamma "
+                    "(an angle-independent table)"
+                )
+            q = st.quad.n_points
+            if q > max_points:
+                raise ConfigurationError(
+                    f"panel {pid}: {q} quadrature points > max_points = {max_points} for the "
+                    "O(Q^2) energy diagnostic"
+                )
+            s = np.asarray(conf.state)
+            if s.shape != (m.grid.n_cells,):
+                raise ConfigurationError(f"panel {pid}: state shape {s.shape}")
+            for sid, tx in txs.items():
+                g = m.table.gamma_at(tx.fc_hz)
+                if s.size and int(s.max()) >= g.size:
+                    raise ConfigurationError(f"panel {pid}: state outside [-1, {g.size})")
+                gam_cell = np.where(s >= 0, g[np.where(s >= 0, s, 0)], complex(m.gamma_dead))
+                ant = self._nodes[tx.node].antenna
+                p_scat, p_inc = _energy_budget(
+                    self.node_position(tx.node, tq),
+                    st.quad.points,
+                    st.quad.areas,
+                    m.grid.pose.normal,
+                    tx.fc_hz,
+                    gam_cell[st.quad.parent],
+                    ant_tx=None if isinstance(ant, Isotropic) else ant,
+                    obliquity=st.obliquity,
+                )
+                ratio = float(p_scat) / p_inc if p_inc > 0 else math.nan  # nan: TX not lit
+                ratio_db = math.nan if math.isnan(ratio) else 10.0 * math.log10(max(ratio, 1e-300))
+                out[f"{pid}/{sid}"] = {
+                    "p_scat": float(p_scat),
+                    "p_inc": float(p_inc),
+                    "ratio": ratio,
+                    "ratio_db": ratio_db,
+                }
+        return out
 
     def motion_bounds(self) -> MotionBounds:
         """Speeds and closest approaches over ``[0, horizon_s]`` (section 4.4 policy inputs)."""
@@ -1047,13 +1222,18 @@ class ScenePropagation:
         base_dir: str | Path | None = None,
         backend: Backend | None = None,
         render_tiles: Mapping[PanelId, tuple[int, int]] | None = None,
-        mechanisms: Iterable[Any] = (),
+        mechanisms: Iterable[Any] | None = None,
         horizon_s: str | int | Fraction | None = None,
     ) -> ScenePropagation:
-        """Build from a scenario (section 9.2): a pydantic model (``model_dump``), a mapping
-        with the frozen field names, or the path of a YAML/JSON/TOML scenario file (relative
-        files then resolve against its directory). Ground, walls, knife edges and diffuse
-        fading need WP3 mechanisms passed through ``mechanisms``.
+        """Build the full model from a scenario (section 9.2; D18): a pydantic model
+        (``model_dump``), a mapping with the frozen field names, or the path of a
+        YAML/JSON/TOML scenario file (relative files then resolve against its directory).
+
+        ``mechanisms=None`` (default) attaches the WP3 mechanisms that ``environment``
+        enables (:func:`wp3_mechanisms`; lazy imports, ``ConfigurationError`` when an enabled
+        entry's module is missing). An explicit iterable replaces them; it must not be empty
+        when ``environment`` enables a WP3 entry (an enabled entry is never dropped
+        silently). Random failure maps use ``sremu.rng`` purpose ``failure/<panel>`` (D14).
         """
         if isinstance(scenario, str | Path):
             path = Path(scenario)
@@ -1073,13 +1253,16 @@ class ScenePropagation:
         )
         be = backend or num.get("backend") or "numpy_ref"
         env = dict(d.get("environment") or {})
-        mechs = tuple(mechanisms)
-        needs_wp3 = [k for k in ("ground", "walls", "edges", "diffuse") if env.get(k)]
-        if needs_wp3 and not mechs:
-            raise ConfigurationError(
-                f"environment {needs_wp3} needs the WP3 mechanisms (physics.ground/walls/"
-                "diffraction/diffuse); pass them through mechanisms="
-            )
+        if mechanisms is None:
+            mechs = wp3_mechanisms(d, base_dir=bdir)
+        else:
+            mechs = tuple(mechanisms)
+            needs_wp3 = [k for k, _mod in WP3_MECHANISM_MODULES if env.get(k)]
+            if needs_wp3 and not mechs:
+                raise ConfigurationError(
+                    f"environment {needs_wp3} is enabled but mechanisms=() drops it; pass "
+                    "mechanisms=None to attach the WP3 mechanisms, or the mechanisms to use"
+                )
         occ = occluders_from_spec(env.get("occluders"))
         nodes = []
         for nd in d.get("nodes") or []:
@@ -1135,7 +1318,7 @@ class ScenePropagation:
                 grid.n_cells,
                 float(fl.get("dead_rate", 0.0)),
                 float(fl.get("stuck_rate", 0.0)),
-                keyed_generator(seed, "failure", pid),
+                _rng.generator(seed, "failure", pid),  # D14, section 6.2
                 n_states=table.n_states,
             )
             ctrl = dict(p.get("control") or {})
@@ -1199,6 +1382,53 @@ def _read_scenario_file(path: Path) -> dict[str, Any]:
     return dict(out)
 
 
+def wp3_mechanisms(
+    scenario: Mapping[str, Any], *, base_dir: str | Path | None = None
+) -> tuple[Any, ...]:
+    """The WP3 mechanisms that ``scenario["environment"]`` enables, in the order of
+    :data:`WP3_MECHANISM_MODULES` (D18).
+
+    An entry is enabled when it is present and non-empty (``ground: {...}``, a non-empty
+    ``walls`` or ``edges`` list, ``diffuse: {...}``). Its module is imported only then
+    (no hard dependency of WP2 on WP3) and must provide :data:`MECHANISM_FACTORY`, called as
+    ``mechanism_from_scenario(spec, scenario, base_dir=base_dir)``; it returns one
+    mechanism, a sequence of them, or None. A missing module or factory raises
+    ``ConfigurationError``.
+    """
+    env = dict(scenario.get("environment") or {})
+    bdir = None if base_dir is None else Path(base_dir)
+    out: list[Any] = []
+    for key, modname in WP3_MECHANISM_MODULES:
+        spec = env.get(key)
+        if not spec:
+            continue
+        try:
+            mod = importlib.import_module(modname)
+        except ModuleNotFoundError as exc:
+            if exc.name != modname:  # the module exists but one of its imports is missing
+                raise
+            raise ConfigurationError(
+                f"environment.{key} is enabled but {modname} (WP3) is not available"
+            ) from None
+        factory = getattr(mod, MECHANISM_FACTORY, None)
+        if not callable(factory):
+            raise ConfigurationError(
+                f"environment.{key}: {modname} has no {MECHANISM_FACTORY}(spec, scenario, "
+                "*, base_dir) (D18)"
+            )
+        made = factory(spec, scenario, base_dir=bdir)
+        if made is None:
+            continue
+        out.extend(made if isinstance(made, list | tuple) else [made])
+    return tuple(out)
+
+
 def from_scenario(scenario: Any, **kwargs: Any) -> ScenePropagation:
-    """Module-level factory (section 2.2): :meth:`ScenePropagation.from_scenario`."""
+    """Module-level factory (section 2.2, D18): the full model of a scenario, with the WP3
+    mechanisms its ``environment`` enables (:meth:`ScenePropagation.from_scenario`)."""
     return ScenePropagation.from_scenario(scenario, **kwargs)
+
+
+def _conforms(model: ScenePropagation) -> PropagationModel:
+    """Static check (mypy): ``ScenePropagation`` structurally satisfies the 1.1 protocol."""
+    return model

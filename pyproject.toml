@@ -136,6 +136,7 @@ module = [
     "sremu.errors",
     "sremu.contracts",
     "sremu.cli",
+    "sremu.sysinfo",
     "sremu.testing.*",
 ]
 disallow_untyped_defs = true

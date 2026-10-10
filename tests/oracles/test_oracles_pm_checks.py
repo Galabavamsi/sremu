@@ -253,6 +253,16 @@ def test_ph17_doppler_matches_pm_checks_t9():
     fb = np.angle(yb[1:] * np.conj(yb[:-1])) * fs / (2 * math.pi)
     close(2 * math.pi * (v / lam) * tb_s, J["T9_blockconst_phase_jump_per_block_rad"], 3)
     close(float(fb.mean()), J["T9_blockconst_apparent_mean_freq_Hz"], 2)
+    # the D7 closed form over the same window (2000 samples at 10 kS/s, 2 ms blocks)
+    from tests.oracles import mobility as mob
+
+    blk, rate = Fraction(1, 500), Fraction(10_000)
+    close(mob.block_constant_jump_rad(fc, v, blk), J["T9_blockconst_phase_jump_per_block_rad"], 3)
+    close(
+        mob.block_constant_mean_doppler_hz(fc, v, blk, rate, t.size),
+        J["T9_blockconst_apparent_mean_freq_Hz"],
+        2,
+    )
     # RIS path: 0.5 m x 0.5 m, 12 x 12 panel at (25, 10, 0) facing -y, focused on rx0
     p = make_panel_extent([25.0, 10.0, 0.0], [0, -1, 0], [1, 0, 0], 0.5, 0.5, 12, 12)
     g = focus_phases(tx, rx0, p, fc)
@@ -423,8 +433,13 @@ def test_vfm_ris_path_with_ground_factors_matches_pm_checks_t15():
 # --------------------------------------------------------------------------- T16 / T18 / T19
 
 
-def test_ph02_v1_default_geometry_k1_and_v2_match_pm_checks_t16():
-    fc = 2399996950.0
+def test_ph02_v1_default_geometry_k1_v1_and_v2_match_pm_checks_t16():
+    """T16: v1's default configuration, with v1's literal cell loop (pm_checks) rebuilt here
+    and compared with :func:`v1_default_scene` (D17 order), then K1, legacy_v1 (D4, c = 3e8)
+    and legacy_v2 against the stored values."""
+    from tests.oracles.ris import legacy_v1_h, v1_default_scene
+
+    s = v1_default_scene()
     pitch = 0.06
     pos = np.array(
         [
@@ -433,25 +448,12 @@ def test_ph02_v1_default_geometry_k1_and_v2_match_pm_checks_t16():
             for n in range(16)
         ]
     )
-    from tests.oracles.ris import Panel
-
-    idx = np.arange(256, dtype=np.int64)
-    p = Panel(
-        pos,
-        np.full(256, pitch**2),
-        np.array([1.0, 0, 0]),
-        np.array([0, 1.0, 0]),
-        np.array([0, 0, 1.0]),
-        idx,
-        idx,
-        idx,
-    )
-    tx = np.array([5.0, 2.0, 5.0])
-    rx = np.array([15.0, 8.0, 5.0])
-    g = np.exp(1j * np.pi / 4)
+    assert np.max(np.abs(s.panel.cells - pos)) <= 1e-12
+    tx, rx, p, fc, g = s.tx, s.rx, s.panel, s.fc_hz, s.gamma
     close(db(los_h(tx, rx, fc)), J["T16_v1cfg_LOS_dB"], 2)
     close(db(k1_h(tx, rx, p, fc, g)), J["T16_v1cfg_RIS_recommended_dB"], 2)
     close(db(legacy_v2_h(tx, rx, p, fc, g)), J["T16_v1cfg_RIS_v2_dB"], 2)
+    close(db(legacy_v1_h(tx, rx, p, fc, s.panel_area_m2, g)), J["T16_v1cfg_RIS_v1_dB"], 2)
     close(pitch / rf.wavelength(fc), J["T16_v1cfg_pitch_over_lambda"], 3)
 
 

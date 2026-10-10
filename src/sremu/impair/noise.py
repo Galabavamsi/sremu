@@ -1,8 +1,12 @@
-"""Thermal noise per receiver (DESIGN.md sections 5.12, 6.1).
+"""Thermal noise per receiver (DESIGN.md sections 3.4, 5.12, 6.1; D20).
 
-``noise(rx_key, k0, n, sigma)`` returns complex64 samples for absolute RX indices
-[k0, k0 + n) with ``E|w|**2 = sigma**2``; for thermal noise ``sigma**2 = k_B*T0*F*f_s`` W
-per receiver (:func:`thermal_sigma`; -113.975 dBm at 1 MS/s with F = 0 dB).
+Module-level API (render contract, D20): ``noise(rx_key, k0, n, sigma)`` returns complex64
+samples for absolute RX indices [k0, k0 + n). ``sigma`` is the TOTAL complex standard
+deviation: ``sigma**2 = E|w|**2`` (so I and Q each have variance ``sigma**2/2``). For thermal
+noise ``sigma**2 = k_B*T0*F*f_s`` W per receiver (:func:`thermal_sigma`; -113.975 dBm at
+1 MS/s with F = 0 dB). ``rx_key`` is the pair of uint32 Philox key words of the receiver's
+noise purpose, ``rng.derive_key(master_seed, "noise", <rx_stream>)``. The default backend is
+``numba_cpu``; ``backend="numpy_ref"`` selects the NumPy twin.
 
 The variates come from :mod:`sremu.rng` (scheme ``philox4x32-10/blake2b-v1``):
 ``rx_key = derive_key(master_seed, "noise", <rx_stream>)``, counter ``(k_lo, k_hi, 0, 0)``
@@ -23,10 +27,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sremu import rng
+from sremu.contracts import BackendName
+from sremu.errors import ConfigurationError
 from sremu.units import noise_power_w
 
 __all__ = [
     "NOISE_LANE",
+    "noise",
     "noise_numba",
     "noise_numpy",
     "normals_numba",
@@ -41,6 +48,27 @@ NOISE_LANE: Final[int] = 0
 def thermal_sigma(f_s: float, noise_figure_db: float = 0.0) -> float:
     """Complex standard deviation ``sqrt(k_B*T0*F*f_s)`` in sqrt(W) (section 5.12)."""
     return math.sqrt(noise_power_w(float(f_s), float(noise_figure_db)))
+
+
+def noise(
+    rx_key: tuple[int, int],
+    k0: int,
+    n: int,
+    sigma: float,
+    *,
+    backend: BackendName = "numba_cpu",
+) -> NDArray[np.complex64]:
+    """Complex64 AWGN for absolute RX samples [k0, k0 + n) with ``E|w|**2 = sigma**2`` (D20).
+
+    A pure function of ``(rx_key, absolute index)``: chunking, skipping and the thread count
+    cannot change a bit (I2a, I4). ``backend`` selects ``numba_cpu`` (default) or the
+    ``numpy_ref`` twin (same Philox words; normals equal to a few ulps, I5).
+    """
+    if backend == "numba_cpu":
+        return noise_numba(rx_key, k0, n, sigma)
+    if backend == "numpy_ref":
+        return noise_numpy(rx_key, k0, n, sigma)
+    raise ConfigurationError(f"unknown backend {backend!r} (numpy_ref | numba_cpu)")
 
 
 def noise_numba(rx_key: tuple[int, int], k0: int, n: int, sigma: float) -> NDArray[np.complex64]:

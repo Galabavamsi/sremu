@@ -1,8 +1,16 @@
 """``numpy_ref`` render backend and the segment preparation shared with ``numba_cpu``.
 
-Render contract (DESIGN.md section 3.4): ``render(job, out)`` ADDS the received signal of
-RX samples [k0, k1) into the complex128 accumulator ``out``. For each link (scenario order)
-and RX sample n, with ``w(n)``, chord delays and carrier cycles from D-1 (``interp.py``):
+Module-level API (render contract, DESIGN.md section 3.4 and D20):
+
+* ``render(job, out)`` ADDS the received signal of RX samples [k0, k1) of ``job`` into the
+  complex128 accumulator ``out`` (length ``k1 - k0``); a pure function of its inputs. The
+  ``numba_cpu`` twin is ``sremu.channel.render_numba.render``.
+* ``noise(rx_key, k0, n, sigma)`` is :func:`sremu.impair.noise.noise` on this backend:
+  complex64 AWGN for absolute RX samples [k0, k0 + n) with ``sigma**2 = E|w|**2`` (the total
+  complex variance; I and Q each carry ``sigma**2/2``).
+
+For each link (scenario order) and RX sample n, with ``w(n)``, chord delays and carrier
+cycles from D-1 (``interp.py``):
 
     y(n) = e^{+j 2 pi frac(df*n/f_s)} * sum_p A_p(n) e^{-j 2 pi c_p(n)} E_g(p)(n)
 
@@ -15,7 +23,9 @@ and RX sample n, with ``w(n)``, chord delays and carrier cycles from D-1 (``inte
   ``i = floor(d)``, ``mu = d - i`` and the polyphase table of ``fd.py``, summed as four
   partial sums over m mod 4 combined ``((0+1)+(2+3))``; integer-only delay reads
   ``x[n - floor(d + 1/2)]``;
-* ``df = f_c,tx - f_c,rx`` (``lo_offset_hz``) as an exact pure-function rotator.
+* ``df = f_c,tx - f_c,rx`` (``lo_offset_hz``) as an exact pure-function rotator at the RX
+  rate: ``exp(+j 2 pi frac(df*n/f_s))`` with n the ABSOLUTE RX sample index, so the rotation
+  starts at index 0 (phase 0 at n = 0), never at a page or segment start (D20).
 
 Summation order (D-3): links in job order, paths by index; the per-link sum is added to
 ``out``. ``numpy_ref`` evaluates every sample in closed form with direct ``cos``/``sin``
@@ -39,7 +49,6 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
 from typing import Final
 
 import numpy as np
@@ -89,7 +98,7 @@ class LinkStatic:
     has_lo: bool
     q_hi: float  # LO offset in cycles per sample, double-double
     q_lo: float
-    r_lo: complex  # exp(+j 2 pi q): LO rotator step (numba)
+    lo_step: float  # LO offset in cycles per sample reduced to [-1/2, 1/2] (numba rotator)
     # groups
     g_dint: NDArray[np.int64]
     g_dfrac: NDArray[np.float64]
@@ -104,13 +113,18 @@ class LinkStatic:
     p_aa: NDArray[np.complex128]
     p_da: NDArray[np.complex128]
     p_g: NDArray[np.int64]  # local group index
-    p_r: NDArray[np.complex128]  # exp(-j 2 pi dc*inv_len): path rotator step (numba)
+    p_step: NDArray[np.float64]  # dc*inv_len reduced to [-1/2, 1/2]: cycles/sample (numba)
     # transition terms
     t_k: NDArray[np.int64]
     t_code: NDArray[np.int64]
     t_dur: NDArray[np.float64]
     t_dAa: NDArray[np.complex128]  # (T, P)
     t_ddA: NDArray[np.complex128]  # (T, P)
+    # per-group (dint, dfrac, dd) as Python numbers, for the per-segment TX window
+    g_win: tuple[tuple[int, float, float], ...] = ()
+    # the numba backend's packed kernel arrays for this link (built lazily, kept with the
+    # memoized static; unused by numpy_ref)
+    nb_pack: object | None = None
 
     @property
     def n_paths(self) -> int:
@@ -123,14 +137,27 @@ class LinkStatic:
         return int(self.g_dint.shape[0])
 
     def window(self, grid: IntervalGrid, k0: int, k1: int) -> tuple[int, int]:
-        """TX index range [lo, hi] (inclusive) needed for RX samples [k0, k1)."""
-        ends = np.array([k0, k1 - 1], dtype=np.int64)
-        w_ends = weights(grid, ends)
-        s = self.g_dfrac[:, None] + w_ends[None, :] * self.g_dd[:, None]
-        f = np.floor(s + 0.5) if self.table is None else np.floor(s)
-        i_ends = self.g_dint[:, None] + f.astype(np.int64)
-        lo = k0 - int(i_ends.max()) - (self.taps - 1 - self.center) - _WINDOW_MARGIN
-        hi = (k1 - 1) - int(i_ends.min()) + self.center + _WINDOW_MARGIN
+        """TX index range [lo, hi] (inclusive) needed for RX samples [k0, k1).
+
+        The group delays at both segment ends (``w`` from D-1 at k0 and k1 - 1) bound the
+        delay over the segment, because the chord delay is linear in n.
+        """
+        na, nf, il = grid.n_a_int, grid.n_a_frac, grid.inv_len
+        w0 = (float(k0 - na) - nf) * il
+        w1 = (float(k1 - 1 - na) - nf) * il
+        half = 0.5 if self.table is None else 0.0
+        i_max = i_min = None
+        for dint, dfrac, dd in self.g_win:
+            for w in (w0, w1):
+                i = dint + math.floor((dfrac + w * dd) + half)
+                if i_max is None or i > i_max:
+                    i_max = i
+                if i_min is None or i < i_min:
+                    i_min = i
+        if i_max is None or i_min is None:
+            return k0, k0 - 1
+        lo = k0 - i_max - (self.taps - 1 - self.center) - _WINDOW_MARGIN
+        hi = (k1 - 1) - i_min + self.center + _WINDOW_MARGIN
         return lo, hi
 
 
@@ -158,6 +185,13 @@ class PreparedSegment:
         return self.k1 - self.k0
 
 
+def _exact(q: Fraction | int | float | str) -> Fraction:
+    """``q`` as a Fraction (no work when it already is one)."""
+    if type(q) is Fraction:
+        return q
+    return Fraction(q)
+
+
 def _check_1d(name: str, arr: object, dtype: type[np.generic], n: int | None) -> NDArray:
     if not isinstance(arr, np.ndarray) or arr.ndim != 1:
         raise ConfigurationError(f"{name} must be a 1-D numpy array")
@@ -174,7 +208,19 @@ def _arr_key(a: object) -> tuple[object, ...]:
     return ("obj", repr(a))
 
 
-def _static_key(lj: LinkJob, t_a: Fraction, t_b: Fraction, fs: Fraction) -> tuple[object, ...]:
+def _interval_key(t_a: Fraction, t_b: Fraction, fs: Fraction) -> tuple[int, ...]:
+    """Exact interval identity as plain ints (cheaper to hash than ``Fraction``)."""
+    return (
+        t_a.numerator,
+        t_a.denominator,
+        t_b.numerator,
+        t_b.denominator,
+        fs.numerator,
+        fs.denominator,
+    )
+
+
+def _static_key(lj: LinkJob, ikey: tuple[int, ...]) -> tuple[object, ...]:
     trans = tuple(
         (
             int(t.k_start),
@@ -196,9 +242,7 @@ def _static_key(lj: LinkJob, t_a: Fraction, t_b: Fraction, fs: Fraction) -> tupl
         _arr_key(lj.tau_b),
         _arr_key(lj.group),
         trans,
-        t_a,
-        t_b,
-        fs,
+        ikey,
     )
 
 
@@ -211,12 +255,25 @@ def clear_caches() -> None:
     also drops its flattenings)."""
     with _static_lock:
         _static_cache.clear()
-    _grid.cache_clear()
+        _grid_cache.clear()
 
 
-@lru_cache(maxsize=256)
-def _grid(t_a: Fraction, t_b: Fraction, fs: Fraction) -> IntervalGrid:
-    return interval_grid(t_a, t_b, fs)
+_GRID_CACHE_MAX: Final[int] = 256
+_grid_cache: OrderedDict[tuple[int, ...], IntervalGrid] = OrderedDict()
+
+
+def _grid(ikey: tuple[int, ...], t_a: Fraction, t_b: Fraction, fs: Fraction) -> IntervalGrid:
+    """Memoized :func:`interval_grid` (``ikey`` = :func:`_interval_key` of the arguments)."""
+    with _static_lock:
+        hit = _grid_cache.get(ikey)
+        if hit is not None:
+            return hit
+    g = interval_grid(t_a, t_b, fs)
+    with _static_lock:
+        _grid_cache[ikey] = g
+        if len(_grid_cache) > _GRID_CACHE_MAX:
+            _grid_cache.popitem(last=False)
+    return g
 
 
 def _build_static(lj: LinkJob, grid: IntervalGrid, fs: Fraction) -> LinkStatic:
@@ -244,7 +301,10 @@ def _build_static(lj: LinkJob, grid: IntervalGrid, fs: Fraction) -> LinkStatic:
     if p:
         labels, env_a = group_envelope_delays(ta, grp)
         _, env_b = group_envelope_delays(tb, grp)
-        p_g = np.searchsorted(labels, grp.astype(np.int64)).astype(np.int64)
+        if labels.shape[0] == 1:
+            p_g = np.zeros(p, np.int64)
+        else:
+            p_g = np.searchsorted(labels, grp.astype(np.int64)).astype(np.int64)
     else:
         env_a = env_b = np.zeros(0)
         p_g = np.zeros(0, np.int64)
@@ -254,8 +314,7 @@ def _build_static(lj: LinkJob, grid: IntervalGrid, fs: Fraction) -> LinkStatic:
     if not math.isfinite(lo_hz):
         raise ConfigurationError(f"{name}: lo_offset_hz must be finite")
     q_hi, q_lo = double_double(Fraction(lo_hz) / fs) if lo_hz != 0.0 else (0.0, 0.0)
-    qred = (q_hi - round(q_hi)) + q_lo
-    r_lo = complex(math.cos(TWO_PI * qred), math.sin(TWO_PI * qred))
+    lo_step = (q_hi - round(q_hi)) + q_lo
 
     nt = len(lj.trans)
     t_k = np.zeros(nt, dtype=np.int64)
@@ -278,18 +337,19 @@ def _build_static(lj: LinkJob, grid: IntervalGrid, fs: Fraction) -> LinkStatic:
     p_dc = (fc * (tb - ta)).astype(np.float64)
     step = p_dc * grid.inv_len
     step = step - np.rint(step)
-    p_r = np.empty(p, dtype=np.complex128)
-    p_r.real = np.cos(TWO_PI * step)
-    p_r.imag = -np.sin(TWO_PI * step)
+    g_dint_a = np.atleast_1d(g_dint).astype(np.int64)
+    g_dfrac_a = np.atleast_1d(g_dfrac).astype(np.float64)
+    g_dd_a = np.atleast_1d(fs_f * (env_b - env_a)).astype(np.float64)
+    g_win = tuple(zip(g_dint_a.tolist(), g_dfrac_a.tolist(), g_dd_a.tolist(), strict=True))
     return LinkStatic(
         link=lj.link,
         has_lo=lo_hz != 0.0,
         q_hi=float(q_hi),
         q_lo=float(q_lo),
-        r_lo=r_lo,
-        g_dint=np.atleast_1d(g_dint).astype(np.int64),
-        g_dfrac=np.atleast_1d(g_dfrac).astype(np.float64),
-        g_dd=np.atleast_1d(fs_f * (env_b - env_a)).astype(np.float64),
+        lo_step=float(lo_step),
+        g_dint=g_dint_a,
+        g_dfrac=g_dfrac_a,
+        g_dd=g_dd_a,
         fd=fd,
         table=table,
         taps=taps,
@@ -299,24 +359,32 @@ def _build_static(lj: LinkJob, grid: IntervalGrid, fs: Fraction) -> LinkStatic:
         p_aa=aa.copy(),
         p_da=ab - aa,
         p_g=p_g,
-        p_r=p_r,
+        p_step=step.astype(np.float64),
         t_k=t_k,
         t_code=t_code,
         t_dur=t_dur,
         t_dAa=t_dAa,
         t_ddA=t_ddA,
+        g_win=g_win,
     )
 
 
 def link_static(lj: LinkJob, t_a: Fraction, t_b: Fraction, fs: Fraction) -> LinkStatic:
     """Memoized static preparation of one link for the interval [t_a, t_b)."""
-    key = _static_key(lj, t_a, t_b, fs)
+    ta, tb, f = _exact(t_a), _exact(t_b), _exact(fs)
+    return _link_static(lj, _interval_key(ta, tb, f), ta, tb, f)
+
+
+def _link_static(
+    lj: LinkJob, ikey: tuple[int, ...], t_a: Fraction, t_b: Fraction, fs: Fraction
+) -> LinkStatic:
+    key = _static_key(lj, ikey)
     with _static_lock:
         hit = _static_cache.get(key)
         if hit is not None:
             _static_cache.move_to_end(key)
             return hit
-    st = _build_static(lj, _grid(t_a, t_b, fs), fs)
+    st = _build_static(lj, _grid(ikey, t_a, t_b, fs), fs)
     with _static_lock:
         _static_cache[key] = st
         if len(_static_cache) > _STATIC_CACHE_MAX:
@@ -333,16 +401,17 @@ def prepare_segment(job: SegmentJob) -> PreparedSegment:
     k0, k1 = int(job.k0), int(job.k1)
     if k1 < k0:
         raise ConfigurationError(f"segment end {k1} < start {k0}")
-    fs = Fraction(job.f_s)
+    fs = _exact(job.f_s)
     if fs <= 0:
         raise ConfigurationError(f"sample rate must be > 0, got {fs}")
-    t_a, t_b = Fraction(job.t_a), Fraction(job.t_b)
+    t_a, t_b = _exact(job.t_a), _exact(job.t_b)
     if t_b < t_a:
         raise ConfigurationError(
             f"snapshot interval end t_b = {t_b} precedes its start t_a = {t_a} "
             "(t_b == t_a is a static, event-only interval)"
         )
-    grid = _grid(t_a, t_b, fs)
+    ikey = _interval_key(t_a, t_b, fs)
+    grid = _grid(ikey, t_a, t_b, fs)
     if k1 > k0:
         if k0 < grid.n_first:
             raise ConfigurationError(
@@ -355,7 +424,7 @@ def prepare_segment(job: SegmentJob) -> PreparedSegment:
             )
     links = []
     for lj in job.links:
-        st = link_static(lj, t_a, t_b, fs)
+        st = _link_static(lj, ikey, t_a, t_b, fs)
         if st.n_paths and k1 > k0:
             lo, hi = st.window(grid, k0, k1)
             x = np.ascontiguousarray(lj.ring.read(lo, hi - lo + 1), dtype=np.complex64)
@@ -459,7 +528,7 @@ def render(job: SegmentJob, out: NDArray[np.complex128]) -> None:
 
 
 def noise(rx_key: tuple[int, int], k0: int, n: int, sigma: float) -> NDArray[np.complex64]:
-    """``numpy_ref`` AWGN; see :func:`sremu.impair.noise.noise_numpy`."""
+    """``numpy_ref`` AWGN, ``E|w|**2 = sigma**2``; see :func:`sremu.impair.noise.noise`."""
     from sremu.impair.noise import noise_numpy
 
     return noise_numpy(rx_key, k0, n, sigma)

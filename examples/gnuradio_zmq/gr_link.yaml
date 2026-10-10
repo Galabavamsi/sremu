@@ -1,0 +1,26 @@
+# E2 scene (examples/gnuradio_zmq; DESIGN.md 8.4, 11 E-E2). SIM geometry of the quickstart:
+# a GNU Radio transmitter "gr" and receiver "grrx" around an ideal 1-bit 16 x 16 RIS at
+# 1 MS/s. Both streams are fed / drained by a raw REQ/REP peer (GNU Radio's stock ZMQ REP
+# Sink and REQ Source), so they have no in-process traffic. Lockstep only.
+schema_version: "1.0"
+name: gnuradio_zmq
+seed: 5
+description: "GNU Radio raw REQ/REP peer through a LOS + RIS link (E2)"
+nodes:
+  - id: gr
+    position_m: [4.330127019, -2.5, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 5.0e5}
+  - id: grrx
+    position_m: [4.698463104, 1.710100717, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}
+ris:
+  - id: ris0
+    pose: {center_m: [0, 0, 0], normal: [1, 0, 0], u_axis: [0, 1, 0]}
+    grid: {n_u: 16, n_v: 16, pitch_u_m: 0.0428, pitch_v_m: 0.0428}
+    states: {library: ideal_antipodal}
+    initial: {fill: 0}
+run: {duration_s: "1"}

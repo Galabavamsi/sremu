@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import yaml
 
+from sremu import rng as sremu_rng
 from sremu.errors import (
     BandwidthExceeded,
     ConfigurationError,
@@ -241,7 +242,7 @@ def test_ph31_sample_keeps_reciprocity_and_follows_sigma():
     ti, ts = np.meshgrid(th, th, indexing="ij")
     g = (0.9 * np.exp(1j * np.radians(0.5 * (ti + ts))))[None, None]
     t = ResponseTable(["a"], [3.5e9], th, g, prov("measured", 0.2, 3.0))
-    gen = np.random.Generator(np.random.Philox(key=20261010))
+    gen = sremu_rng.generator(20261010, "table_mc", "ph31/sample")  # D14
     samples = np.stack([t.sample(gen).gamma for _ in range(4000)])
     assert np.array_equal(samples, np.swapaxes(samples, 3, 4))  # exactly reciprocal
     mag_db = 20 * np.log10(np.abs(samples[:, 0, 0, 0, 1]) / 0.9)

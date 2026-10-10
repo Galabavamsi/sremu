@@ -553,7 +553,8 @@ def test_derived_doppler_bound_and_t_curv():
     r_min = min(d_ap_mu, d_ap_cells, d_mu_cells)
     assert row["r_min_m"] == pytest.approx(r_min, abs=1e-9)
     k = 2 * math.pi * 3.5e9 / C0
-    expect = math.sqrt(8 * 1e-3 * r_min / (k * 1.5**2))
+    # lead decision D1: the chord rule gets eps_rel/2, T_curv = sqrt(8 (eps_rel/2) r_min/(k v^2))
+    expect = math.sqrt(8 * (1e-3 / 2) * r_min / (k * 1.5**2))
     assert row["t_curv_s_bound"] == pytest.approx(expect, rel=1e-8)
     assert row["t_u0_s_estimate"] == pytest.approx(min(expect, 0.01), rel=1e-8)
 

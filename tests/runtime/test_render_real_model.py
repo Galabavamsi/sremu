@@ -15,7 +15,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from sremu.channel.interp import EPS_REL, PanelGeometry, choose_policy, verify_interp
+from sremu.channel.interp import (
+    EPS_REL,
+    PanelPolicyInput,
+    choose_policy,
+    choose_policy_for_model,
+    verify_interp,
+)
 from sremu.contracts import PanelConfig
 from sremu.units import C0
 
@@ -142,8 +148,10 @@ def _lab_walk_real():
     m1 = _build(d, "4/10")
     link = m1.links()[0]
     fs = Fraction(20_000)
-    geo = PanelGeometry("ris0", 25 * pitch, 25 * pitch, 25, 25, FC, 1)
-    pol = choose_policy(m1.motion_bounds(), [geo], {link: FC}, fs)
+    # D11: the policy consumes the model's contract PanelGeometry
+    pol = choose_policy_for_model(m1, fs)
+    geo = PanelPolicyInput(m1.panel_geometry("ris0"), FC, 1)
+    assert pol == choose_policy(m1.motion_bounds(), [geo], {link: FC}, fs)
     tp = pol.tiles["ris0"]
     model = m1.with_render_tiles({"ris0": (tp.tiles_u, tp.tiles_v)})
     # focus the panel on the RX at t = 0.2 s with the oracle CSI (per-cell best state)
@@ -152,13 +160,13 @@ def _lab_walk_real():
     return model, link, fs, pol, cfg
 
 
-def test_ph18_real_model_lab_walk_vs_per_element_evaluation() -> None:
+def test_ph18_real_model_lab_walk_vs_per_element_evaluation(backend_name: str) -> None:
     model, link, fs, pol, cfg = _lab_walk_real()
     m_a = math.floor(Fraction(19, 100) / pol.t_u_s)
     m_b = math.ceil(Fraction(21, 100) / pol.t_u_s)
     k_lo, k_hi = math.ceil(m_a * pol.t_u_s * fs), math.ceil(m_b * pol.t_u_s * fs)
     ring = const_ring("tx.tx0", fs, k_hi + 64)
-    y = render_span(SpanSpec(model, cfg, link, FC, ring, fs, pol.t_u_s), k_lo, k_hi)
+    y = render_span(SpanSpec(model, cfg, link, FC, ring, fs, pol.t_u_s), k_lo, k_hi, backend_name)
     h = np.array(
         [model.evaluate(model.snapshot(Fraction(k) / fs), cfg)[link] for k in range(k_lo, k_hi)]
     )

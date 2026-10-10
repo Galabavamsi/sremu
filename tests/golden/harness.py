@@ -6,6 +6,17 @@
   golden cannot silently drift from its script.
 * Comparisons: relative errors, parabolic lobe finding, the G2 level criterion and the
   ST-02 statistics used by G6. Pure numpy; no sremu implementation imports here.
+
+Cell ordering of the golden panel files (D17, normative since contract 1.1). Every per-cell
+CSV (``G1_cells.csv``, ``G2_G3_cells.csv``, ``G7_cells.csv``) lists the physical cells of a
+panel in the sremu order ``n = iv*n_u + iu`` (column ``n``; ``iu`` along the panel
+``u_axis``, ``iv`` along ``normal x u_axis``), with the cell centre (``x, y, z`` in m) and
+the per-cell state. Centres follow D17: the cell array is centred on the panel centre, an
+extra inert ``gap_m`` separates physical tiles (spacing pitch + gap across a tile boundary),
+and the quadrature area of a cell is its pitch area. The generating MATLAB helper
+``tools/matlab/golden_util_panel.m`` implements the same rule, and the metas of G1-G3 state
+it in their notes. ``test_goldens.py::test_d17_*`` checks every golden cell file against
+``sremu.contracts.PanelGeometry``.
 """
 
 from __future__ import annotations

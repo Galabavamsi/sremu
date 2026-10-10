@@ -5,7 +5,8 @@ Every item raises ``NonPhysicalError`` unless called with ``allow_nonphysical=Tr
 Items (formula per cell; teeth: the legacy item must FAIL the physical guard):
 
 * ``legacy_v1``: v1 ``total_nlos_gain``, whole-panel area in every cell, ``q = 0.285``,
-  ``abs(cos)``. Teeth: about +24.4 dB vs K1 in the v1 default geometry.
+  ``abs(cos)``, v1's own speed of light ``units.C_LEGACY_V1 = 3e8`` (D4). Teeth:
+  +24.39 +- 0.05 dB vs K1 in the v1 default geometry.
 * ``legacy_v2``: ``(lambda/4pi)^2 sqrt(cos cos)/(r_i r_s)`` (no area, no j). Teeth:
   +12.04 dB per 4x refinement.
 * ``legacy_wcl_eq2``: WCL letter Eq. (2)/(3), ``(lambda/4) A (cos cos)^q/(r_i r_s)``. Teeth:
@@ -15,10 +16,10 @@ Items (formula per cell; teeth: the legacy item must FAIL the physical guard):
 * ``block_constant_delay``: v2 staircase geometry (delay held per block). Teeth: the
   -148.3 Hz alias instead of +350.2 Hz.
 
-Deviation: v1 used ``c = 3e8``; this transcription uses ``units.C0`` (the only c allowed in
-the code base, section 3.1). The amplitude differs by ``20 log10(3e8/C0) = 0.006 dB``, and
-the phases of the non-focused v1 sum shift slightly: in the v1 default geometry the gap to
-K1 is 24.48 dB (24.39 dB with ``c = 3e8``).
+Speed of light (D4): ``legacy_v1`` reproduces v1 exactly, including v1's rounded
+``c = 3e8``, through ``units.C_LEGACY_V1``. This module is the only user of that constant
+(``tests/unit/test_layering.py`` enforces it); every other kernel here, and K1, uses
+``units.C0``. With ``C0`` instead, the v1 default-geometry gap would be 24.48 dB.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import numpy as np
 from sremu.errors import NonPhysicalError
 from sremu.physics.antennas import Antenna
 from sremu.physics.ris_kernel import Obliquity, k1_channel
-from sremu.units import C0
+from sremu.units import C0, C_LEGACY_V1
 
 __all__ = [
     "LEGACY_ITEMS",
@@ -86,15 +87,17 @@ def legacy_v1(
 ) -> complex:
     """v1 ``total_nlos_gain`` transcription: ``p = (q A_panel c)^2/(4 pi f)^2 * pi
     |ci|^(2q) |cs|^(2q)/(ri^2 rs^2)``, summed as ``bn sqrt(p) exp(-j 2 pi f (ri+rs)/c)`` with
-    the WHOLE panel area in every cell and ``abs(cos)`` (back side admitted)."""
+    the WHOLE panel area in every cell and ``abs(cos)`` (back side admitted). ``c`` is v1's
+    ``units.C_LEGACY_V1 = 3e8`` in both the amplitude and the phase (D4)."""
     _guard(allow_nonphysical, "legacy_v1")
+    c_v1 = C_LEGACY_V1
     pts = np.asarray(points, np.float64)
     ri, rs, ci, cs = _geom(np.asarray(tx), np.asarray(rx), pts, np.asarray(normal, np.float64))
     q = WCL_Q
-    p = (q * panel_area_m2 * C0) ** 2 / (4 * math.pi * fc_hz) ** 2
+    p = (q * panel_area_m2 * c_v1) ** 2 / (4 * math.pi * fc_hz) ** 2
     p = p * math.pi * np.abs(ci) ** (2 * q) * np.abs(cs) ** (2 * q) / (ri**2 * rs**2)
     b = np.exp(1j * math.pi / 4) * np.ones_like(ri) if bn is None else np.asarray(bn)
-    return complex(np.sum(b * np.sqrt(p) * np.exp(-1j * 2 * math.pi * fc_hz * (ri + rs) / C0)))
+    return complex(np.sum(b * np.sqrt(p) * np.exp(-1j * 2 * math.pi * fc_hz * (ri + rs) / c_v1)))
 
 
 def legacy_v2(

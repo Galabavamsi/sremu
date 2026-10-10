@@ -56,7 +56,7 @@ def test_cff_authors_in_order(cff: dict) -> None:
         ("Shubhika", "Mishra"),
         ("Anurag", "Jaiswal"),
         ("Smriti", "Kumar"),
-        ("Mansi", None),
+        ("Mansi", "Ambwani"),
         ("Arzad Alam", "Kherani"),
     ]
     for a in cff["authors"]:

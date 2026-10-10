@@ -4,6 +4,9 @@ Rules (normative, section 3.1):
 
 * ``C0`` is the only speed of light in the code base. No other literal for c may appear
   anywhere; ``tests/unit/test_layering.py`` enforces this with a token scan.
+* The single exception (D4) is ``C_LEGACY_V1 = 3.0e8``, the rounded c of the v1 emulator. It
+  exists only so that ``sremu.physics.legacy`` can reproduce v1 numbers for the teeth tests;
+  no other module may use it, and the literal may appear only here.
 * Internal quantities are SI. dB and dBm appear only at I/O boundaries, through the helpers
   below.
 
@@ -21,6 +24,7 @@ from numpy.typing import NDArray
 
 __all__ = [
     "C0",
+    "C_LEGACY_V1",
     "DBM_PER_HZ_THERMAL",
     "K_B",
     "T0",
@@ -38,6 +42,13 @@ __all__ = [
 
 C0: Final[float] = 299_792_458.0
 """Speed of light in vacuum, m/s (exact SI value). The only c in sremu."""
+
+C_LEGACY_V1: Final[float] = 3.0e8
+"""LEGACY ONLY (D4): the rounded speed of light, m/s, used by the v1 emulator.
+
+Exists only for ``sremu.physics.legacy`` (``legacy_v1`` teeth: +24.39 +- 0.05 dB vs K1 in the
+v1 default geometry). Never use it for physics; every other module uses :data:`C0`.
+"""
 
 K_B: Final[float] = 1.380649e-23
 """Boltzmann constant, J/K (exact SI 2019 value)."""

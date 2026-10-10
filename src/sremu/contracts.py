@@ -1,7 +1,9 @@
-"""Frozen cross-work-package contracts (DESIGN.md section 3.4; CONTRACT_VERSION "1.0").
+"""Frozen cross-work-package contracts (DESIGN.md section 3.4; CONTRACT_VERSION "1.1").
 
 This module is frozen at the end of WP0. It changes only through a contract change request
-(CCR, section 14.3) applied by the lead together with a ``CONTRACT_VERSION`` bump.
+(CCR, section 14.3) applied by the lead together with a ``CONTRACT_VERSION`` bump; every
+change is listed in ``docs/contracts_changelog.md``. Version 1.1 applies the lead decisions
+v1.2 (D3, D9, D10, D11, D17, D20).
 
 Conventions (section 3.1, normative):
 
@@ -16,6 +18,14 @@ Conventions (section 3.1, normative):
 * IQ at every interface is complex64; accumulators are complex128 (section 3.5).
 * Dataclasses holding arrays use ``eq=False`` (identity equality); treat their arrays as
   immutable after construction.
+
+Panel geometry conventions (D17, normative; see :class:`PanelGeometry`): the physical cell
+index is ``n = iv*n_u + iu`` with ``iu`` along ``u_axis`` and ``iv`` along
+``v_axis = normal x u_axis``. This is the order of ``PanelConfig.state``, of the cell axis N
+of ``RISCoefficients`` (``tile_of_cell``, ``B``, ``C``) and of ``CsiView.cascade``. Cells are
+centred on the panel centre, physical tiles are separated by an extra inert gap ``gap_m``
+(spacing across a tile boundary is pitch + gap) and the quadrature area of a cell is its
+pitch area.
 """
 
 from __future__ import annotations
@@ -77,6 +87,7 @@ __all__ = [
     "ObservationField",
     "ObservationSpec",
     "PanelConfig",
+    "PanelGeometry",
     "PanelId",
     "PathBundle",
     "PathKind",
@@ -101,6 +112,7 @@ __all__ = [
     "TransitionTerm",
     "TxMetadata",
     "TxRing",
+    "Vec3",
     "check_link",
     "config_hash",
     "link_id",
@@ -109,7 +121,8 @@ __all__ = [
     "stream_id",
 ]
 
-CONTRACT_VERSION: Final[str] = "1.0"
+CONTRACT_VERSION: Final[str] = "1.1"
+"""Version of this contract; recorded in every manifest (section 3.6)."""
 
 # --------------------------------------------------------------------------- identifiers
 StreamId: TypeAlias = str
@@ -120,6 +133,8 @@ PanelId: TypeAlias = str
 """RIS panel id from the scenario, e.g. ``"ris0"``."""
 NodeId: TypeAlias = str
 """Node id from the scenario, e.g. ``"ap"``."""
+Vec3: TypeAlias = tuple[float, float, float]
+"""A 3-vector of floats (positions in m, or dimensionless unit vectors)."""
 
 _ID_RE: Final = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -205,7 +220,7 @@ MAX_CMD_ID_LEN: Final[int] = 64
 MAX_ELEMENTS_PER_COMMAND: Final[int] = 65_536
 """Maximum number of elements in one command (section 8.5)."""
 MAX_MESSAGE_BYTES: Final[int] = 1 << 20
-"""Maximum control message size, 1 MiB (section 8.5)."""
+"""Maximum control message size: 2**20 = 1,048,576 bytes = 1 MiB (D3; section 8.5, IO-04)."""
 MAX_FRAME_SAMPLES: Final[int] = 1 << 22
 """Maximum ``nsamps`` of one data-plane frame (section 8.3)."""
 DEFAULT_MAX_COMMAND_RATE_HZ: Final[float] = 1e4
@@ -237,7 +252,14 @@ COUNTER_NAMES: Final[tuple[str, ...]] = (
 
 
 class PathKind(IntEnum):
-    """Kind of a propagation path (stored as int8 in path arrays)."""
+    """Kind of a propagation path (stored as int8 in path arrays).
+
+    * ``RIS_TILE``: one configurable RIS path per (panel, row, tile), produced only by
+      ``combine()``; in ``LinkPaths`` it always carries a tile key ``>= 0`` (D10). It never
+      appears in a ``PathBundle``.
+    * ``RIS_GAP``: a structural (non-configurable) reflection from a panel's inter-tile gaps
+      (``tiles.gap_gamma``); a fixed path of the ``PathBundle`` with tile key ``-1`` (D10).
+    """
 
     LOS = 0
     GROUND = 1
@@ -245,6 +267,10 @@ class PathKind(IntEnum):
     DIFF = 3
     RIS_TILE = 4
     DIFFUSE = 5
+    RIS_GAP = 6
+
+
+_PATH_KIND_VALUES: Final = np.array([int(k) for k in PathKind], dtype=np.int8)
 
 
 class EventPriority(IntEnum):
@@ -287,6 +313,22 @@ def _check_array(
     if arr.ndim != ndim:
         raise ValueError(f"{owner}.{name} must be {ndim}-D, got shape {arr.shape}")
     return arr
+
+
+def _check_kinds(owner: str, kind: np.ndarray) -> None:
+    if kind.size and not bool(np.all(np.isin(kind, _PATH_KIND_VALUES))):
+        bad = sorted({int(k) for k in kind[~np.isin(kind, _PATH_KIND_VALUES)]})
+        raise ValueError(f"{owner}.kind holds values {bad} that are not PathKind values")
+
+
+def _vec3(owner: str, name: str, value: object) -> Vec3:
+    try:
+        t = tuple(float(x) for x in value)  # type: ignore[attr-defined]
+    except TypeError:
+        raise TypeError(f"{owner}.{name} must be a sequence of 3 floats") from None
+    if len(t) != 3 or not all(np.isfinite(t)):
+        raise ConfigurationError(f"{owner}.{name} must be 3 finite floats, got {value!r}")
+    return (t[0], t[1], t[2])
 
 
 def config_hash(state: np.ndarray, enabled: bool = True) -> str:
@@ -335,7 +377,8 @@ class PathBundle:
       Fresnel Gamma, F(nu), partition factor. EXCLUDES the propagation phase
       ``exp(-j 2 pi f_c tau)``.
     * ``delay_s``: (P,) float64, absolute propagation delay, s.
-    * ``kind``: (P,) int8 ``PathKind`` values.
+    * ``kind``: (P,) int8 ``PathKind`` values. ``RIS_TILE`` is not allowed here (configurable
+      RIS paths come from ``combine()``); a structural gap reflection is ``RIS_GAP`` (D10).
     """
 
     link: LinkId
@@ -350,6 +393,12 @@ class PathBundle:
         for name, dt in (("delay_s", np.float64), ("kind", np.int8)):
             if _check_array("PathBundle", name, getattr(self, name), dt, 1).shape[0] != n:
                 raise ValueError(f"PathBundle.{name} length differs from amp length {n}")
+        _check_kinds("PathBundle", self.kind)
+        if bool(np.any(self.kind == PathKind.RIS_TILE)):
+            raise ValueError(
+                "PathBundle.kind must not contain RIS_TILE (RIS tile paths come from combine(); "
+                "structural gap reflections are RIS_GAP, D10)"
+            )
 
     @property
     def n_paths(self) -> int:
@@ -363,15 +412,26 @@ class RISCoefficients:
 
     * ``rows``: R entries ``(link, hop_variant)``; variant 0 direct, 1 Tx-image,
       2 Rx-image, 3 both (ground image expansion).
-    * ``tile_of_cell``: (N,) int32 in [0, K): tile of each physical cell.
-    * ``tile_delay_s``: (R, K) float64 reference delay Tx -> tile reference point -> Rx, s.
+    * ``tile_of_cell``: (N,) int32 in [0, K): render (Doppler) tile of each physical cell,
+      cells in the D17 order ``n = iv*n_u + iu``. With render tiles ``tiles_u x tiles_v``
+      the tile is ``k = tv*tiles_u + tu``, ``tu = iu*tiles_u // n_u``,
+      ``tv = iv*tiles_v // n_v``.
+    * ``tile_delay_s``: (R, K) float64 reference delay Tx -> tile reference point -> Rx, s
+      (the same reference point as ``PropagationModel.ris_delay_s(..., tile=k)``).
     * ``B``: (R, S, N) complex128 per state and physical cell:
       Gamma(s,f,theta_i,theta_s) * A * o * sqrt(G_T G_R) * ground factors * j/(4 pi r_i r_s)
       * exp(-jk(r_i + r_s)) * exp(+j 2 pi f_c tau_tile), i.e. the phase RELATIVE to the
-      cell's tile reference. ``None`` when the separable form is used.
-    * ``C``: (R, N) complex128 separable form (same without Gamma), with ``gamma``: (S,)
-      complex128 alphabet (efficiency already applied). Exactly one of ``B`` and
-      (``C``, ``gamma``) is given.
+      cell's tile reference. ``A`` is the cell's pitch area (D17).
+    * ``C``: (R, N) complex128, the same without Gamma (the Gamma-free geometric factor).
+    * ``gamma``: (S,) complex128 separable alphabet (efficiency already applied).
+
+    Allowed forms (D11): the separable form ``C`` + ``gamma`` (``B`` None); the full form
+    ``B`` (``C`` and ``gamma`` None); or **both** ``B`` and ``C`` (``gamma`` optional). When
+    ``B`` is present it is authoritative for live cells and ``separable`` is False; a ``C``
+    carried alongside is the Gamma-free factor that dead cells (``gamma_dead * C[r, n]``) and
+    coupling-hook deltas need. When both ``B`` and ``gamma`` are given, ``gamma`` has S
+    entries. ``gamma`` never comes without ``C``.
+
     * ``gamma_dead``: reflection coefficient of dead cells (state -1); default 0 (absorbing).
     """
 
@@ -398,20 +458,24 @@ class RISCoefficients:
         k = td.shape[1]
         if n and (int(self.tile_of_cell.min()) < 0 or int(self.tile_of_cell.max()) >= k):
             raise ValueError(f"tile_of_cell values must lie in [0, {k})")
-        separable = self.C is not None or self.gamma is not None
-        if (self.B is None) == (not separable):
-            raise ValueError("give exactly one of B or (C, gamma)")
+        if self.B is None and self.C is None:
+            raise ValueError("give B, or C with gamma, or both B and C")
+        if self.gamma is not None and self.C is None:
+            raise ValueError("gamma needs C (the separable form is C with gamma)")
+        if self.B is None and self.gamma is None:
+            raise ValueError("the separable form needs both C and gamma")
         if self.B is not None:
             b = _check_array("RISCoefficients", "B", self.B, np.complex128, 3)
             if b.shape[0] != r or b.shape[2] != n:
                 raise ValueError(f"B shape {b.shape} != (R={r}, S, N={n})")
-        else:
-            if self.C is None or self.gamma is None:
-                raise ValueError("the separable form needs both C and gamma")
+        if self.C is not None:
             c = _check_array("RISCoefficients", "C", self.C, np.complex128, 2)
             if c.shape != (r, n):
                 raise ValueError(f"C shape {c.shape} != (R={r}, N={n})")
-            _check_array("RISCoefficients", "gamma", self.gamma, np.complex128, 1)
+        if self.gamma is not None:
+            g = _check_array("RISCoefficients", "gamma", self.gamma, np.complex128, 1)
+            if self.B is not None and g.shape[0] != self.B.shape[1]:
+                raise ValueError(f"gamma has {g.shape[0]} states, B has S = {self.B.shape[1]}")
         _set(self, "gamma_dead", complex(self.gamma_dead))
 
     @property
@@ -439,7 +503,7 @@ class RISCoefficients:
 
     @property
     def separable(self) -> bool:
-        """True for the separable (C, gamma) form."""
+        """True when only the separable (C, gamma) form is present (``B`` is None)."""
         return self.B is None
 
 
@@ -447,8 +511,11 @@ class RISCoefficients:
 class Snapshot:
     """Geometry evaluated at time ``t`` (s): non-RIS paths per link and RIS coefficients.
 
-    ``diag`` carries diagnostics (energy budget, Richardson estimate, max off-plane angle,
-    interpolation-bound inputs) as plain floats.
+    ``diag`` carries per-snapshot diagnostics as plain floats: Richardson estimate, max
+    off-plane angle, quadrature points and interpolation-bound inputs, keyed
+    ``"<name>/<panel or link>"`` (e.g. ``"richardson_db/ris0"``). The RIS energy budget is NOT
+    part of ``diag`` (D9): it is an on-demand diagnostic (``ris_kernel.energy_budget()``,
+    PH-23, ``sremu validate --energy``).
     """
 
     t: Fraction
@@ -465,8 +532,10 @@ class PanelConfig:
     """Applied configuration of one panel.
 
     ``state``: (N,) int16 per PHYSICAL cell after granularity expansion, stuck-at and dead
-    handling; -1 marks a dead cell. ``enabled`` is the explicit "RIS absent" flag (RQ-12),
-    distinct from every state index.
+    handling; -1 marks a dead cell. Cell order (D17, normative): ``state[iv*n_u + iu]`` is the
+    cell in column ``iu`` (along ``u_axis``) and row ``iv`` (along ``normal x u_axis``); see
+    :class:`PanelGeometry`. ``enabled`` is the explicit "RIS absent" flag (RQ-12), distinct
+    from every state index.
     """
 
     panel: PanelId
@@ -489,8 +558,9 @@ class LinkPaths:
     """``combine()`` output: all paths of one link with the configuration applied.
 
     ``amp`` (P_tot,) complex128 (excluding the propagation phase), ``delay_s`` (P_tot,)
-    float64 s, ``kind`` (P_tot,) int8, ``tile`` (P_tot,) int32: -1 for non-RIS paths, else a
-    flat (panel, row, tile) key. One RIS_TILE path per (panel, row, tile).
+    float64 s, ``kind`` (P_tot,) int8, ``tile`` (P_tot,) int32: a flat (panel, row, tile)
+    key ``>= 0`` for every ``RIS_TILE`` path and ``-1`` for every other path, including
+    ``RIS_GAP`` (D10). One RIS_TILE path per (panel, row, tile).
     """
 
     link: LinkId
@@ -506,6 +576,12 @@ class LinkPaths:
         for name, dt in (("delay_s", np.float64), ("kind", np.int8), ("tile", np.int32)):
             if _check_array("LinkPaths", name, getattr(self, name), dt, 1).shape[0] != n:
                 raise ValueError(f"LinkPaths.{name} length differs from amp length {n}")
+        _check_kinds("LinkPaths", self.kind)
+        ris = self.kind == PathKind.RIS_TILE
+        if bool(np.any(self.tile[ris] < 0)):
+            raise ValueError("LinkPaths: every RIS_TILE path needs a tile key >= 0 (D10)")
+        if bool(np.any(self.tile[~ris] != -1)):
+            raise ValueError("LinkPaths: non-RIS_TILE paths (incl. RIS_GAP) need tile key -1")
 
     @property
     def n_paths(self) -> int:
@@ -532,16 +608,205 @@ class MotionBounds:
     panel_v_rel_max_mps: Mapping[PanelId, float] = field(default_factory=dict)
 
 
+_UNIT_TOL: Final[float] = 1e-9
+
+
+@dataclass(frozen=True)
+class PanelGeometry:
+    """Geometry of one RIS panel as the runtime sees it (``PropagationModel.panel_geometry``).
+
+    Frame (section 3.1): centre ``center_m`` (m), unit normal ``normal``, unit in-plane axis
+    ``u_axis`` (orthogonal to ``normal``); ``v_axis = normal x u_axis``.
+
+    Cell grid (D17, normative):
+
+    * ``n_u x n_v`` physical cells of pitch ``(pitch_u_m, pitch_v_m)``, m. The cell index is
+      ``n = iv*n_u + iu`` with ``iu`` in [0, n_u) along ``u_axis`` and ``iv`` in [0, n_v)
+      along ``v_axis`` (the order of ``PanelConfig.state`` and of the N axis of
+      ``RISCoefficients``).
+    * Optional physical tiles ``n_tiles_u x n_tiles_v`` (each divides its cell count) are
+      separated by an extra inert gap ``gap_m`` (m): the spacing between neighbouring cells
+      across a tile boundary is pitch + gap. The gaps carry no cells.
+    * The cell array, gaps included, is centred on ``center_m``. In panel coordinates
+      ``u(iu) = (iu + 1/2)*pitch_u_m + tu*gap_m - extent_u_m/2`` with
+      ``tu = iu // (n_u/n_tiles_u)``, and likewise for ``v(iv)`` (:meth:`cell_local_m`).
+    * ``extent_u_m = n_u*pitch_u_m + (n_tiles_u - 1)*gap_m`` (outer extent including gaps;
+      likewise for v), checked to a relative 1e-9.
+    * The quadrature area of a cell is its pitch area ``pitch_u_m*pitch_v_m``.
+    * ``n_quad``: quadrature points Q evaluated per snapshot for the panel's cells (Q = N for
+      point cells, more with ``po_patch`` sub-cells); Q >= N.
+
+    This is what ``channel.interp.choose_policy`` needs about a panel's geometry (extents,
+    cell counts, Q). The per-panel carrier is the largest ``link_fc_hz`` of the panel's links
+    and the row count R is ``RISCoefficients.n_rows``. Use :meth:`from_cells` to derive the
+    extents.
+    """
+
+    panel: PanelId
+    center_m: Vec3
+    normal: Vec3
+    u_axis: Vec3
+    extent_u_m: float
+    extent_v_m: float
+    n_u: int
+    n_v: int
+    pitch_u_m: float
+    pitch_v_m: float
+    n_quad: int
+    n_tiles_u: int = 1
+    n_tiles_v: int = 1
+    gap_m: float = 0.0
+
+    def __post_init__(self) -> None:
+        own = "PanelGeometry"
+        for name in ("center_m", "normal", "u_axis"):
+            _set(self, name, _vec3(own, name, getattr(self, name)))
+        n = np.asarray(self.normal)
+        u = np.asarray(self.u_axis)
+        for name, vec in (("normal", n), ("u_axis", u)):
+            if abs(float(np.linalg.norm(vec)) - 1.0) > _UNIT_TOL:
+                raise ConfigurationError(f"{own}.{name} must be a unit vector, got {vec.tolist()}")
+        if abs(float(n @ u)) > _UNIT_TOL:
+            raise ConfigurationError(f"{own}.u_axis must be orthogonal to normal")
+        for name in ("n_u", "n_v", "n_quad", "n_tiles_u", "n_tiles_v"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or int(value) != value or int(value) < 1:
+                raise ConfigurationError(f"{own}.{name} must be an int >= 1, got {value!r}")
+            _set(self, name, int(value))
+        if self.n_u % self.n_tiles_u or self.n_v % self.n_tiles_v:
+            raise ConfigurationError(f"{own}: physical tiles must divide the cell grid evenly")
+        if self.n_quad < self.n_u * self.n_v:
+            raise ConfigurationError(f"{own}.n_quad = {self.n_quad} < N = {self.n_u * self.n_v}")
+        for name in ("pitch_u_m", "pitch_v_m", "extent_u_m", "extent_v_m", "gap_m"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value < 0.0 or (value == 0.0 and name != "gap_m"):
+                raise ConfigurationError(f"{own}.{name} must be finite and > 0 (gap >= 0)")
+            _set(self, name, value)
+        for axis in ("u", "v"):
+            want = self._extent(axis)
+            got = getattr(self, f"extent_{axis}_m")
+            if abs(got - want) > 1e-9 * want:
+                raise ConfigurationError(
+                    f"{own}.extent_{axis}_m = {got} m; D17 needs "
+                    f"n*pitch + (tiles - 1)*gap = {want} m"
+                )
+
+    def _extent(self, axis: str) -> float:
+        n = getattr(self, f"n_{axis}")
+        pitch = getattr(self, f"pitch_{axis}_m")
+        tiles = getattr(self, f"n_tiles_{axis}")
+        return float(n * pitch + (tiles - 1) * self.gap_m)
+
+    @classmethod
+    def from_cells(
+        cls,
+        panel: PanelId,
+        center_m: Sequence[float],
+        normal: Sequence[float],
+        u_axis: Sequence[float],
+        n_u: int,
+        n_v: int,
+        pitch_u_m: float,
+        pitch_v_m: float,
+        *,
+        n_quad: int | None = None,
+        n_tiles_u: int = 1,
+        n_tiles_v: int = 1,
+        gap_m: float = 0.0,
+    ) -> PanelGeometry:
+        """Build from the cell grid; extents follow D17 and ``n_quad`` defaults to N."""
+        return cls(
+            panel=panel,
+            center_m=_vec3("PanelGeometry", "center_m", center_m),
+            normal=_vec3("PanelGeometry", "normal", normal),
+            u_axis=_vec3("PanelGeometry", "u_axis", u_axis),
+            extent_u_m=float(n_u * pitch_u_m + (n_tiles_u - 1) * gap_m),
+            extent_v_m=float(n_v * pitch_v_m + (n_tiles_v - 1) * gap_m),
+            n_u=n_u,
+            n_v=n_v,
+            pitch_u_m=pitch_u_m,
+            pitch_v_m=pitch_v_m,
+            n_quad=n_u * n_v if n_quad is None else n_quad,
+            n_tiles_u=n_tiles_u,
+            n_tiles_v=n_tiles_v,
+            gap_m=gap_m,
+        )
+
+    @property
+    def v_axis(self) -> Vec3:
+        """``normal x u_axis`` (unit)."""
+        v = np.cross(np.asarray(self.normal), np.asarray(self.u_axis))
+        return (float(v[0]), float(v[1]), float(v[2]))
+
+    @property
+    def n_cells(self) -> int:
+        """Number of physical cells N = n_u*n_v."""
+        return self.n_u * self.n_v
+
+    @property
+    def q(self) -> int:
+        """Quadrature points Q (alias of ``n_quad``)."""
+        return self.n_quad
+
+    @property
+    def cell_area_m2(self) -> float:
+        """Quadrature area of one cell, the pitch area, m^2."""
+        return self.pitch_u_m * self.pitch_v_m
+
+    def cell_index(self, iu: int, iv: int) -> int:
+        """Physical cell index ``n = iv*n_u + iu`` (D17)."""
+        if not (0 <= iu < self.n_u and 0 <= iv < self.n_v):
+            raise ConfigurationError(f"cell ({iu}, {iv}) outside ({self.n_u}, {self.n_v})")
+        return iv * self.n_u + iu
+
+    def cell_local_m(self) -> np.ndarray:
+        """(N, 2) float64 cell centres in panel (u, v) coordinates, m, in cell order (D17)."""
+        n = np.arange(self.n_cells)
+        iu, iv = n % self.n_u, n // self.n_u
+        tu = iu // (self.n_u // self.n_tiles_u)
+        tv = iv // (self.n_v // self.n_tiles_v)
+        u = (iu + 0.5) * self.pitch_u_m + tu * self.gap_m - self.extent_u_m / 2.0
+        v = (iv + 0.5) * self.pitch_v_m + tv * self.gap_m - self.extent_v_m / 2.0
+        return np.stack([u, v], axis=1)
+
+    def cell_centres_m(self) -> np.ndarray:
+        """(N, 3) float64 cell centres in world coordinates, m, in cell order (D17)."""
+        loc = self.cell_local_m()
+        return (
+            np.asarray(self.center_m)[None, :]
+            + loc[:, :1] * np.asarray(self.u_axis)[None, :]
+            + loc[:, 1:] * np.asarray(self.v_axis)[None, :]
+        )
+
+    def physical_tile_of_cell(self) -> np.ndarray:
+        """(N,) int32 physical tile ``tv*n_tiles_u + tu`` of each cell."""
+        n = np.arange(self.n_cells)
+        tu = (n % self.n_u) // (self.n_u // self.n_tiles_u)
+        tv = (n // self.n_u) // (self.n_v // self.n_tiles_v)
+        return (tv * self.n_tiles_u + tu).astype(np.int32)
+
+
 @runtime_checkable
 class PropagationModel(Protocol):
-    """Geometry and configuration model used by the engine (WP2 implements; section 3.4)."""
+    """Geometry and configuration model used by the engine (WP2 implements; section 3.4).
+
+    Contract 1.1 (D11) adds :meth:`link_fc_hz`, :meth:`panel_geometry`, the ``tile``
+    argument of :meth:`ris_delay_s` and the adopted :meth:`with_render_tiles`,
+    :meth:`set_node_position` and :meth:`set_node_trajectory`. Unknown links, panels, nodes
+    or streams raise ``sremu.errors.UnknownTarget``.
+    """
 
     def links(self) -> tuple[LinkId, ...]:
         """All links in scenario order."""
         ...
 
+    def link_fc_hz(self, link: LinkId) -> float:
+        """Carrier f_c of the link's TX stream, Hz: the f_c of the propagation phase
+        ``exp(-j 2 pi f_c tau)`` of the link's paths (``LinkJob.fc_hz``)."""
+        ...
+
     def snapshot(self, t: Fraction) -> Snapshot:
-        """Geometry at time ``t`` (s); a pure function of (scenario, t)."""
+        """Geometry at time ``t`` (s); a pure function of (scenario, applied node events, t)."""
         ...
 
     def combine(
@@ -550,12 +815,42 @@ class PropagationModel(Protocol):
         """Apply panel configurations; linear in Gamma."""
         ...
 
-    def ris_delay_s(self, panel: PanelId, rx: StreamId, t: Fraction) -> float:
-        """tau_RIS->rx in s at the panel centre, at time ``t``."""
+    def ris_delay_s(
+        self, panel: PanelId, rx: StreamId, t: Fraction, tile: int | None = None
+    ) -> float:
+        """tau_RIS->rx in s at time ``t``: from the panel centre (``tile`` None) or from the
+        reference point of render tile ``tile`` in [0, K) (the point used in
+        ``RISCoefficients.tile_delay_s``), for the per-tile switch sample of I3."""
+        ...
+
+    def panel_geometry(self, panel: PanelId) -> PanelGeometry:
+        """Geometry of ``panel`` (D17 conventions; see :class:`PanelGeometry`)."""
         ...
 
     def motion_bounds(self) -> MotionBounds:
         """Motion bounds for the T_u / tile policy."""
+        ...
+
+    def with_render_tiles(self, tiles: Mapping[PanelId, tuple[int, int]]) -> PropagationModel:
+        """A model whose snapshots use render (Doppler) tiles ``(tiles_u, tiles_v)`` per listed
+        panel (others keep theirs); tile ``k = tv*tiles_u + tu`` with
+        ``tu = iu*tiles_u // n_u``, ``tv = iv*tiles_v // n_v`` (section 4.4). The receiver is
+        unchanged. Use the returned model from then on: whether timed node events applied to
+        one model reach the other is unspecified."""
+        ...
+
+    def set_node_position(self, node: NodeId, t: Fraction, position_m: Sequence[float]) -> None:
+        """Apply a timed ``node.set_position`` event: hold ``position_m`` (3,) m from exact
+        time ``t`` (s) on. Events arrive in time order; nodes without an external trajectory
+        raise ``ConfigurationError``."""
+        ...
+
+    def set_node_trajectory(self, node: NodeId, t: Fraction, traj: Any) -> None:
+        """Apply a timed ``node.set_trajectory`` event: from exact time ``t`` (s) on, follow
+        ``traj`` evaluated at the time since the event (``traj.position(t' - t)``). ``traj``
+        is a trajectory object of the implementation (``sremu.physics.geometry.Trajectory``
+        for the physics model). Same ordering and external-node rules as
+        :meth:`set_node_position`."""
         ...
 
 
@@ -1340,11 +1635,16 @@ class TxRing(Protocol):
 class LinkJob:
     """Render work for one link in one segment (section 3.4, render contract).
 
-    ``fc_hz``: carrier for the propagation phase, Hz. ``lo_offset_hz``: f_c,tx - f_c,rx, Hz.
-    ``amp_a``/``amp_b``: (P,) complex128 endpoint amplitudes at t_a, t_b (complex-linear
-    between). ``tau_a``/``tau_b``: (P,) float64 endpoint delays, s (chord between).
-    ``group``: (P,) int16 FD group (one group per link when narrowband). ``fd``: filter.
-    ``trans``: active transition terms. ``rot_state``: numba rotator carry within a page.
+    ``fc_hz``: carrier for the propagation phase, Hz (``PropagationModel.link_fc_hz``).
+    ``lo_offset_hz``: f_c,tx - f_c,rx, Hz; the link's received signal is multiplied by
+    ``exp(+j 2 pi lo_offset_hz n / f_s)`` with ``n`` the absolute RX sample index and f_s
+    the RX rate, i.e. the rotation runs from absolute index 0 (phase 0 at n = 0), never from
+    a page or segment start (D20). ``amp_a``/``amp_b``: (P,) complex128 endpoint amplitudes
+    at t_a, t_b (complex-linear between). ``tau_a``/``tau_b``: (P,) float64 endpoint delays,
+    s (chord between). ``group``: (P,) int16 FD group (one group per link when narrowband).
+    ``fd``: filter. ``trans``: active transition terms. ``rot_state``: OPTIONAL numba
+    rotator carry within a page (D11); backends may ignore it and callers may always pass
+    None. Either way the output must stay bitwise independent of segmentation (I2a, D-2).
     """
 
     link: LinkId
@@ -1382,6 +1682,9 @@ class RenderFn(Protocol):
     """``render(job, out)``: add the segment's received signal into ``out``.
 
     ``out`` is a complex128 accumulator of length ``k1 - k0``. Pure function of its inputs.
+    Each backend exposes it as a module-level function (D20):
+    ``sremu.channel.render_numpy.render`` (``numpy_ref``) and
+    ``sremu.channel.render_numba.render`` (``numba_cpu``).
     """
 
     def __call__(self, job: SegmentJob, out: np.ndarray) -> None: ...
@@ -1390,8 +1693,11 @@ class RenderFn(Protocol):
 class NoiseFn(Protocol):
     """``noise(rx_key, k0, n, sigma)``: complex64 AWGN for absolute samples [k0, k0 + n).
 
-    ``rx_key``: the two uint32 Philox key words of the RX noise purpose. ``sigma``: total
-    complex standard deviation (E|w|^2 = sigma^2), in sqrt(W). Pure in the absolute index.
+    Lives in ``sremu.impair.noise`` as the module-level ``noise`` (D20). ``rx_key``: the two
+    uint32 Philox key words of the RX noise purpose. ``sigma``: total complex standard
+    deviation in sqrt(W), ``sigma**2 = E|w|**2`` (the TOTAL complex variance, so each of I and
+    Q has variance ``sigma**2/2``); thermal noise uses ``sigma**2 = k_B*T0*F*f_s``. Pure in
+    the absolute index.
     """
 
     def __call__(self, rx_key: tuple[int, int], k0: int, n: int, sigma: float) -> np.ndarray: ...
@@ -1399,7 +1705,11 @@ class NoiseFn(Protocol):
 
 @runtime_checkable
 class RenderBackend(Protocol):
-    """A render backend (``numpy_ref`` or ``numba_cpu``, section 7.1)."""
+    """A render backend (``numpy_ref`` or ``numba_cpu``, section 7.1).
+
+    The backend modules also expose ``render`` (and ``noise``) at module level (D20); this
+    object form bundles them with the backend ``name``.
+    """
 
     name: BackendName
 

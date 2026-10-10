@@ -16,6 +16,29 @@
   the ``no_j`` legacy teeth kernel in :mod:`sremu.physics.legacy`).
 * Visibility: back-side incidence or reflection contributes exactly 0.
 
+Obliquity, model-card text (D2; :data:`OBLIQUITY_MODEL_CARD`):
+
+* **Default ``sqrt``**: ``o = sqrt(cos theta_i cos theta_s)``. It is energy-bounded: the
+  scattered power never exceeds the intercepted power for any passive configuration (PH-23,
+  :func:`energy_budget`). Reason: with this obliquity the ``cos theta_s`` of the pattern
+  cancels the ``dOmega = dk_u dk_v / (k^2 cos theta_s)`` Jacobian, so the far-zone power is
+  the integral of the aperture spectrum ``|F(k_u, k_v)|^2`` over the visible disk
+  ``k_u^2 + k_v^2 <= k^2``. On a lattice with both pitches <= lambda/2 that disk lies inside
+  one period cell of ``F``, whose integral (Parseval) is the incoherent sum
+  ``sum_q |Gamma_q|^2 G_T A_q cos theta_iq / (4 pi r_iq^2) <= P_inc``. Equality is
+  approached when the spectrum is concentrated inside the disk (large panels); the PH-23
+  test set reaches 0.9997.
+* **Option ``kirchhoff``** (non-default): ``o = (cos theta_i + cos theta_s)/2``. It is NOT
+  energy-bounded for anomalous reflection. Relative to the default it scales the power of a
+  beam steered from ``theta_i`` to ``theta_s`` by ``(cos theta_i + cos theta_s)^2 /
+  (4 cos theta_i cos theta_s) >= 1`` (equality only for ``|theta_s| = |theta_i|``). The
+  measured excess of scattered over intercepted power is up to about +0.9 dB on the PH-23
+  test set. For steered far-field beams it follows that ratio: +0.5 dB at 0 -> 60 deg,
+  +1.2 dB at 0 -> 70 deg and about +3 dB at 0 -> 80 deg. Selecting it emits a
+  ``ValidityWarning`` (:data:`KIRCHHOFF_WARNING`).
+* ``none`` (o = 1): only for tables whose measured pattern already includes the cell
+  pattern (``includes_cell_pattern=True``).
+
 Two backends compute the per-quadrature-point terms and the per-cell accumulation:
 ``numpy_ref`` (float64 reference) and ``numba_cpu`` (parallel over rows, sequential and
 fixed-order over quadrature points, no fastmath). Both compute distances as
@@ -31,27 +54,32 @@ absolute phase used by the closed-form oracles.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import numba
 import numpy as np
 
-from sremu.errors import ConfigurationError, GeometryError
+from sremu.errors import ConfigurationError, GeometryError, ValidityWarning
 from sremu.physics.antennas import Antenna, Isotropic
 from sremu.units import C0
 
 __all__ = [
     "BACKENDS",
+    "KIRCHHOFF_WARNING",
     "OBLIQUITIES",
+    "OBLIQUITY_MODEL_CARD",
     "Backend",
     "Obliquity",
     "accumulate_cells",
+    "check_obliquity",
     "energy_budget",
     "farfield_focused_amplitude",
     "fraunhofer_distance_m",
     "k1_channel",
     "k1_terms",
+    "kirchhoff_power_factor",
     "obliquity_code",
     "tile_sums",
 ]
@@ -62,13 +90,63 @@ OBLIQUITIES: tuple[str, ...] = ("sqrt", "kirchhoff", "none")
 BACKENDS: tuple[str, ...] = ("numpy_ref", "numba_cpu")
 _FOUR_PI = 4.0 * math.pi
 
+KIRCHHOFF_WARNING: Final[str] = (
+    "obliquity='kirchhoff' ((cos theta_i + cos theta_s)/2) is not energy-bounded for "
+    "anomalous reflection; measured excess up to about +0.9 dB on the PH-23 test set, growing "
+    "toward grazing as (cos theta_i + cos theta_s)^2/(4 cos theta_i cos theta_s) "
+    "(+1.2 dB at 0 -> 70 deg, about +3 dB at 0 -> 80 deg). The default obliquity 'sqrt' is "
+    "energy-bounded (PH-23)."
+)
+"""Text of the ``ValidityWarning`` emitted whenever the Kirchhoff obliquity is used (D2)."""
+
+OBLIQUITY_MODEL_CARD: Final[dict[str, str]] = {
+    "sqrt": (
+        "Default. o = sqrt(cos theta_i cos theta_s) (Tang 2022 measured cos pattern); "
+        "energy-bounded: scattered <= intercepted power for every passive configuration "
+        "(PH-23)."
+    ),
+    "kirchhoff": (
+        "Non-default option. o = (cos theta_i + cos theta_s)/2. Not energy-bounded for "
+        "anomalous reflection: relative to the default it scales the power of a beam steered "
+        "from theta_i to theta_s by (cos theta_i + cos theta_s)^2/(4 cos theta_i cos theta_s) "
+        ">= 1; measured excess up to about +0.9 dB on the PH-23 test set (+1.2 dB at "
+        "0 -> 70 deg, about +3 dB at 0 -> 80 deg). Emits a ValidityWarning (D2)."
+    ),
+    "none": (
+        "o = 1, forced (with cell_model 'point') for tables whose measured pattern already "
+        "includes the cell pattern (includes_cell_pattern = true)."
+    ),
+}
+"""Model-card text per obliquity option (D2; for ``docs/model_card.yaml``, WP12)."""
+
 
 def obliquity_code(obliquity: str) -> int:
-    """0 = sqrt(cos cos), 1 = Kirchhoff (cos + cos)/2, 2 = none."""
+    """0 = sqrt(cos cos), 1 = Kirchhoff (cos + cos)/2, 2 = none (pure mapping, no warning)."""
     try:
         return OBLIQUITIES.index(obliquity)
     except ValueError:
         raise ConfigurationError(f"unknown obliquity {obliquity!r}; use {OBLIQUITIES}") from None
+
+
+def check_obliquity(obliquity: str, *, stacklevel: int = 2) -> int:
+    """Validate ``obliquity`` and return its code; the Kirchhoff option emits a
+    ``ValidityWarning`` with :data:`KIRCHHOFF_WARNING` (D2)."""
+    code = obliquity_code(obliquity)
+    if code == 1:
+        warnings.warn(KIRCHHOFF_WARNING, ValidityWarning, stacklevel=stacklevel + 1)
+    return code
+
+
+def kirchhoff_power_factor(theta_i_rad: float, theta_s_rad: float) -> float:
+    """Power ratio of the Kirchhoff to the default obliquity, ``o_K^2 / o_sqrt^2 =
+    (cos theta_i + cos theta_s)^2 / (4 cos theta_i cos theta_s)`` (>= 1; inf at grazing).
+
+    For a beam steered from ``theta_i`` to ``theta_s`` this is the factor by which the
+    Kirchhoff option overstates the energy-consistent scattered power (D2, PH-23)."""
+    ci, cs = math.cos(theta_i_rad), math.cos(theta_s_rad)
+    if ci <= 0.0 or cs <= 0.0:
+        return math.inf
+    return (ci + cs) ** 2 / (4.0 * ci * cs)
 
 
 def _check_backend(backend: str) -> None:
@@ -339,9 +417,11 @@ def k1_terms(
     ``txs``/``rxs``: (R, 3) or (3,) positions, m. ``points`` (Q, 3), ``areas`` (Q,) or scalar m^2,
     ``normal`` (3,) unit panel normal. ``fc_hz``: scalar or (R,) carrier. ``ref_len_m``:
     reference path length (R, Q), (Q,) or scalar, m. ``gain_tx``/``gain_rx``: (R, Q) linear
-    antenna power gains toward the points (default isotropic).
+    antenna power gains toward the points (default isotropic). ``obliquity="kirchhoff"``
+    emits a ``ValidityWarning`` (not energy-bounded, D2).
     """
     _check_backend(backend)
+    mode = check_obliquity(obliquity)
     txs = np.atleast_2d(np.asarray(txs, dtype=np.float64))
     rxs = np.atleast_2d(np.asarray(rxs, dtype=np.float64))
     pts = np.ascontiguousarray(points, dtype=np.float64)
@@ -360,7 +440,6 @@ def k1_terms(
     ones = np.ones((r_count, q_count))
     gt = ones if gain_tx is None else np.ascontiguousarray(np.broadcast_to(gain_tx, ones.shape))
     gr = ones if gain_rx is None else np.ascontiguousarray(np.broadcast_to(gain_rx, ones.shape))
-    mode = obliquity_code(obliquity)
     if backend == "numba_cpu":
         drv = _terms_numba_parallel if _use_parallel(r_count, q_count) else _terms_numba_serial
         return drv(txs, rxs, pts, a, nrm, k, ref, gt, gr, mode, bool(huygens_j))
@@ -503,21 +582,38 @@ def farfield_focused_amplitude(
 # --------------------------------------------------------------------------- energy diagnostic
 
 
-def _sinc_like(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Hemisphere integrals I0 = int e dOmega, I1 = int cos e dOmega, I2 = int cos^2 e dOmega
-    of ``e = exp(j k rhat.d)`` for in-plane ``d`` with ``x = k |d|``."""
+_ENERGY_BLOCK_ELEMS = 1 << 20
+"""Kernel elements per row block of :func:`energy_budget` (8 MB per float64 temporary), so
+its memory is O(Q) per row and bounded for any Q; the cost stays O(Q^2)."""
+
+
+def _hemi_i0(x: np.ndarray) -> np.ndarray:
+    """``I0 = int_hemisphere exp(j k rhat.d) dOmega = 2 pi sin(x)/x`` (in-plane ``d``,
+    ``x = k |d|``; series below 1e-3)."""
+    small = x < 1e-3
+    xs = np.where(small, 1.0, x)
+    return np.where(small, 2 * np.pi * (1 - x * x / 6), 2 * np.pi * np.sin(xs) / xs)
+
+
+def _hemi_i1(x: np.ndarray) -> np.ndarray:
+    """``I1 = int_hemisphere cos(theta) exp(j k rhat.d) dOmega = 2 pi J1(x)/x``."""
     from scipy.special import j1
 
     small = x < 1e-3
     xs = np.where(small, 1.0, x)
-    i0 = np.where(small, 2 * np.pi * (1 - x * x / 6), 2 * np.pi * np.sin(xs) / xs)
-    i1 = np.where(small, np.pi * (1 - x * x / 8), 2 * np.pi * j1(xs) / xs)
-    i2 = np.where(
+    return np.where(small, np.pi * (1 - x * x / 8), 2 * np.pi * j1(xs) / xs)
+
+
+def _hemi_i2(x: np.ndarray) -> np.ndarray:
+    """``I2 = int_hemisphere cos^2(theta) exp(j k rhat.d) dOmega
+    = 2 pi (sin x - x cos x)/x^3``."""
+    small = x < 1e-3
+    xs = np.where(small, 1.0, x)
+    return np.where(
         small,
         2 * np.pi * (1.0 / 3.0 - x * x / 30.0),
         2 * np.pi * (np.sin(xs) - xs * np.cos(xs)) / xs**3,
     )
-    return i0, i1, i2
 
 
 def energy_budget(
@@ -533,16 +629,25 @@ def energy_budget(
 ) -> tuple[Any, float]:
     """Scattered and incident power of a panel, both relative to P_T (PH-23).
 
+    An on-demand diagnostic (D9): it is never part of ``Snapshot.diag``; ``sremu validate
+    --energy`` and :meth:`sremu.physics.propagation.ScenePropagation.energy_budget` call it.
+
     Incident: ``sum_q G_T A_q cos(theta_iq) / (4 pi r_iq^2)`` over front-lit points.
     Scattered: total far-zone power radiated by the K1 sources into the front hemisphere,
     evaluated in closed form from the hemisphere integrals of the obliquity-weighted plane
     waves (``2 pi J1(x)/x`` for the default obliquity; ``sin x / x`` and
-    ``(sin x - x cos x)/x^3`` terms for Kirchhoff). Points must be coplanar (one panel) and
-    Gamma is taken as independent of the scattering direction. ``gamma`` is a scalar, (Q,)
-    (returns a float) or (M, Q) for M configurations (returns an (M,) array); the O(Q^2)
-    kernel is built once per call.
+    ``(sin x - x cos x)/x^3`` terms for Kirchhoff, which emits a ``ValidityWarning``: it is
+    not energy-bounded, D2). Points must be coplanar (one panel) and Gamma is taken as
+    independent of the scattering direction. ``gamma`` is a scalar, (Q,) (returns a float)
+    or (M, Q) for M configurations (returns an (M,) array).
+
+    The quadratic form ``sum_qp w_q K_qp conj(w_p)`` is evaluated in row blocks of the
+    symmetric real kernel ``K`` (at most :data:`_ENERGY_BLOCK_ELEMS` elements each, so memory
+    is bounded for any Q and the cost is O(M Q^2)); every configuration is reduced with the
+    same matrix-vector products, so a batched call equals the single calls bitwise.
     """
-    pts = np.asarray(points, dtype=np.float64)
+    code = check_obliquity(obliquity)
+    pts = np.ascontiguousarray(points, dtype=np.float64)
     q = pts.shape[0]
     a = np.broadcast_to(np.asarray(areas, dtype=np.float64), (q,))
     n = np.asarray(normal, dtype=np.float64)
@@ -559,20 +664,30 @@ def energy_budget(
     lam = C0 / fc_hz
     p_inc = float(np.sum(np.where(lit, gt * a * ci / (_FOUR_PI * ri * ri), 0.0)))
     base = np.where(lit, np.sqrt(gt) * a * np.exp(-1j * k * ri) / ri, 0.0)[None, :] * g
-    diff = pts[:, None, :] - pts[None, :, :]
-    x = k * np.sqrt(np.sum(diff * diff, axis=2))
-    i0, i1, i2 = _sinc_like(x)
     c = np.where(lit, ci, 0.0)
-    code = obliquity_code(obliquity)
-    if code == 0:
-        w = base * np.sqrt(c)[None, :]
-        kern = i1
-    elif code == 1:
-        w = base
-        kern = 0.25 * (np.outer(c, c) * i0 + (c[:, None] + c[None, :]) * i1 + i2)
-    else:
-        w = base
-        kern = i0
-    quad = np.real(np.einsum("mq,mq->m", w, np.conj(w) @ kern.T))
+    w = base * np.sqrt(c)[None, :] if code == 0 else base
+    wr = np.ascontiguousarray(w.real)
+    wi = np.ascontiguousarray(w.imag)
+    quad = np.zeros(w.shape[0])
+    rows = max(1, _ENERGY_BLOCK_ELEMS // max(q, 1))
+    for b0 in range(0, q, rows):
+        b1 = min(q, b0 + rows)
+        dx = pts[b0:b1, 0, None] - pts[None, :, 0]
+        dy = pts[b0:b1, 1, None] - pts[None, :, 1]
+        dz = pts[b0:b1, 2, None] - pts[None, :, 2]
+        x = k * np.sqrt((dx * dx + dy * dy) + dz * dz)
+        del dx, dy, dz
+        if code == 0:
+            kern = _hemi_i1(x)
+        elif code == 1:
+            cb = c[b0:b1, None]
+            kern = 0.25 * (
+                (cb * c[None, :]) * _hemi_i0(x) + (cb + c[None, :]) * _hemi_i1(x) + _hemi_i2(x)
+            )
+        else:
+            kern = _hemi_i0(x)
+        for m in range(w.shape[0]):
+            # Re{w_q (K conj(w))_q} = wr_q (K wr)_q + wi_q (K wi)_q (K real and symmetric)
+            quad[m] += float(wr[m, b0:b1] @ (kern @ wr[m])) + float(wi[m, b0:b1] @ (kern @ wi[m]))
     p_scat = quad / (_FOUR_PI * lam * lam)
     return (p_scat if multi else float(p_scat[0])), p_inc

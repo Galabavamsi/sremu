@@ -13,6 +13,16 @@ Normative order:
 6. **Coupling hook** (off; separable tables only; no kappa values ship).
 7. **Transition** in time (engine/render).
 
+Phase wrap rule (D8, PH-16): a phase is reduced modulo one turn, in its own unit, BEFORE a
+reflection coefficient is formed from it (:func:`wrap_phase_rad`, :func:`wrap_phase_deg`,
+:func:`gamma_from_phase`; the quantizer of step 2 and the table importers of
+``physics.response``). The reduction (``fmod``) is exact, so a phase given as ``phi + m``
+turns yields bitwise the same Gamma as ``phi`` whenever the caller's ``phi + m`` turns is
+itself exact in floating point (e.g. ``phase_deg + 360 m`` for table phases on a binary
+grid). A float sum that already rounded (``phi + 2 pi m`` in radians, large ``|m|``) carries
+an error of about ``ulp(2 pi |m|)/2`` rad that no reduction can remove; quantized phase
+commands are unaffected (identical states, bitwise identical channel).
+
 Analytic oracles: the large-N loss ``eta`` of finite alphabets and of the Abeywickrama
 model, and the binary ``m/d`` decomposition ``Gamma = m + d s``, ``s = +/-1``.
 """
@@ -43,11 +53,41 @@ __all__ = [
     "eta_binary",
     "eta_bits",
     "expand_states",
+    "gamma_from_phase",
     "md_channel",
     "quantize_phases",
+    "wrap_phase_deg",
+    "wrap_phase_rad",
 ]
 
 _UNCERTAIN = ("measured", "digitized")
+_TWO_PI = 2.0 * math.pi
+
+
+# --------------------------------------------------------------------------- phase wrap (D8)
+
+
+def _wrap(x: np.ndarray | float, turn: float) -> np.ndarray:
+    """``x mod turn`` in [0, turn): an exact ``fmod``, except that a tiny negative ``x``
+    whose remainder rounds up to ``turn`` itself maps to 0 (the nearest equivalent phase)."""
+    w = np.remainder(np.asarray(x, dtype=np.float64), turn)
+    return np.where(w >= turn, 0.0, w)
+
+
+def wrap_phase_rad(phase_rad: np.ndarray | float) -> np.ndarray:
+    """Phase reduced to [0, 2 pi) rad with an exact ``fmod`` (D8: before Gamma is formed)."""
+    return _wrap(phase_rad, _TWO_PI)
+
+
+def wrap_phase_deg(phase_deg: np.ndarray | float) -> np.ndarray:
+    """Phase reduced to [0, 360) deg with an exact ``fmod`` (D8: before Gamma is formed)."""
+    return _wrap(phase_deg, 360.0)
+
+
+def gamma_from_phase(phase_rad: np.ndarray | float, mag: np.ndarray | float = 1.0) -> np.ndarray:
+    """``mag * exp(j phi)`` with ``phi`` first reduced modulo 2 pi (D8, PH-16)."""
+    phi = wrap_phase_rad(phase_rad)
+    return np.asarray(mag, dtype=np.float64) * (np.cos(phi) + 1j * np.sin(phi))
 
 
 # --------------------------------------------------------------------------- granularity
@@ -116,7 +156,7 @@ def quantize_phases(phases_rad: np.ndarray, gamma_ref: np.ndarray) -> np.ndarray
     """``s_n = argmax_s Re{gamma_ref[s(, n)] exp(-j phi_n)}`` (int16), step 2.
 
     ``gamma_ref`` is (S,) for a panel-wide reference or (S, N) per element (e.g. per link).
-    Ties resolve to the lowest state index; phases are used modulo 2 pi.
+    Ties resolve to the lowest state index; phases are reduced modulo 2 pi first (D8).
     """
     phi = np.asarray(phases_rad, dtype=np.float64)
     g = np.asarray(gamma_ref, dtype=np.complex128)
@@ -124,7 +164,7 @@ def quantize_phases(phases_rad: np.ndarray, gamma_ref: np.ndarray) -> np.ndarray
         g = g[:, None]
     if g.ndim != 2 or (g.shape[1] not in (1, phi.size)):
         raise ConfigurationError("gamma_ref must be (S,) or (S, N)")
-    phi_r = np.remainder(phi, 2.0 * math.pi)
+    phi_r = wrap_phase_rad(phi)
     proj = g.real * np.cos(phi_r)[None, :] + g.imag * np.sin(phi_r)[None, :]
     return np.argmax(proj, axis=0).astype(np.int16)
 

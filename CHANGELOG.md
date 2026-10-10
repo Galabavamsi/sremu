@@ -5,6 +5,34 @@ contract has its own version (`sremu.contracts.CONTRACT_VERSION`).
 
 ## [Unreleased] - 0.1.0.dev0
 
+### Changed (WP0 maintenance: lead decisions v1.2, **CONTRACT_VERSION 1.1**)
+
+Full list in `docs/contracts_changelog.md`.
+
+- `contracts`:
+  - `PathKind.RIS_GAP = 6`; `PathBundle` rejects `RIS_TILE`, and `LinkPaths` enforces tile
+    keys (>= 0 exactly for `RIS_TILE`) (D10).
+  - `PropagationModel` gains `link_fc_hz`, `panel_geometry`, `ris_delay_s(..., tile=None)`,
+    `with_render_tiles`, `set_node_position` and `set_node_trajectory` (D11).
+  - New frozen `PanelGeometry` documents and checks the D17 cell layout (D11, D17).
+  - `RISCoefficients` may carry both `B` and `C` (D11).
+  - `LinkJob.rot_state` is optional (D11).
+  - The energy budget is no longer a `Snapshot.diag` key (D9).
+  - The render and noise contract is documented (D20), and `MAX_MESSAGE_BYTES` is documented
+    as 1 MiB (D3).
+- `units.C_LEGACY_V1 = 3.0e8`, for `physics/legacy.py` only. The literal scan allows it only
+  in `units.py` (D4).
+- New layer-0 `sremu.sysinfo` with the platform probes, used by `cli.py` (D12).
+- CLI deterministic mode also sets `NUMBA_CACHE_DIR=<default cache>-nosvml` before numba is
+  imported (D15).
+- `testing.FakePropagation` implements the 1.1 protocol, including external nodes with timed
+  position and trajectory events and exact piecewise motion bounds.
+- `tools/tasks.py`: pytest runs with `-n 8`, and the new `paper-junit` task writes a junit
+  file plus a `{sremu_commit, sremu_dirty}` sidecar (D21).
+- README and CONTRIBUTING: offline install `uv pip install --offline --no-deps -e .` (D13).
+- `.gitattributes`: explicit `*.csv` / `*.json` `text eol=lf` rules (DESIGN 2.2), placed before
+  the byte-exact `-text` rules for hash-pinned data.
+
 ### Added (WP0, foundations and frozen contracts)
 
 - Package skeleton (src layout) with one subpackage per work package (DESIGN.md 2.2) and a

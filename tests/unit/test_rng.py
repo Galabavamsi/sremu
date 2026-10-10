@@ -329,3 +329,90 @@ def test_generator_counter_selects_independent_streams():
         rng.generator(7, "mobility", "mu", counter=-1)
     with pytest.raises(TypeError):
         rng.generator(7, "mobility", "mu", counter=1.0)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- D14
+
+
+def test_d14_generator_is_the_spec_key_and_rejects_unregistered_purposes():
+    """D14: the documented helper ``rng.generator(seed, purpose, name, counter=)`` is the
+    section 6.1 construction with the spec key (first 8 bytes of BLAKE2b, LE words); an
+    unregistered purpose is an error, not a silently different stream."""
+    digest = hashlib.blake2b(b"20261010\x1ffailure\x1fris0").digest()
+    key = int.from_bytes(digest[0:4], "little") | int.from_bytes(digest[4:8], "little") << 32
+    for counter in (0, 5):
+        ctr = np.array([0, counter, 0, 0], dtype=np.uint64)
+        ref = np.random.Generator(np.random.Philox(key=key, counter=ctr))
+        got = rng.generator(20261010, "failure", "ris0", counter=counter)
+        assert np.array_equal(got.random(32), ref.random(32))
+    with pytest.raises(ConfigurationError, match="unknown RNG purpose"):
+        rng.generator(20261010, "failures", "ris0")
+    assert rng.generator.__doc__ and "D14" in rng.generator.__doc__
+
+
+def test_d14_physics_mobility_and_failure_generators_use_sremu_rng():
+    """D14 in the physics layer: random-waypoint legs (``mobility/<node>``, counter = leg)
+    come from ``rng.generator`` (WP2's private blake2b helper is gone)."""
+    from sremu.physics import geometry
+
+    for i in (0, 1, 17):
+        a = geometry.keyed_generator(99, "mobility", "mu", counter=i).random(16)
+        b = rng.generator(99, "mobility", "mu", counter=i).random(16)
+        assert np.array_equal(a, b)
+
+
+# Modules allowed to construct NumPy generators directly. Everything else must call
+# ``sremu.rng.generator`` (D14). An allowlisted file that no longer constructs one is an
+# error too, so the list cannot go stale.
+D14_ALLOWED = {
+    "rng.py": "defines the helper",
+    "testing/fake_engine.py": "WP0 test double; CCR filed to switch to rng.generator(seed, "
+    "'ctrl', name)",
+}
+
+
+_D14_CTORS = {"Generator", "Philox", "default_rng", "SeedSequence", "PCG64", "PCG64DXSM",
+              "MT19937", "SFC64"}  # fmt: skip
+
+
+def generator_constructions(source: str) -> list[int]:
+    """Line numbers of calls that build a NumPy generator or bit generator directly."""
+    import ast
+
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+            if name in _D14_CTORS:
+                lines.append(node.lineno)
+    return sorted(lines)
+
+
+def test_d14_no_module_builds_its_own_keyed_generator():
+    from pathlib import Path
+
+    pkg = Path(rng.__file__).resolve().parent
+    offenders: dict[str, list[int]] = {}
+    for path in sorted(pkg.rglob("*.py")):
+        lines = generator_constructions(path.read_text(encoding="utf-8"))
+        if lines:
+            offenders[path.relative_to(pkg).as_posix()] = lines
+    unexpected = {k: v for k, v in offenders.items() if k not in D14_ALLOWED}
+    assert not unexpected, f"build generators via sremu.rng.generator (D14): {unexpected}"
+    stale = sorted(set(D14_ALLOWED) - set(offenders))
+    assert not stale, f"D14 allowlist entries no longer needed: {stale}"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import numpy as np\ng = np.random.Generator(np.random.Philox(key=1))\n", [2, 2]),
+        ("from numpy.random import default_rng\n\ng = default_rng(3)\n", [3]),
+        ("import numpy.random as r\nb = r.SeedSequence(1).spawn(2)\n", [2]),
+        ("from sremu import rng\ng = rng.generator(1, 'ctrl', 'x')\n", []),
+        ("x = 'np.random.Generator(1)'  # a string, not a call\n", []),
+    ],
+)
+def test_d14_checker_teeth(source, expected):
+    assert generator_constructions(source) == expected

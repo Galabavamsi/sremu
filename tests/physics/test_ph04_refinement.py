@@ -1,9 +1,10 @@
-"""PH-04: fixed-aperture refinement under the auto cell-model policy (section 10.2).
+"""PH-04: fixed-aperture refinement under the auto cell-model policy (section 10.2; D5).
 
 1 m^2 plate, 3.5 GHz, Gamma = 1, Tx at 30 deg incidence.
 * Far specular 200 m: -115.280 dB for every N in {16 ... 16384} (+-0.01 dB) under ``auto``.
-* Near anomalous 5 m (Rx at -10 deg): -88.10 dB with ``po_patch``, Delta <= lambda/5 and the
-  Richardson check (+-0.10 dB).
+* Near anomalous 5 m (Rx at -10 deg), D5: the Richardson-converged ``po_patch`` value (from
+  Delta = lambda/5, halved while |dP| > 0.05 dB) is within +-0.10 dB of the oracle
+  -88.128 dB (the Delta = lambda/40 value). Single-level values are not asserted.
 * ``auto`` picks ``po_patch`` exactly when the pitch exceeds lambda/2.
 * Teeth: ``legacy_v2`` grows by +12.04 +- 0.01 dB per 4x refinement.
 """
@@ -11,22 +12,26 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import numpy as np
 import pytest
 
+from sremu.contracts import PanelConfig, StreamSpec
 from sremu.errors import RefinementNotConverged, ValidityWarning
-from sremu.physics.geometry import PanelGrid, Pose
+from sremu.physics.geometry import PanelGrid, Pose, Static
 from sremu.physics.legacy import legacy_v2
+from sremu.physics.propagation import NodeModel, PanelModel, ScenePropagation
 from sremu.physics.quadrature import (
     LinkSample,
     build_quadrature,
     resolve_cell_model,
     richardson_check,
 )
+from sremu.physics.response import builtin
 from sremu.physics.ris_kernel import k1_terms
 from sremu.units import C0
-from tests.physics._closed_forms import db20
+from tests.physics._closed_forms import db20, k1_point_sum
 
 pytestmark = pytest.mark.physics
 
@@ -66,12 +71,59 @@ def test_ph04_far_specular_200m_independent_of_n():
         assert abs(val - closed) <= 0.01, (n_side, val, closed)
 
 
+NEAR_ANOMALOUS_ORACLE_DB = -88.128  # D5: oracle at Delta = lambda/40, accepted +-0.10 dB
+
+
 @pytest.mark.parametrize("n_side", [4, 8, 16, 32, 64])
-def test_ph04_near_anomalous_5m_po_patch(n_side: int):
+def test_ph04_near_anomalous_5m_richardson_converged(n_side: int):
+    """D5: the Richardson-converged po_patch value vs the oracle -88.128 dB (+-0.10 dB)."""
     tx, rx = _geom(5.0, 5.0, -10.0)
     val, model = _h_db(n_side, tx, rx, "po_patch")
     assert model == "po_patch"
-    assert abs(val - (-88.10)) <= 0.10, (n_side, val)
+    assert abs(val - NEAR_ANOMALOUS_ORACLE_DB) <= 0.10, (n_side, val)
+
+
+def test_ph04_d5_oracle_is_the_lambda_over_40_value():
+    """D5 oracle provenance: -88.128 dB is the po_patch value at Delta = lambda/40 (level 3
+    from lambda/5), quoted to 3 decimals (+-0.0005) and independent of the physical cell
+    size; it lies 0.002 dB from the continuous PO plate integral, computed here
+    independently with 100 x 100 Gauss-Legendre nodes over the 1 m^2 plate."""
+    tx, rx = _geom(5.0, 5.0, -10.0)
+    for n_side in (4, 16):
+        grid = PanelGrid(POSE, n_side, n_side, 1.0 / n_side, 1.0 / n_side)
+        quad = build_quadrature(grid, "po_patch", LAM, level=3)
+        val = db20(np.sum(k1_terms(tx, rx, quad.points, quad.areas, POSE.normal, FC)))
+        assert abs(val - NEAR_ANOMALOUS_ORACLE_DB) <= 0.001, (n_side, val)
+    x, w = np.polynomial.legendre.leggauss(100)
+    gx, gy = np.meshgrid(0.5 * x, 0.5 * x, indexing="ij")
+    nodes = np.column_stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)])
+    continuous = db20(k1_point_sum(tx, rx, nodes, np.outer(0.5 * w, 0.5 * w).ravel(), FC))
+    assert abs(continuous - NEAR_ANOMALOUS_ORACLE_DB) <= 0.005, continuous
+
+
+def test_ph04_near_anomalous_5m_through_scene_po_patch():
+    """D5 through ``ScenePropagation``: the panel's own Richardson check (section 5.4) picks
+    the level and the RIS path of the link reaches the oracle -88.128 dB (+-0.10 dB)."""
+    n_side = 8
+    tx, rx = _geom(5.0, 5.0, -10.0)
+    grid = PanelGrid(POSE, n_side, n_side, 1.0 / n_side, 1.0 / n_side)
+    unit = builtin("ideal_bbit(1)")  # state 0: Gamma = 1 exactly
+    m = ScenePropagation(
+        [
+            NodeModel("tx", Static(tx), streams=(StreamSpec("tx.tx0", "tx", FC, "1e6"),)),  # type: ignore[arg-type]
+            NodeModel("rx", Static(rx), streams=(StreamSpec("rx.rx0", "rx", FC, "1e6"),)),  # type: ignore[arg-type]
+        ],
+        [PanelModel("ris0", grid, unit, cell_model="auto")],
+    )
+    assert m.cell_model("ris0") == "po_patch"  # pitch 125 mm > lambda/2
+    rich = m.richardson("ris0")
+    assert rich is not None and rich.estimate_db <= 0.05
+    snap = m.snapshot(Fraction(0))
+    lp = m.combine(snap, {"ris0": PanelConfig("ris0", np.zeros(n_side**2, np.int16))})
+    path = lp["tx.tx0->rx.rx0"]
+    ris = path.tile >= 0
+    h = np.sum(path.amp[ris] * np.exp(-2j * math.pi * FC * path.delay_s[ris]))
+    assert abs(db20(h) - NEAR_ANOMALOUS_ORACLE_DB) <= 0.10, db20(h)
 
 
 def test_ph04_auto_picks_po_patch_exactly_above_half_wavelength():

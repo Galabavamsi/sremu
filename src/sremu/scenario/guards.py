@@ -7,7 +7,9 @@ first error's exception class with every error in the message.
 
 **Errors:** unique ids; references resolve (traffic streams, state libraries, files);
 exact rates (schema); RATE_MISMATCH links; any RIS cell closer than one wavelength to a
-node; occupied band > 0.8 f_s with the default FD target; table checks that need the
+node; a malformed trace file (TRACE_FILE) or a trace that does not cover [0, duration]
+(TRACE_COVERAGE: traces are not extrapolated, section 5.10); occupied band > 0.8 f_s
+with the default FD target; table checks that need the
 scenario (passivity, ``assume_mag`` for ``mag: null`` states, efficiency on measured or
 digitized tables, frequency domain, validity bandwidth, initial states); ``t_u_s`` above
 the automatic value (when the caller supplies it; the automatic T_u policy is WP5's
@@ -19,14 +21,18 @@ coupling-mode matrix (4.9).
 (float64 reference note); recorder disk estimate above 10 GB.
 
 Geometry here is plain vector arithmetic on the scenario (cell centres, node reachable
-sets over [0, duration]); the propagation physics lives in ``sremu.physics`` (WP2).
+sets over [0, duration]); the propagation physics lives in ``sremu.physics`` (WP2), which
+this layer may not import. A trace is the C2 cubic spline of section 5.10 (scipy
+``CubicSpline``, not-a-knot, no extrapolation; the definition physics evaluates), sampled
+densely with a bounded chord error (:func:`trace_geometry`), so CELL_TOO_CLOSE, CELL_NEAR
+and LONG_PATH see the spline, not a polyline through the rows; distances are made
+conservative by that bound.
 :func:`derived_quantities` computes the numbers ``sremu validate`` prints; the per-link
 narrowband estimate and T_curv bound are informative, the engine's policies (WP5) decide.
 """
 
 from __future__ import annotations
 
-import itertools
 import math
 import warnings
 from collections.abc import Mapping
@@ -72,6 +78,7 @@ from sremu.units import C0, thermal_noise_dbm
 __all__ = [
     "DISK_WARN_BYTES",
     "LONG_PATH_M",
+    "TRACE_CHORD_TOL_M",
     "GuardIssue",
     "GuardReport",
     "NodeGeometry",
@@ -80,8 +87,12 @@ __all__ = [
     "derived_quantities",
     "fd_choice",
     "links",
+    "max_pair_distance",
     "node_geometry",
     "panel_extent_m",
+    "read_trace",
+    "set_distance_lower_bound",
+    "trace_geometry",
 ]
 
 LONG_PATH_M: Final[float] = 1000.0
@@ -200,20 +211,46 @@ def panel_extent_m(p: RisPanel) -> tuple[float, float]:
     )
 
 
+_PAIR_BLOCK: Final[int] = 1 << 18  # (segment, query) pairs per vectorized block
+
+
+def _segment_distances(
+    q: NDArray[np.float64], a: NDArray[np.float64], b: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """(S, M) distances from query points ``q`` (M, 3) to segments ``[a_s, b_s]`` (S, 3)."""
+    ab = b - a
+    den = np.einsum("ij,ij->i", ab, ab)
+    aq = q[None, :, :] - a[:, None, :]
+    num = np.einsum("smk,sk->sm", aq, ab)
+    safe = np.where(den > 0.0, den, 1.0)
+    t = np.where(den[:, None] > 0.0, np.clip(num / safe[:, None], 0.0, 1.0), 0.0)
+    diff = aq - t[:, :, None] * ab[:, None, :]
+    out: NDArray[np.float64] = np.sqrt(np.einsum("smk,smk->sm", diff, diff))
+    return out
+
+
 @dataclass(frozen=True)
 class NodeGeometry:
     """Reachable positions of a node over [0, duration].
 
     ``kind``: ``"points"`` (a polyline through ``pts``; one point for a static node) or
     ``"rect"`` (axis-aligned rectangle ``pts = [[x0, y0, z], [x1, y1, z]]``).
-    ``initial``: position at t = 0 (None when random, e.g. random waypoint).
-    ``speed_max_mps``: maximum speed (None when unknown, e.g. external).
+    ``initial``: position at t = 0 (None when random, e.g. random waypoint, or unknown).
+    ``speed_max_mps``: maximum speed, or an upper bound on it (None when unknown, e.g.
+    external).
+    ``tol_m``: bound on the distance between the true path and the polyline through
+    ``pts`` (0 for exact polylines; the chord bound of a sampled trace spline). Distances
+    computed from ``pts`` are within ``tol_m`` of the true ones.
+    ``defined_s``: ``(t0, t1)`` interval on which the trajectory is defined (a trace: no
+    extrapolation), or None when it is defined for all t.
     """
 
     kind: Literal["points", "rect"]
     pts: NDArray[np.float64]
     initial: NDArray[np.float64] | None
     speed_max_mps: float | None
+    tol_m: float = 0.0
+    defined_s: tuple[float, float] | None = None
 
     def vertices(self) -> NDArray[np.float64]:
         """Points whose convex hull contains the reachable set (for maximum distances)."""
@@ -222,69 +259,241 @@ class NodeGeometry:
         (x0, y0, z), (x1, y1, _) = self.pts
         return np.array([[x0, y0, z], [x1, y0, z], [x0, y1, z], [x1, y1, z]], dtype=np.float64)
 
+    def _rect_distance(self, q: NDArray[np.float64]) -> NDArray[np.float64]:
+        (x0, y0, z), (x1, y1, _) = self.pts
+        dx = np.clip(q[:, 0], x0, x1) - q[:, 0]
+        dy = np.clip(q[:, 1], y0, y1) - q[:, 1]
+        out: NDArray[np.float64] = np.sqrt(dx * dx + dy * dy + (q[:, 2] - z) ** 2)
+        return out
+
     def min_distance(self, q: NDArray[np.float64]) -> NDArray[np.float64]:
         """Minimum distance in m from each query point (M, 3) to the reachable set."""
         q = np.atleast_2d(np.asarray(q, dtype=np.float64))
         if self.kind == "rect":
-            (x0, y0, z), (x1, y1, _) = self.pts
-            dx = np.clip(q[:, 0], x0, x1) - q[:, 0]
-            dy = np.clip(q[:, 1], y0, y1) - q[:, 1]
-            return np.sqrt(dx * dx + dy * dy + (q[:, 2] - z) ** 2)
+            return self._rect_distance(q)
         pts = self.pts
         if len(pts) == 1:
-            return np.linalg.norm(q - pts[0], axis=1)
+            out: NDArray[np.float64] = np.linalg.norm(q - pts[0], axis=1)
+            return out
+        a, b = pts[:-1], pts[1:]
         best = np.full(len(q), np.inf)
-        for a, b in itertools.pairwise(pts):
-            ab = b - a
-            den = float(np.dot(ab, ab))
-            if den == 0.0:
-                d = np.linalg.norm(q - a, axis=1)
-            else:
-                t = np.clip((q - a) @ ab / den, 0.0, 1.0)
-                d = np.linalg.norm(q - (a + t[:, None] * ab), axis=1)
-            best = np.minimum(best, d)
+        step = max(1, _PAIR_BLOCK // max(1, len(q)))
+        for i in range(0, len(a), step):
+            d = _segment_distances(q, a[i : i + step], b[i : i + step])
+            best = np.minimum(best, d.min(axis=0))
         return best
 
-    def samples(self, n: int = 65) -> NDArray[np.float64]:
-        """Representative points of the reachable set (vertices plus interior samples)."""
-        if self.kind == "rect":
-            (x0, y0, z), (x1, y1, _) = self.pts
-            g = np.linspace(0.0, 1.0, 9)
-            xx, yy = np.meshgrid(x0 + g * (x1 - x0), y0 + g * (y1 - y0))
-            return np.column_stack([xx.ravel(), yy.ravel(), np.full(xx.size, z)])
-        if len(self.pts) == 1:
-            return self.pts
-        out = [self.pts]
-        for a, b in itertools.pairwise(self.pts):
-            t = np.linspace(0.0, 1.0, max(2, n // max(1, len(self.pts) - 1)))[:, None]
-            out.append(a + t * (b - a))
-        return np.vstack(out)
+    def min_distance_to(self, q: NDArray[np.float64]) -> float:
+        """``min(self.min_distance(q))``: the smallest distance in m between the query
+        points (M, 3) and the reachable set.
+
+        For long polylines (sampled traces) the segments are visited in order of a lower
+        bound (distance to the centroid of ``q`` minus the radius of ``q``) and the search
+        stops once no remaining segment can be closer, so the result is exact but cheap.
+        """
+        q = np.atleast_2d(np.asarray(q, dtype=np.float64))
+        if self.kind == "rect" or len(self.pts) <= 2:
+            return float(self.min_distance(q).min())
+        a, b = self.pts[:-1], self.pts[1:]
+        c = q.mean(axis=0)
+        r = float(np.max(np.linalg.norm(q - c, axis=1)))
+        lb = _segment_distances(c[None, :], a, b)[:, 0] - r
+        order = np.argsort(lb, kind="stable")
+        step = max(1, _PAIR_BLOCK // len(q))
+        best = math.inf
+        for i in range(0, len(order), step):
+            idx = order[i : i + step]
+            if lb[idx[0]] >= best:
+                break
+            best = min(best, float(_segment_distances(q, a[idx], b[idx]).min()))
+        return best
+
+    def sample_cover(self, cover_m: float) -> tuple[NDArray[np.float64], float]:
+        """Points ``S`` on the polyline with every polyline point within ``c <= cover_m`` of
+        some point of ``S``: ``(S, c)``. Each segment is split into equal parts of length at
+        most ``2 cover_m`` (``c`` is half the longest part). Polylines only."""
+        if self.kind != "points":
+            raise ValueError("sample_cover is defined for polylines")
+        pts = self.pts
+        if len(pts) == 1:
+            return pts, 0.0
+        a, ab = pts[:-1], np.diff(pts, axis=0)
+        seg = np.linalg.norm(ab, axis=1)
+        k = np.maximum(1, np.ceil(seg / (2.0 * cover_m))).astype(np.int64)
+        idx = np.repeat(np.arange(len(k)), k)
+        start = np.repeat(np.cumsum(k) - k, k)
+        frac = (np.arange(int(k.sum())) - start) / np.repeat(k, k)
+        s = np.vstack([a[idx] + frac[:, None] * ab[idx], pts[-1:]])
+        return s, float(np.max(seg / k)) / 2.0
+
+    def path_length_m(self) -> float:
+        """Length of the polyline (0 for a rectangle)."""
+        if self.kind != "points" or len(self.pts) == 1:
+            return 0.0
+        return float(np.linalg.norm(np.diff(self.pts, axis=0), axis=1).sum())
 
 
-def _read_trace(path: Path) -> NDArray[np.float64]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    rows = []
-    for i, line in enumerate(lines):
-        line = line.strip()
+_COVER_ABS_M: Final[float] = 1e-3
+_COVER_REL: Final[float] = 1.0 / 4000.0
+_EXACT_PAIRS: Final[int] = 20_000_000
+
+
+def set_distance_lower_bound(ga: NodeGeometry, gb: NodeGeometry) -> float:
+    """Lower bound (m) on ``min |x - y|`` over ``x`` in ``ga``'s and ``y`` in ``gb``'s
+    reachable sets (the polylines and rectangles themselves; ``tol_m`` is not applied).
+
+    Exact when either set is a single point (point-to-set distance) or both are rectangles
+    (closed form). Otherwise the polyline ``A`` is replaced by samples ``S`` that cover it
+    within ``c`` (:meth:`NodeGeometry.sample_cover`, ``c <= max(1 mm, length/4000)``) and
+    ``min_s d(s, B) - c`` is returned: for every ``x`` there is an ``s`` with
+    ``|x - s| <= c``, so ``d(x, B) >= d(s, B) - c``. ``d(s, B)`` is exact (point to
+    rectangle or to polyline segments); when both polylines are long it is replaced by the
+    nearest sample of ``B``'s own cover (k-d tree), minus that cover too. The result is never
+    above the true distance and is below it by at most the cover radii used.
+    """
+    if ga.kind == "points" and len(ga.pts) == 1:
+        return gb.min_distance_to(ga.pts)
+    if gb.kind == "points" and len(gb.pts) == 1:
+        return ga.min_distance_to(gb.pts)
+    if ga.kind == "rect" and gb.kind == "rect":
+        (ax0, ay0, az), (ax1, ay1, _) = ga.pts
+        (bx0, by0, bz), (bx1, by1, _) = gb.pts
+        gx = max(0.0, bx0 - ax1, ax0 - bx1)
+        gy = max(0.0, by0 - ay1, ay0 - by1)
+        return math.sqrt(gx * gx + gy * gy + (az - bz) ** 2)
+    if ga.kind == "rect":
+        ga, gb = gb, ga  # ga is a polyline from here on
+    sa, ca = ga.sample_cover(max(_COVER_ABS_M, _COVER_REL * ga.path_length_m()))
+    if gb.kind == "rect" or len(sa) * (len(gb.pts) - 1) <= _EXACT_PAIRS:
+        return max(gb.min_distance_to(sa) - ca, 0.0)
+    from scipy.spatial import cKDTree
+
+    sb, cb = gb.sample_cover(max(_COVER_ABS_M, _COVER_REL * gb.path_length_m()))
+    d = float(np.min(cKDTree(sb).query(sa, k=1)[0]))
+    return max(d - ca - cb, 0.0)
+
+
+# --------------------------------------------------------------------------- traces
+
+TRACE_CHORD_TOL_M: Final[float] = 1e-6
+"""Target bound (m) on the distance between a trace's C2 spline and the polyline through
+the guard's samples of it (section 5.10)."""
+_TRACE_MIN_PER_PIECE: Final[int] = 4
+_TRACE_MAX_PER_PIECE: Final[int] = 4096
+_TRACE_COLUMNS: Final[tuple[str, ...]] = ("t", "x", "y", "z")
+
+
+def read_trace(path: str | Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Read a trace CSV: ``(t_s (K,), xyz_m (K, 3))``.
+
+    Format (section 5.10, "CSV (t, x, y, z)"): the first non-blank line is the header (an
+    optional leading ``#`` is allowed); it names the columns ``t, x, y, z`` (s, m) exactly
+    (case-sensitive, surrounding spaces ignored), each once. Columns are found by name;
+    other columns are ignored, but every data row has as many fields as the header. Later
+    blank lines and lines starting with ``#`` are skipped. At least two rows, finite values
+    and strictly increasing times are required (``SchemaError`` otherwise).
+
+    The format is deliberately no wider than what the engine's trace reader
+    (``sremu.physics.geometry.TraceTrajectory.from_csv``) accepts, so a trace that passes
+    the guards also loads in the engine (unit-suffixed names such as ``t_s`` are rejected
+    for that reason).
+    """
+    p = Path(path)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    i0 = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if i0 is None:
+        raise SchemaError(f"{p}: empty trace file")
+    names = [x.strip() for x in lines[i0].strip().lstrip("#").split(",")]
+    cols: list[int] = []
+    for key in _TRACE_COLUMNS:
+        hits = [j for j, nm in enumerate(names) if nm == key]
+        if len(hits) != 1:
+            raise SchemaError(
+                f"{p}: the header must name each of the columns t, x, y, z (s, m) exactly "
+                f"once; column {key!r} found {len(hits)} times in {lines[i0].strip()!r}"
+            )
+        cols.append(hits[0])
+    rows: list[list[float]] = []
+    for i in range(i0 + 1, len(lines)):
+        line = lines[i].strip()
         if not line or line.startswith("#"):
             continue
         parts = [x.strip() for x in line.split(",")]
+        if len(parts) != len(names):
+            raise SchemaError(
+                f"{p}: trace row {i + 1} has {len(parts)} fields, the header {len(names)}: {line!r}"
+            )
         try:
-            rows.append([float(x) for x in parts[:4]])
+            vals = [float(parts[j]) for j in cols]
         except ValueError:
-            if i == 0 or not rows:
-                continue  # header
-            raise SchemaError(f"{path}: bad trace row {i + 1}: {line!r}") from None
+            raise SchemaError(f"{p}: bad trace row {i + 1}: {line!r}") from None
+        if not all(math.isfinite(v) for v in vals):
+            raise SchemaError(f"{p}: non-finite value in trace row {i + 1}: {line!r}")
+        rows.append(vals)
+    if len(rows) < 2:
+        raise SchemaError(f"{p}: a trace needs >= 2 rows of t, x, y, z")
     arr = np.asarray(rows, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] != 4:
-        raise SchemaError(f"{path}: a trace needs >= 2 rows of t_s,x_m,y_m,z_m")
     if np.any(np.diff(arr[:, 0]) <= 0):
-        raise SchemaError(f"{path}: trace times must be strictly increasing")
-    return arr
+        raise SchemaError(f"{p}: trace times must be strictly increasing")
+    return arr[:, 0].copy(), arr[:, 1:].copy()
+
+
+def trace_geometry(
+    t_s: NDArray[np.float64], xyz_m: NDArray[np.float64], duration_s: Fraction | float
+) -> NodeGeometry:
+    """Reachable set of a trace over [0, duration] intersected with [t_0, t_last] (5.10).
+
+    The trajectory is the C2 cubic spline through the rows, ``scipy.interpolate.CubicSpline
+    (t, xyz, axis=0, bc_type="not-a-knot", extrapolate=False)`` (the definition the physics
+    layer evaluates). It is sampled densely: on each spline piece ``[a, b]`` of the window
+    (pieces split at 0 and the duration), with ``A = max |p''|`` over the piece (``p''`` is
+    linear there, so ``A`` is its larger end value), ``n = ceil((b - a) sqrt(A/(8 tol)))``
+    samples (clipped to [4, 4096]) bound the distance between the spline and the polyline
+    through the samples by ``((b - a)/n)**2 A/8`` (linear-interpolation error bound);
+    ``tol_m`` is the largest such bound (``tol`` = :data:`TRACE_CHORD_TOL_M`).
+    ``speed_max_mps`` is ``max |p'|`` over the samples plus ``max (h/2) A`` (a rigorous upper
+    bound, ``h`` the sample step). When the window is empty (the trace does not overlap the
+    run) the whole trace is described; the coverage guard reports it.
+    """
+    from scipy.interpolate import CubicSpline
+
+    t = np.asarray(t_s, dtype=np.float64)
+    xyz = np.asarray(xyz_m, dtype=np.float64)
+    spl = CubicSpline(t, xyz, axis=0, bc_type="not-a-knot", extrapolate=False)
+    span = (float(t[0]), float(t[-1]))
+    d = float(duration_s)
+    lo, hi = max(span[0], 0.0), min(span[1], d)
+    if lo > hi:
+        lo, hi = span
+    bps = np.unique(np.concatenate([[lo, hi], t[(t > lo) & (t < hi)]]))
+    init_ok = lo == 0.0
+    if len(bps) == 1:
+        pts = np.asarray(spl(bps), dtype=np.float64)
+        v1 = float(np.linalg.norm(np.asarray(spl.derivative(1)(bps))[0]))
+        return NodeGeometry("points", pts, pts[0] if init_ok else None, v1, 0.0, span)
+    acc = np.linalg.norm(np.asarray(spl.derivative(2)(bps), dtype=np.float64), axis=1)
+    a_piece = np.maximum(acc[:-1], acc[1:])
+    width = np.diff(bps)
+    n_f = np.ceil(width * np.sqrt(a_piece / (8.0 * TRACE_CHORD_TOL_M)))
+    n = np.clip(n_f, _TRACE_MIN_PER_PIECE, _TRACE_MAX_PER_PIECE).astype(np.int64)
+    ts = np.concatenate(
+        [np.linspace(bps[i], bps[i + 1], int(n[i]), endpoint=False) for i in range(len(n))]
+        + [bps[-1:]]
+    )
+    pts = np.asarray(spl(ts), dtype=np.float64)
+    h = width / n
+    tol = float(np.max(h * h * a_piece / 8.0))
+    vel = np.linalg.norm(np.asarray(spl.derivative(1)(ts), dtype=np.float64), axis=1)
+    v_bound = float(vel.max()) + float(np.max(0.5 * h * a_piece))
+    return NodeGeometry("points", pts, pts[0] if init_ok else None, v_bound, tol, span)
 
 
 def node_geometry(node: Node, duration_s: Fraction, base_dir: Path | None) -> NodeGeometry:
-    """Reachable set of ``node`` over [0, duration_s] (see :class:`NodeGeometry`)."""
+    """Reachable set of ``node`` over [0, duration_s] (see :class:`NodeGeometry`).
+
+    A trace is read with :func:`read_trace` (``SchemaError`` on a malformed file) and
+    sampled with :func:`trace_geometry`.
+    """
     d = float(duration_s)
     if node.position_m is not None:
         p = np.asarray([node.position_m], dtype=np.float64)
@@ -318,14 +527,35 @@ def node_geometry(node: Node, duration_s: Fraction, base_dir: Path | None) -> No
         path = Path(tr.file)
         if not path.is_absolute() and base_dir is not None:
             path = base_dir / path
-        arr = _read_trace(path)
-        t, xyz = arr[:, 0], arr[:, 1:]
-        knots = np.unique(np.concatenate([[max(t[0], 0.0), min(t[-1], d)], t[(t > 0) & (t < d)]]))
-        pts = np.column_stack([np.interp(knots, t, xyz[:, k]) for k in range(3)])
-        speeds = np.linalg.norm(np.diff(xyz, axis=0), axis=1) / np.diff(t)
-        init = pts[0] if t[0] <= 0.0 else None
-        return NodeGeometry("points", pts, init, float(speeds.max()))
+        t, xyz = read_trace(path)
+        return trace_geometry(t, xyz, duration_s)
     raise AssertionError(f"unhandled trajectory {tr!r}")
+
+
+def _extreme_points(p: NDArray[np.float64]) -> NDArray[np.float64]:
+    """A subset of ``p`` containing its convex-hull vertices (all of ``p`` when small or
+    degenerate); maximum distances to ``p`` are attained on it."""
+    if len(p) <= 64:
+        return p
+    from scipy.spatial import ConvexHull, QhullError
+
+    try:
+        hull = ConvexHull(p, qhull_options="QJ")  # joggle: planar and collinear sets work
+    except (QhullError, ValueError):
+        return p
+    return p[np.unique(hull.vertices)]
+
+
+def max_pair_distance(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
+    """``max |a_i - b_j|`` in m over two point sets (convex-hull reduction, then blocks)."""
+    a = _extreme_points(np.atleast_2d(np.asarray(a, dtype=np.float64)))
+    b = _extreme_points(np.atleast_2d(np.asarray(b, dtype=np.float64)))
+    best = 0.0
+    step = max(1, _PAIR_BLOCK // len(b))
+    for i in range(0, len(a), step):
+        diff = a[i : i + step, None, :] - b[None, :, :]
+        best = max(best, float(np.sqrt(np.max(np.einsum("ijk,ijk->ij", diff, diff)))))
+    return best
 
 
 # =========================================================================== links / FD
@@ -470,11 +700,16 @@ def _lambda_m(fc_hz: float) -> float:
 
 
 def _distances(sc: Scenario, geo: Mapping[str, NodeGeometry], rep: GuardReport) -> None:
+    """CELL_TOO_CLOSE / CELL_NEAR on the lower bound ``dmin - tol_m`` of the distance between
+    the node's reachable set and the cell centres (conservative for sampled traces)."""
     for p in sc.ris:
         cells = cell_centres(p)
         for n in sc.nodes:
+            g = geo.get(n.id)
+            if g is None:  # malformed trace, reported as TRACE_FILE
+                continue
             lam = max(_lambda_m(s.fc_hz) for s in n.streams)
-            dmin = float(geo[n.id].min_distance(cells).min())
+            dmin = g.min_distance_to(cells) - g.tol_m
             where = f"ris[{p.id}] / nodes[{n.id}]"
             if dmin < lam:
                 rep.error(
@@ -496,19 +731,25 @@ def _distances(sc: Scenario, geo: Mapping[str, NodeGeometry], rep: GuardReport) 
 def _long_paths(
     sc: Scenario, geo: Mapping[str, NodeGeometry], lks: list[tuple[str, str]], rep: GuardReport
 ) -> None:
+    """LONG_PATH on the upper bound ``max + tol_m`` of LOS and RIS-hop path lengths."""
     streams = sc.streams()
     worst = 0.0
     where = ""
     for tx_id, rx_id in lks:
-        a = geo[streams[tx_id][0].id].vertices()
-        b = geo[streams[rx_id][0].id].vertices()
-        d_los = float(np.max(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)))
+        gt, gr = geo.get(streams[tx_id][0].id), geo.get(streams[rx_id][0].id)
+        if gt is None or gr is None:
+            continue
+        a, b = gt.vertices(), gr.vertices()
+        tol = gt.tol_m + gr.tol_m
+        d_los = max_pair_distance(a, b) + tol
         if d_los > worst:
             worst, where = d_los, f"{tx_id}->{rx_id} (LOS)"
         for p in sc.ris:
             c = np.asarray(p.pose.center_m, dtype=np.float64)
-            hop = float(
-                np.max(np.linalg.norm(a - c, axis=1)) + np.max(np.linalg.norm(b - c, axis=1))
+            hop = (
+                float(np.max(np.linalg.norm(a - c, axis=1)))
+                + float(np.max(np.linalg.norm(b - c, axis=1)))
+                + tol
             )
             if hop > worst:
                 worst, where = hop, f"{tx_id}->{rx_id} (via {p.id})"
@@ -519,6 +760,25 @@ def _long_paths(
             f"absolute path length up to {worst:.4g} m > 1 km: geometry stays float64 "
             "on the reference path (section 9.5)",
         )
+
+
+def _traces(sc: Scenario, geo: Mapping[str, NodeGeometry], rep: GuardReport) -> None:
+    """TRACE_COVERAGE: a trace must cover [0, duration] (cubic spline, no extrapolation,
+    section 5.10). Compared in float64, as the physics layer evaluates trace times."""
+    d = float(sc.run.duration_s)
+    for n in sc.nodes:
+        g = geo.get(n.id)
+        if g is None or g.defined_s is None:
+            continue
+        t0, t1 = g.defined_s
+        if t0 > 0.0 or t1 < d:
+            rep.error(
+                "TRACE_COVERAGE",
+                f"nodes[{n.id}].trajectory",
+                f"the trace covers [{t0:.9g}, {t1:.9g}] s but the run needs positions on "
+                f"[0, {d:.9g}] s; traces are not extrapolated (section 5.10)",
+                GeometryError,
+            )
 
 
 def _disk(sc: Scenario, rep: GuardReport) -> float:
@@ -693,7 +953,13 @@ def check_scenario(
             f"occupied_bw_hz not declared; the default 0.8*f_s = {bw:g} Hz is used (4.5)",
         )
     _bandwidth(sc, rep)
-    geo = {n.id: node_geometry(n, sc.run.duration_s, res.base_dir) for n in sc.nodes}
+    geo: dict[str, NodeGeometry] = {}
+    for n in sc.nodes:
+        try:
+            geo[n.id] = node_geometry(n, sc.run.duration_s, res.base_dir)
+        except SchemaError as exc:  # malformed trace file
+            rep.error("TRACE_FILE", f"nodes[{n.id}].trajectory", str(exc), SchemaError)
+    _traces(sc, geo, rep)
     _distances(sc, geo, rep)
     _long_paths(sc, geo, lks, rep)
     _disk(sc, rep)
@@ -709,7 +975,8 @@ def check_scenario(
 
 
 def _t_curv_s(eps: float, r_min: float, fc_hz: float, v: float) -> float:
-    """``sqrt(8 eps r_min/(k v**2))`` (section 4.4); inf for v = 0."""
+    """``sqrt(8 eps r_min/(k v**2))`` (section 4.4) for the chord budget ``eps``; inf for
+    v = 0. The caller passes ``eps = eps_rel/2`` (lead decision D1)."""
     if v <= 0.0:
         return math.inf
     k = 2.0 * math.pi * fc_hz / C0
@@ -729,8 +996,12 @@ def derived_quantities(
     Doppler bound ``(v_tx + v_rx)/lambda``, the narrowband metric ``pi*B*dtau`` from the
     t = 0 geometry (LOS plus every visible RIS cell of every panel, disabled ones included
     because ``ris.set_enabled`` may switch them on; walls, ground and occluders ignored),
-    the FD row, and a conservative T_curv bound. Per RX: noise floor and ``tau_RIS->r`` in
-    samples per panel.
+    the FD row, and a conservative T_curv bound ``sqrt(8 (eps_rel/2) r_min/(k v**2))`` (D1:
+    the chord rule gets half of eps_rel) with ``v = v_tx + v_rx`` (>= v_perp) and
+    ``r_min`` a lower bound on the smallest node-node and node-cell distance over the run:
+    the node-node term is :func:`set_distance_lower_bound` of the two reachable sets, and
+    both nodes' trace sampling tolerances are subtracted. Per RX: noise floor and
+    ``tau_RIS->r`` in samples per panel.
     """
     sc = res.scenario
     if geo is None:
@@ -789,11 +1060,13 @@ def derived_quantities(
                 narrowband=metric <= sc.numerics.narrowband_phase_rad,
             )
         if v:
-            dists = [gt.min_distance(gr.samples())]
+            tol = gt.tol_m + gr.tol_m
+            dists = [set_distance_lower_bound(gt, gr)]
             for p in sc.ris:
-                dists += [gt.min_distance(cells[p.id]), gr.min_distance(cells[p.id])]
-            r_min = max(float(min(np.min(d) for d in dists)), 1e-12)
-            t_c = _t_curv_s(sc.numerics.interp_rel_error, r_min, tx.fc_hz, v)
+                dists += [gt.min_distance_to(cells[p.id]), gr.min_distance_to(cells[p.id])]
+            r_min = max(min(dists) - tol, 1e-12)
+            # D1: the chord (curvature) rule gets half of the shared budget eps_rel
+            t_c = _t_curv_s(sc.numerics.interp_rel_error / 2.0, r_min, tx.fc_hz, v)
             row["r_min_m"] = r_min
             row["t_curv_s_bound"] = t_c
             row["t_u0_s_estimate"] = min(t_c, float(sc.numerics.t_u_max_s))

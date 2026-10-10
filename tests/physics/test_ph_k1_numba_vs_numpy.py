@@ -25,6 +25,7 @@ def _rel(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.max(np.abs(a - b) / scale))
 
 
+@pytest.mark.filterwarnings("ignore:obliquity='kirchhoff':sremu.errors.ValidityWarning")  # D2
 @pytest.mark.parametrize("obliquity", ["sqrt", "kirchhoff", "none"])
 @pytest.mark.parametrize("huygens", [True, False])
 def test_k1_terms_numba_matches_numpy(obliquity: str, huygens: bool, rng: np.random.Generator):

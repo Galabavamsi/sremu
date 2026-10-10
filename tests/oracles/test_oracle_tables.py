@@ -13,6 +13,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
+from sremu.units import C0
 from tests.oracles import mobility as mob
 from tests.oracles import nonideal as ni
 from tests.oracles import p526, rf
@@ -20,14 +21,33 @@ from tests.oracles.ris import (
     disk_kirchhoff_onaxis_h,
     focus_phases,
     k1_h,
+    k1_terms,
+    legacy_v1_h,
     legacy_v2_h,
+    local_subaperture_factor,
     make_panel,
     make_panel_extent,
+    ph04_geometry,
+    plate_k1_integral_h,
+    po_patch_h,
     rect_solid_angle_onaxis,
+    richardson_po_patch,
+    subaperture_factor,
     subdivide,
     tang_eq8_h_abs,
+    v1_default_scene,
 )
-from tests.oracles.tables import ORACLE, V_CFO_FS, V_CFO_TAU
+from tests.oracles.tables import (
+    ORACLE,
+    PH17_T9_BLOCK_S,
+    PH17_T9_FC_HZ,
+    PH17_T9_FS,
+    PH17_T9_RX0_M,
+    PH17_T9_SPEED_MPS,
+    PH17_T9_WINDOW_S,
+    V_CFO_FS,
+    V_CFO_TAU,
+)
 
 pytestmark = pytest.mark.physics
 
@@ -75,45 +95,85 @@ def test_ph03_n2_law_discrete_and_tang_eq8():
 # --------------------------------------------------------------------------- PH-04
 
 
-def _ph04_geometry(d: float, out_deg: float) -> tuple[np.ndarray, np.ndarray]:
-    inc = math.radians(30)
-    o = math.radians(out_deg)
-    return (
-        np.array([-d * math.sin(inc), 0, d * math.cos(inc)]),
-        np.array([d * math.sin(o), 0, d * math.cos(o)]),
-    )
-
-
 @pytest.mark.parametrize("n_side", [4, 8, 16, 32, 64, 128])
 def test_ph04_far_specular_any_n(n_side):
-    tx, rx = _ph04_geometry(200.0, 30.0)
+    tx, rx = ph04_geometry(200.0, 30.0)
     p = make_panel_extent([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, n_side, n_side)
     check("PH04_far_specular_200m_db", db(k1_h(tx, rx, p, 3.5e9)))
 
 
-@pytest.mark.parametrize("n_side", [4, 8, 16])
-def test_ph04_near_anomalous_po_patch_with_richardson(n_side):
-    """po_patch from Delta <= lambda/5 with the section 5.4 Richardson rule reaches -88.10 dB.
+_PH04_NEAR_ANOMALOUS = (5.0, -10.0)
+_PH04_SIDES = [4, 8, 16, 32, 64, 128]  # N = 16 ... 16384 cells on the 1 m^2 plate
 
-    The rule halves Delta (at most twice) while |P(Delta) - P(Delta/2)| > 0.05 dB. Without it
-    the first level is not enough for every N (N = 16 gives -87.99 dB at Delta = lambda/5).
-    """
+
+@pytest.mark.parametrize("n_side", _PH04_SIDES)
+def test_ph04_near_anomalous_oracle_value_at_lambda_over_40(n_side):
+    """D5: po_patch at Delta = lambda/40 is -88.128 dB for every N (to its 3 printed decimals),
+    and that is the ORACLE value (accept +-0.10 dB)."""
     fc = 3.5e9
-    tx, rx = _ph04_geometry(5.0, -10.0)
+    tx, rx = ph04_geometry(*_PH04_NEAR_ANOMALOUS)
+    pitch = 1.0 / n_side
     p = make_panel_extent([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, n_side, n_side)
-    delta = rf.wavelength(fc) / 5
-    level = db(k1_h(tx, rx, subdivide(p, 1.0 / n_side, 1.0 / n_side, delta), fc))
-    for _ in range(2):
-        finer = db(k1_h(tx, rx, subdivide(p, 1.0 / n_side, 1.0 / n_side, delta / 2), fc))
-        converged = abs(finer - level) <= 0.05
-        delta, level = delta / 2, finer
-        if converged:
-            break
+    level = db(po_patch_h(tx, rx, p, fc, pitch, pitch, rf.wavelength(fc) / 40))
+    assert abs(level - ORACLE["PH04_near_anomalous_5m_db"].value) <= 5e-4, level
     check("PH04_near_anomalous_5m_db", level)
 
 
+def test_ph04_near_anomalous_continuous_limit_is_independent_of_the_cell_grid():
+    """D5 cross-check without any cell machinery: the continuous-aperture integral (tensor
+    Gauss-Legendre, converged to 1e-6 dB) is the Delta -> 0 limit; the midpoint (po_patch)
+    error falls as Delta^2 and is 0.002 dB at lambda/40. The same integral gives the PH-04 far
+    specular value (any N), so the plate integral itself is checked against a spec number."""
+    fc = 3.5e9
+    lam = rf.wavelength(fc)
+    tx, rx = ph04_geometry(*_PH04_NEAR_ANOMALOUS)
+    plate = ([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, fc)
+    lim = [db(plate_k1_integral_h(tx, rx, *plate, n_nodes=n)) for n in (32, 64, 96)]
+    assert max(lim) - min(lim) <= 1e-6
+    check("PH04_near_anomalous_5m_db", lim[-1])
+    p = make_panel_extent([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, 16, 16)
+    err = [
+        db(po_patch_h(tx, rx, p, fc, 1 / 16, 1 / 16, lam / div)) - lim[-1] for div in (20, 40, 80)
+    ]
+    assert abs(err[1]) <= 0.005  # lambda/40 is converged well inside the 0.10 dB tolerance
+    assert 3.0 <= err[0] / err[1] <= 5.0 and 3.0 <= err[1] / err[2] <= 5.0  # second order
+    far_tx, far_rx = ph04_geometry(200.0, 30.0)
+    check("PH04_far_specular_200m_db", db(plate_k1_integral_h(far_tx, far_rx, *plate)))
+
+
+@pytest.mark.parametrize("n_side", _PH04_SIDES)
+def test_ph04_near_anomalous_richardson_rule_reaches_the_oracle(n_side):
+    """Section 5.4 rule from Delta = lambda/5 (compare Delta and Delta/2, halve at most twice
+    while |dP| > 0.05 dB): the accepted level and its half-size check are both within the D5
+    tolerance of -88.128 dB."""
+    fc = 3.5e9
+    tx, rx = ph04_geometry(*_PH04_NEAR_ANOMALOUS)
+    p = make_panel_extent([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, n_side, n_side)
+    res = richardson_po_patch(tx, rx, p, fc, 1.0 / n_side, 1.0 / n_side)
+    assert res.est_db <= 0.05
+    check("PH04_near_anomalous_5m_db", db(res.h))
+    check("PH04_near_anomalous_5m_db", db(res.h_half))
+
+
+def test_ph04_single_level_po_patch_is_not_enough_teeth():
+    """Why D5 asserts only converged values: at the first level (Delta = lambda/5) N = 16 and
+    N = 64 sit 0.14 / 0.12 dB above -88.128 dB, outside +-0.10; the Richardson rule (which
+    halves once for them) is what brings them in."""
+    fc = 3.5e9
+    tx, rx = ph04_geometry(*_PH04_NEAR_ANOMALOUS)
+    o = ORACLE["PH04_near_anomalous_5m_db"]
+    for n_side in (4, 8):
+        p = make_panel_extent([0, 0, 0], [0, 0, 1], [1, 0, 0], 1.0, 1.0, n_side, n_side)
+        first = db(po_patch_h(tx, rx, p, fc, 1 / n_side, 1 / n_side, rf.wavelength(fc) / 5))
+        assert abs(first - o.value) > o.tol
+        res = richardson_po_patch(tx, rx, p, fc, 1 / n_side, 1 / n_side)
+        assert res.halvings == 1
+    with pytest.raises(RuntimeError, match="not converged"):
+        richardson_po_patch(tx, rx, p, fc, 1 / 8, 1 / 8, tol_db=1e-4, max_halvings=0)
+
+
 def test_ph04_teeth_legacy_v2_gains_12db_per_refinement():
-    tx, rx = _ph04_geometry(200.0, 30.0)
+    tx, rx = ph04_geometry(200.0, 30.0)
     vals = [
         db(
             legacy_v2_h(
@@ -353,17 +413,41 @@ def test_ph17_los_phase_over_one_second_and_block_constant_teeth():
     check("PH17_los_fd_hz", float(np.mean(f_y)))  # positive on approach (section 3.1)
     # teeth: the conjugate (wrong-sign) coefficient fails the same residual check
     assert float(np.max(np.abs(np.angle(np.conj(y) * np.exp(-1j * phase))))) > 1.0
-    # teeth: v2 staircase geometry (2 ms blocks) over the T9 window (0.2 s, 2000 samples)
-    # gives -148.3 Hz. NOTE: that is a window mean; the long-run alias is
-    # (4.401 - 2 pi)/(2 pi * 2 ms) = -149.76 Hz, outside -148.3 +- 1 Hz.
-    t9 = np.arange(2000) / fs
-    tb = np.floor(t9 / 0.002) * 0.002
-    yb = np.exp(-1j * k * (50.0 - 30.0 * tb))
-    fb = np.angle(yb[1:] * np.conj(yb[:-1])) * fs / (2 * math.pi)
-    check("PH17_block_constant_hz", float(np.mean(fb)))
-    jump = 2 * math.pi * mob.doppler_hz(30.0, fc) * 0.002
-    long_run = (jump - 2 * math.pi) / (2 * math.pi * 0.002)
-    assert abs(long_run - (-149.76)) <= 0.01
+
+
+def test_ph17_teeth_block_constant_over_the_t9_window():
+    """D7: the PH-17 teeth value -148.3 +- 1 Hz is the MEAN instantaneous frequency of the v2
+    staircase (geometry frozen per 2 ms block) over the T9 window, 0.2 s at 10 kS/s.
+
+    Computed two ways: sample by sample (wrapped phase steps of the staircase LOS phase) and
+    by the closed form (99 block boundaries of wrap(k v T) over 1999 steps). Teeth: the
+    long-run alias wrap(k v T)/(2 pi T) = -149.77 Hz is outside the tolerance, so a test that
+    measures over a different window would not see -148.3 Hz.
+    """
+    fc, v, fs = PH17_T9_FC_HZ, PH17_T9_SPEED_MPS, PH17_T9_FS
+    n = int(PH17_T9_WINDOW_S * fs)
+    assert n == 2000
+    spb = int(fs * PH17_T9_BLOCK_S)  # 20 samples per block (exact)
+    k_blk = np.arange(n) // spb  # block index of each sample, exact integers
+    t_blk = k_blk * float(PH17_T9_BLOCK_S)
+    d = PH17_T9_RX0_M[0] - v * t_blk  # staircase Tx-Rx distance (Tx at the origin)
+    yb = np.exp(-1j * rf.wavenumber(fc) * d)
+    fb = float(np.mean(np.angle(yb[1:] * np.conj(yb[:-1])))) * float(fs) / (2 * math.pi)
+    closed = mob.block_constant_mean_doppler_hz(fc, v, PH17_T9_BLOCK_S, fs, n)
+    assert abs(fb - closed) <= 1e-9
+    check("PH17_block_constant_hz", closed)
+    close_jump = mob.block_constant_jump_rad(fc, v, PH17_T9_BLOCK_S)
+    assert abs(close_jump - 2 * math.pi * mob.doppler_hz(v, fc) * 0.002) <= 1e-12
+    alias = mob.block_constant_alias_hz(fc, v, PH17_T9_BLOCK_S)
+    o = ORACLE["PH17_block_constant_hz"]
+    assert abs(alias - o.value) > o.tol  # -149.77 Hz: the window matters (D7)
+    # and the correct (continuous) geometry gives +350.242 Hz over the same window
+    t9 = np.arange(n) / float(fs)
+    yc = np.exp(-1j * rf.wavenumber(fc) * (PH17_T9_RX0_M[0] - v * t9))
+    check(
+        "PH17_los_fd_hz",
+        float(np.mean(np.angle(yc[1:] * np.conj(yc[:-1])))) * float(fs) / (2 * math.pi),
+    )
 
 
 # --------------------------------------------------------------------------- PH-20
@@ -426,7 +510,8 @@ def test_ph26_patch_quadrature_converges_to_subaperture_sinc():
     """Far field, 45 deg retro: the patch integral tends to sinc(p (sin ti + sin ts)/lambda).
 
     Independent check of :func:`subdivide`: with many sub-cells the point-minus-patch
-    difference approaches -20 log10|sinc(0.5 * 2 sin 45)| = 8.918 dB.
+    difference approaches -20 log10|sinc(0.5 * 2 sin 45)| = 8.918 dB (the documented D6
+    limit 8.92 dB).
     """
     fc = 3.5e9
     lam = rf.wavelength(fc)
@@ -438,14 +523,98 @@ def test_ph26_patch_quadrature_converges_to_subaperture_sinc():
     q = subdivide(p, lam / 2, lam / 2, lam / 2 / 41)
     diff = db(k1_h(pt, pt, p, fc, g)) - db(k1_h(pt, pt, q, fc, g))
     assert abs(diff - sinc_db) <= 0.01
+    check("PH26_retro45_sinc_limit_db", sinc_db)
+
+
+_RETRO45_SIN_SUM = 2.0 * math.sin(math.radians(45.0))  # sin(theta_i) + sin(theta_s), retro
+
+
+def test_ph26_retro45_closed_forms():
+    """D6 values from the closed forms: a lambda/2 cell split into 3 sub-cells per axis
+    (Delta <= lambda/5 gives ceil(2.5) = 3) loses -20 log10|(1 + 2 cos psi)/3| = 8.109 dB at
+    45 deg retro (psi = 2 pi (1/6) sqrt 2); the continuous patch loses
+    -20 log10|sinc(sqrt(2)/2)| = 8.918 dB. Both to the printed decimals of D6."""
+    af3 = float(subaperture_factor(0.5, _RETRO45_SIN_SUM, 3))
+    psi = 2 * math.pi * (0.5 / 3) * _RETRO45_SIN_SUM
+    assert abs(af3 - (1 + 2 * math.cos(psi)) / 3) <= 1e-15
+    d3 = -20 * math.log10(abs(af3))
+    assert abs(d3 - ORACLE["PH26_retro45_db"].value) <= 5e-3
+    check("PH26_retro45_db", d3)
+    d_inf = -20 * math.log10(abs(float(subaperture_factor(0.5, _RETRO45_SIN_SUM))))
+    check("PH26_retro45_sinc_limit_db", d_inf)
+    # the m-point factor tends to the sinc as m grows (and m = 1 is the point model)
+    assert float(subaperture_factor(0.5, _RETRO45_SIN_SUM, 1)) == 1.0
+    big = float(subaperture_factor(0.5, _RETRO45_SIN_SUM, 4001))
+    assert abs(big - float(np.sinc(0.5 * _RETRO45_SIN_SUM))) <= 1e-7
+
+
+def test_ph26_retro45_k1_matches_closed_form_in_the_cell_far_field():
+    """K1 point minus po_patch (Delta = lambda/5, 3 x 3 sub-cells) at 45 deg retro, focused:
+    the 16 x 16 lambda/2 panel at 2 km and a single lambda/2 cell at 2 m (the cell is in its
+    own far field there) both give the 3 x 3 closed form, hence 8.11 +- 0.1 dB (D6)."""
+    fc = 3.5e9
+    lam = rf.wavelength(fc)
+    closed = -20 * math.log10(abs(float(subaperture_factor(0.5, _RETRO45_SIN_SUM, 3))))
+    th = math.radians(45)
+    for n_side, dist, tol_db in ((16, 2000.0, 1e-3), (1, 2.0, 0.01)):
+        p = make_panel([0, 0, 0], [0, 0, 1], [1, 0, 0], n_side, n_side, lam / 2, lam / 2)
+        q = subdivide(p, lam / 2, lam / 2, lam / 5)
+        assert q.n == 9 * p.n
+        pt = np.array([-dist * math.sin(th), 0, dist * math.cos(th)])
+        g = focus_phases(pt, pt, p, fc)
+        diff = db(k1_h(pt, pt, p, fc, g)) - db(k1_h(pt, pt, q, fc, g))
+        assert abs(diff - closed) <= tol_db, (n_side, dist, diff)
+        check("PH26_retro45_db", diff)
+
+
+def test_ph26_retro45_panel_at_2m_follows_the_local_cell_angles():
+    """The PH-26 panel (16 x 16 lambda/2, 3.5 GHz) at 2 m, 45 deg retro, focused: its cells
+    see 35..55 deg, so the panel-level point-minus-patch difference is the amplitude-weighted
+    mean of each cell's own 3 x 3 factor, sum|a_n| / sum|a_n| F_n (within 0.01 dB), which is
+    7.68 dB, NOT the far-field 8.11 dB of D6 (outside +-0.1 dB). Recorded for the lead: the D6
+    regression value applies to a cell (or the panel) in the far field, see the WP4 report."""
+    fc = 3.5e9
+    lam = rf.wavelength(fc)
+    p = make_panel([0, 0, 0], [0, 0, 1], [1, 0, 0], 16, 16, lam / 2, lam / 2)
+    q = subdivide(p, lam / 2, lam / 2, lam / 5)
+    th = math.radians(45)
+    pt = np.array([-2.0 * math.sin(th), 0, 2.0 * math.cos(th)])
+    g = focus_phases(pt, pt, p, fc)
+    diff = db(k1_h(pt, pt, p, fc, g)) - db(k1_h(pt, pt, q, fc, g))
+    a = k1_terms(pt, pt, p, fc, g)  # co-phased: real and positive
+    assert np.max(np.abs(np.angle(a))) <= 1e-12
+    f = local_subaperture_factor(pt, pt, p, fc, lam / 2, lam / 2, 3, 3)
+    model = -20 * math.log10(float(np.sum(f * a.real) / np.sum(a.real)))
+    assert abs(diff - model) <= 0.01
+    o = ORACLE["PH26_retro45_db"]
+    assert abs(diff - o.value) > o.tol, f"2 m panel-level difference {diff:.3f} dB"
+
+
+# --------------------------------------------------------------------------- legacy_v1 (D4)
+
+
+def test_legacy_v1_teeth_vs_k1_in_the_v1_default_geometry():
+    """Section 5.14 / D4: legacy_v1 (whole-panel area per cell, abs(cos), q = 0.285, v1's
+    c = 3e8) is +24.39 +- 0.05 dB above K1 in the v1 default geometry. Teeth: v1 evaluated
+    with C0 instead of v1's constant lands outside the tolerance (+24.48 dB)."""
+    s = v1_default_scene()
+    k1 = db(k1_h(s.tx, s.rx, s.panel, s.fc_hz, s.gamma))
+    v1 = db(legacy_v1_h(s.tx, s.rx, s.panel, s.fc_hz, s.panel_area_m2, s.gamma))
+    check("LEGACY_v1_vs_k1_db", v1 - k1)
+    v1_c0 = db(legacy_v1_h(s.tx, s.rx, s.panel, s.fc_hz, s.panel_area_m2, s.gamma, c_m_per_s=C0))
+    o = ORACLE["LEGACY_v1_vs_k1_db"]
+    assert abs((v1_c0 - k1) - o.value) > o.tol
+    # v1 admits back-side cells (abs cos): mirroring the Tx behind the panel keeps |h|
+    tx_back = s.tx * np.array([-1.0, 1.0, 1.0])
+    back = legacy_v1_h(tx_back, s.rx, s.panel, s.fc_hz, s.panel_area_m2, s.gamma)
+    assert abs(abs(back) - 10 ** (v1 / 20)) <= 1e-12 * 10 ** (v1 / 20)
+    assert k1_h(tx_back, s.rx, s.panel, s.fc_hz, s.gamma) == 0.0  # K1 does not (PH-09)
 
 
 # --------------------------------------------------------------------------- RT / V-CFO
 
 
 def test_rt05_switch_offset_at_2km():
-    from sremu.units import C0
-
     check("RT05_samples_2km_23p04", 2000.0 / C0 * 23.04e6)
 
 

@@ -54,7 +54,7 @@ from sremu.errors import (
     ReciprocityError,
     TableValidationError,
 )
-from sremu.physics.nonideal import efficiency_factor
+from sremu.physics.nonideal import efficiency_factor, wrap_phase_deg
 from sremu.timebase import fraction_to_str, parse_exact
 
 __all__ = [
@@ -543,6 +543,8 @@ class ResponseTable:
         provenance: Provenance,
         *,
         theta_deg: Sequence[float] | np.ndarray | None = None,
+        sigma_mag_db_g: np.ndarray | None = None,
+        sigma_phase_deg_g: np.ndarray | None = None,
         **kw: Any,
     ) -> ResponseTable:
         """Reciprocal half-difference extension ``Gamma(ti, ts) := g(|ti - ts|/2)``.
@@ -552,6 +554,11 @@ class ResponseTable:
         ``sorted(-theta_g U theta_g)``); off-grid half-differences are interpolated
         complex-linearly in ``g``. The result is exactly symmetric and its specular entry
         ``Gamma(theta, -theta)`` equals ``g(|theta|)``.
+
+        Per-entry uncertainties of ``g`` (``sigma_mag_db_g``/``sigma_phase_deg_g``, (S, F, Tg),
+        D16) are extended with the same weights: ``sigma(ti, ts) = (1 - w) sigma_lo +
+        w sigma_hi``, exact for fully correlated neighbours and an upper bound for
+        independent ones. They replace the provenance scalars.
         """
         tg = np.asarray(theta_g_deg, dtype=np.float64)
         gg = np.asarray(g, dtype=np.complex128)
@@ -570,10 +577,29 @@ class ResponseTable:
         if x.max() > tg[-1]:
             raise TableValidationError("half-differences exceed the incidence-only grid")
         i, w = _axis_index(tg, x.ravel())
-        lo = gg[:, :, i]
-        hi = gg[:, :, i + 1]
-        ext = ((1 - w) * lo + w * hi).reshape(gg.shape[0], gg.shape[1], th.size, th.size)
-        prov = provenance.with_assumption(
+        out_shape = (gg.shape[0], gg.shape[1], th.size, th.size)
+
+        def extend(arr: np.ndarray) -> np.ndarray:
+            return ((1 - w) * arr[:, :, i] + w * arr[:, :, i + 1]).reshape(out_shape)
+
+        ext = extend(gg)
+        prov = provenance
+
+        def sigma_ext(name: str, sig: np.ndarray | None) -> np.ndarray | None:
+            if sig is None:
+                return None
+            s = np.asarray(sig, dtype=np.float64)
+            if s.shape != gg.shape:
+                raise TableValidationError(f"{name}_g must have the shape of g {gg.shape}")
+            return extend(s)
+
+        sm_ext = sigma_ext("sigma_mag_db", sigma_mag_db_g)
+        sp_ext = sigma_ext("sigma_phase_deg", sigma_phase_deg_g)
+        if sm_ext is not None:
+            prov = replace(prov, sigma_mag_db=sm_ext)
+        if sp_ext is not None:
+            prov = replace(prov, sigma_phase_deg=sp_ext)
+        prov = prov.with_assumption(
             "angle_mapping='half_difference': Gamma(ti, ts) = g(|ti - ts|/2) [ENG]"
         )
         return cls(labels, freqs_hz, th, ext, prov, angle_mapping="half_difference", **kw)
@@ -754,7 +780,11 @@ class ResponseTable:
         (or absent) gives an angle-independent table; ``angle_grid: {theta_deg: [...]}`` an
         angle table whose gamma entries carry ``theta_i_deg``/``theta_s_deg``;
         ``angle_mapping: half_difference`` with entries carrying ``theta_deg`` gives the
-        incidence-only extension. ``mag: null`` forces ``assume_mag[label]`` (recorded).
+        incidence-only extension. ``angle_mapping`` absent or ``null`` (the WP1 model's
+        default, D16) means ``none`` for ``angle_grid: none`` and ``full`` otherwise; an
+        ``incidence_only: true`` document must name ``half_difference``. ``mag: null`` forces
+        ``assume_mag[label]`` (recorded). Gamma entries may carry their own ``sigma_mag_db``
+        / ``sigma_phase_deg`` (D16); entries without them use the provenance scalars.
         ``reciprocal: false`` is rejected (release 1).
         """
         if isinstance(doc, str | Path):
@@ -784,7 +814,14 @@ class ResponseTable:
         freq_indep = fdecl is None or fdecl == "any"
         freqs = np.array([0.0]) if freq_indep else np.asarray(fdecl, dtype=np.float64)
         grid = d.get("angle_grid", "none")
-        mapping = d.get("angle_mapping", "none" if grid in (None, "none") else "full")
+        mapping = d.get("angle_mapping")
+        if d.get("incidence_only") and mapping != "half_difference":
+            raise TableValidationError(
+                f"state library {name!r}: incidence_only tables need angle_mapping: "
+                f"half_difference (section 5.5), got {mapping!r}"
+            )
+        if mapping is None:  # absent or null (D16): implied by the angle grid
+            mapping = "none" if grid in (None, "none") else "full"
         assumptions: list[str] = []
         am = {str(k): float(v) for k, v in (assume_mag or {}).items()}
 
@@ -828,20 +865,44 @@ class ResponseTable:
                 raise TableValidationError(f"gamma entry at f = {f} not in frequency_hz")
             return k
 
+        entry_sigma = any(
+            e.get("sigma_mag_db") is not None or e.get("sigma_phase_deg") is not None
+            for st in states
+            for e in st.get("gamma", [])
+        )
+
+        def sigma_grids(shape: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray]:
+            """Per-entry sigma arrays initialised with the provenance values (D16)."""
+            sm = np.array(np.broadcast_to(np.asarray(prov.sigma_mag_db, np.float64), shape))
+            sp = np.array(np.broadcast_to(np.asarray(prov.sigma_phase_deg, np.float64), shape))
+            return sm, sp
+
+        def put_sigma(sm: np.ndarray, sp: np.ndarray, idx: tuple[int, ...], e: Any) -> None:
+            if e.get("sigma_mag_db") is not None:
+                sm[idx] = float(e["sigma_mag_db"])
+            if e.get("sigma_phase_deg") is not None:
+                sp[idx] = float(e["sigma_phase_deg"])
+
         if grid in (None, "none"):
             gam = np.full((len(labels), freqs.size, 1, 1), np.nan + 0j)
+            sig_m, sig_p = sigma_grids(gam.shape)
             for s, st in enumerate(states):
                 for e in st.get("gamma", []):
-                    gam[s, fidx(e), 0, 0] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                    idx: tuple[int, ...] = (s, fidx(e), 0, 0)
+                    gam[idx] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                    put_sigma(sig_m, sig_p, idx, e)
             theta = np.zeros(1)
         else:
             theta = np.asarray(grid["theta_deg"], dtype=np.float64)
             if mapping == "half_difference":
                 g = np.full((len(labels), freqs.size, theta.size), np.nan + 0j)
+                sg_m, sg_p = sigma_grids(g.shape)
                 for s, st in enumerate(states):
                     for e in st.get("gamma", []):
                         t = int(np.argmin(np.abs(theta - float(e["theta_deg"]))))
-                        g[s, fidx(e), t] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                        idx = (s, fidx(e), t)
+                        g[idx] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                        put_sigma(sg_m, sg_p, idx, e)
                 if np.any(np.isnan(g)):
                     raise TableValidationError(f"state library {name!r}: incomplete grid")
                 for a in assumptions:
@@ -852,6 +913,8 @@ class ResponseTable:
                     theta,
                     g,
                     prov,
+                    sigma_mag_db_g=sg_m if entry_sigma else None,
+                    sigma_phase_deg_g=sg_p if entry_sigma else None,
                     validity_bw_hz=_float_or_none(d.get("validity_bw_hz")),
                     name=name,
                     frequency_independent=freq_indep,
@@ -863,7 +926,7 @@ class ResponseTable:
                     f"angle tables need angle_mapping 'full' or 'half_difference', got {mapping!r}"
                 )
             if any(
-                "theta_deg" in e and "theta_i_deg" not in e
+                e.get("theta_deg") is not None and e.get("theta_i_deg") is None
                 for st in states
                 for e in st.get("gamma", [])
             ):
@@ -872,13 +935,18 @@ class ResponseTable:
                     "angle_mapping: half_difference (raw incidence-only tables are not reciprocal)"
                 )
             gam = np.full((len(labels), freqs.size, theta.size, theta.size), np.nan + 0j)
+            sig_m, sig_p = sigma_grids(gam.shape)
             for s, st in enumerate(states):
                 for e in st.get("gamma", []):
                     i = int(np.argmin(np.abs(theta - float(e["theta_i_deg"]))))
                     j = int(np.argmin(np.abs(theta - float(e["theta_s_deg"]))))
-                    gam[s, fidx(e), i, j] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                    idx = (s, fidx(e), i, j)
+                    gam[idx] = mag_of(labels[s], e) * _unit_deg(float(e["phase_deg"]))
+                    put_sigma(sig_m, sig_p, idx, e)
         if np.any(np.isnan(gam)):
             raise TableValidationError(f"state library {name!r}: incomplete (state, f, angle) grid")
+        if entry_sigma:
+            prov = replace(prov, sigma_mag_db=sig_m, sigma_phase_deg=sig_p)
         for a in assumptions:
             prov = prov.with_assumption(a)
         return cls(
@@ -896,7 +964,15 @@ class ResponseTable:
         )
 
     def to_state_library(self) -> dict[str, Any]:
-        """The section 9.4 document form of this table (amplitudes always explicit)."""
+        """The section 9.4 document form of this table (amplitudes always explicit).
+
+        Per-entry sigmas (array provenance sigmas, D16) are written to every gamma entry;
+        the provenance then carries their maxima as its scalar ``sigma_mag_db`` /
+        ``sigma_phase_deg`` (a conservative summary; the entries are authoritative)."""
+        per_entry = isinstance(self.provenance.sigma_mag_db, np.ndarray) or isinstance(
+            self.provenance.sigma_phase_deg, np.ndarray
+        )
+        sm, sp = self._sigma_arrays()
         states = []
         for s, lab in enumerate(self.labels):
             entries = []
@@ -913,17 +989,24 @@ class ResponseTable:
                             e["theta_s_deg"] = float(self.theta_deg[j])
                         e["mag"] = abs(g)
                         e["phase_deg"] = math.degrees(math.atan2(g.imag, g.real))
+                        if per_entry:
+                            e["sigma_mag_db"] = float(sm[s, fi, i, j])
+                            e["sigma_phase_deg"] = float(sp[s, fi, i, j])
                         entries.append(e)
             states.append({"id": s, "label": lab, "gamma": entries})
+        prov = self.provenance.to_dict()
+        if per_entry:
+            prov["sigma_mag_db"] = float(np.max(sm))
+            prov["sigma_phase_deg"] = float(np.max(sp))
         return {
             "schema_version": "1.0",
             "kind": "ris_state_library",
             "name": self.name,
-            "provenance": self.provenance.to_dict(),
+            "provenance": prov,
             "frequency_hz": None if self.frequency_independent else self.freqs_hz.tolist(),
             "validity_bw_hz": self.validity_bw_hz,
             "angle_grid": "none" if self.n_theta == 1 else {"theta_deg": self.theta_deg.tolist()},
-            "angle_mapping": "none" if self.n_theta == 1 else "full",
+            "angle_mapping": None,  # implied by the grid (WP1 schema: half_difference | null)
             "reciprocal": True,
             "reconfiguration_time_s": None
             if self.reconfiguration_time_s is None
@@ -963,10 +1046,14 @@ class ResponseTable:
 
 
 def _unit_deg(phase_deg: float) -> complex:
-    """``exp(j phase)`` from degrees, exact at multiples of 90 deg (``cosdg``/``sindg``)."""
+    """``exp(j phase)`` from degrees, exact at multiples of 90 deg (``cosdg``/``sindg``).
+
+    The phase is reduced modulo 360 deg (exact ``fmod``) before Gamma is formed (D8), so
+    ``phase_deg + 360 m`` gives bitwise the same Gamma whenever that sum is exact."""
     from scipy.special import cosdg, sindg
 
-    return complex(float(cosdg(phase_deg)), float(sindg(phase_deg)))
+    p = float(wrap_phase_deg(phase_deg))
+    return complex(float(cosdg(p)), float(sindg(p)))
 
 
 def _float_or_none(x: Any) -> float | None:
@@ -1030,7 +1117,7 @@ def _family_gamma(family: str, params: Mapping[str, float]) -> tuple[list[str], 
             if not (0.0 <= bmin <= 1.0 and alpha >= 0.0):
                 raise ConfigurationError("abeywickrama needs 0 <= beta_min <= 1, alpha >= 0")
             th = 2.0 * math.pi * k / n
-            phi = math.radians(float(params["phi_deg"]))
+            phi = math.radians(float(wrap_phase_deg(float(params["phi_deg"]))))  # D8
             mag = (1.0 - bmin) * ((math.sin(th - phi) + 1.0) / 2.0) ** alpha + bmin
         else:
             raise ConfigurationError(f"unknown analytic family {family!r}")

@@ -403,3 +403,115 @@ def test_i2a_i5_random_rational_rates_and_cuts() -> None:
             full[be] = whole
         ref = full["numpy_ref"]
         assert np.max(np.abs(full["numba_cpu"] - ref)) <= 1e-9 * np.max(np.abs(ref))
+
+
+# --------------------------------------------------------------------------- numba drivers
+
+
+@pytest.mark.parametrize("static", [False, True], ids=["moving", "static_delays"])
+def test_i2a_numba_serial_parallel_and_block_runs_bitwise(static: bool) -> None:
+    """I2a: the serial driver, and the prange driver with any split of the blocks into
+    contiguous runs, give bitwise the same accumulator (every block starts from its own
+    anchors), for segments that start mid-block and on a block boundary; and they match
+    numpy_ref within the I5 tolerance."""
+    from sremu.channel.render_numba import render_prepared
+    from sremu.channel.render_numpy import prepare_segment
+
+    fs = Fraction(23_040_000)
+    rings = _rings(fs, 30_000)
+    for k0, k1 in ((10_011, 12_337), (10_048, 10_112), (10_000, 10_003)):
+        job = _feature_job(fs, k0, k1, rings, static)
+        seg = prepare_segment(job)
+        ser = np.zeros(k1 - k0, np.complex128)
+        render_prepared(seg, ser, parallel=False)
+        for n_chunks in (1, 2, 3, 7, 64, 1000):
+            par = np.zeros(k1 - k0, np.complex128)
+            render_prepared(seg, par, parallel=True, n_chunks=n_chunks)
+            assert np.array_equal(ser, par), (k0, k1, n_chunks)
+        auto = np.zeros(k1 - k0, np.complex128)
+        render_prepared(seg, auto)
+        assert np.array_equal(ser, auto)
+        _i5_check(_render("numpy_ref", job), ser)
+
+
+@pytest.mark.parametrize("static", [False, True], ids=["moving", "static_delays"])
+def test_i2a_numba_block_paths_equal_the_per_sample_formula_bitwise(static: bool) -> None:
+    """I2a for the numba block shortcuts: a block whose two ends share the integer delay and
+    table row takes the tap-outer (vectorized) path, otherwise every sample is evaluated on
+    its own; rotators are block anchors times step powers. Rendering every sample as its own
+    one-sample segment (always the single-sample formula) must give exactly the bits of one
+    whole-range call, for moving FD groups whose table row changes inside blocks, integer
+    delays whose offset changes inside blocks, transitions and LO offsets."""
+    from sremu.channel.render_numba import render_prepared
+    from sremu.channel.render_numpy import prepare_segment
+
+    fs = Fraction(23_040_000)
+    rings = _rings(fs, 30_000)
+    k0, k1 = 10_011, 10_400
+    whole = np.zeros(k1 - k0, np.complex128)
+    render_prepared(prepare_segment(_feature_job(fs, k0, k1, rings, static)), whole)
+    single = np.zeros(k1 - k0, np.complex128)
+    for k in range(k0, k1):
+        job = _feature_job(fs, k0, k1, rings, static)
+        one = SegmentJob(job.rx, job.f_s, k, k + 1, job.t_a, job.t_b, job.links)
+        render_prepared(prepare_segment(one), single[k - k0 : k - k0 + 1], parallel=False)
+    assert np.array_equal(whole, single)
+    _i5_check(_render("numpy_ref", _feature_job(fs, k0, k1, rings, static)), whole)
+
+
+def test_p2_fd_table_is_not_copied_per_snapshot_interval() -> None:
+    """Performance pass: the 1025 x 32 polyphase table is copied into the numba table bank
+    once; rendering many new snapshot intervals (new link statics each time) neither grows the
+    bank nor references another copy, and every interval's pack points at the same table."""
+    from sremu.channel import render_numba
+    from sremu.channel.fd import polyphase_table
+
+    fs = Fraction(1_000_000)
+    ring = TxRingBuffer("a.tx0", fs, 1 << 14)
+    ring.write(0, _cplx(_rng(4), 8000).astype(np.complex64))
+    fd = kaiser_fd_spec(32)
+    table = polyphase_table(32)
+    assert table.shape == (1025, 32)
+    sizes, offsets = [], []
+    for m in range(6):
+        t_a, t_b = Fraction(m, 1000), Fraction(m + 1, 1000)
+        tau_a = np.array([2.0e-6 + 1e-9 * m, 2.5e-6])
+        tau_b = tau_a + 1e-9
+        lj = LinkJob(
+            "a.tx0->b.rx0", ring, 3.5e9, 0.0, _cplx(_rng(m), 2), _cplx(_rng(m + 9), 2),
+            tau_a, tau_b, np.zeros(2, np.int16), fd,
+        )  # fmt: skip
+        out = np.zeros(1000, np.complex128)
+        render_numba.render(SegmentJob("b.rx0", fs, m * 1000, m * 1000 + 1000, t_a, t_b, [lj]), out)
+        st = (
+            render_numba.prepare_segment(
+                SegmentJob("b.rx0", fs, m * 1000, m * 1000 + 1, t_a, t_b, [lj])
+            )
+            .links[0]
+            .static
+        )
+        pk = render_numba._link_pack(st)
+        off = int(pk.G_i[0, 4])
+        bank = render_numba._bank
+        assert np.array_equal(bank[off : off + table.size], table.reshape(-1))
+        sizes.append(render_numba.bank_size())
+        offsets.append(off)
+    assert len(set(sizes)) == 1 and len(set(offsets)) == 1
+
+
+def test_d20_module_level_render_functions() -> None:
+    """D20: both backend modules expose a module-level render(job, out) (contracts.RenderFn)
+    that gives exactly the backend object's output and adds into out."""
+    from sremu.channel import render_numba, render_numpy
+
+    fs = Fraction(23_040_000)
+    rings = _rings(fs, 30_000)
+    job = _feature_job(fs, 10_000, 10_400, rings)
+    for mod, name in ((render_numpy, "numpy_ref"), (render_numba, "numba_cpu")):
+        y = np.zeros(400, np.complex128)
+        mod.render(job, y)
+        assert np.array_equal(y, _render(name, job))
+        base = _cplx(_rng(8), 400)
+        out = base.copy()
+        mod.render(job, out)
+        np.testing.assert_allclose(out - base, y, rtol=0, atol=1e-12)

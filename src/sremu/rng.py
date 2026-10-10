@@ -37,8 +37,9 @@ and ``sin``, whose last-ulp behaviour depends on the math library (NumPy's SIMD 
 the C runtime used by numba); they agree to within a few ulps. (On the development laptop,
 an AVX2 host, they were bitwise equal over 2e6 draws; this is not claimed elsewhere.)
 
-Controllers and analysis code use :func:`generator`:
-``np.random.Generator(np.random.Philox(key=derive_key(seed, "ctrl", name).u64))``; an
+Every keyed ``np.random.Generator`` (random-waypoint legs, failure maps, controllers,
+trials; D14) comes from :func:`generator`:
+``np.random.Generator(np.random.Philox(key=derive_key(seed, purpose, name).u64))``; an
 optional ``counter`` selects independent per-index streams of one key (e.g. random-waypoint
 legs).
 ``SeedSequence.spawn`` is never used (it depends on spawn order) and there is no global RNG.
@@ -187,12 +188,32 @@ def derive_key(master_seed: int, purpose: str, name: str, *, strict: bool = True
 def generator(
     master_seed: int, purpose: str, name: str, *, counter: int = 0
 ) -> np.random.Generator:
-    """``np.random.Generator(np.random.Philox(key=derive_key(...).u64, counter=[0, counter,
-    0, 0]))`` for controllers and analysis code (``purpose="ctrl"``, ``"trial"``, ...).
+    """Keyed NumPy generator of stream ``(master_seed, purpose, name)`` (section 6.1; D14).
 
-    ``counter`` (``0 <= counter < 2**64``) selects an independent stream of the same key in
-    the second 64-bit counter word (NumPy's Philox advances the first), e.g. random-waypoint
-    leg ``i`` of ``mobility/<node>``. Never spawned (section 6.1).
+    This is the one helper every keyed ``np.random.Generator`` in sremu comes from:
+    random-waypoint legs (``"mobility"``, ``<node>``), failure maps (``"failure"``,
+    ``<panel>``), Monte Carlo tables (``"table_mc"``, ``<panel>``), controllers
+    (``"ctrl"``, ``<ctrl>``), trials (``"trial"``, ``"<study>/<i>"``) and the other
+    purposes of :data:`PURPOSES`. Packages must not build their own key (no private hash
+    helpers, no ``SeedSequence``): the result is exactly::
+
+        np.random.Generator(np.random.Philox(
+            key=derive_key(master_seed, purpose, name).u64,
+            counter=np.array([0, counter, 0, 0], dtype=np.uint64)))
+
+    Args:
+        master_seed: the scenario ``seed`` (int >= 0).
+        purpose: a registered purpose string (:data:`PURPOSES`; an unknown purpose raises
+            ``ConfigurationError``).
+        name: the purpose-specific name (node, panel, controller, ...), section 6.2.
+        counter: ``0 <= counter < 2**64`` selects an independent stream of the same key in
+            the second 64-bit Philox counter word (NumPy's Philox advances the first), e.g.
+            random-waypoint leg ``i`` of ``mobility/<node>``. Default 0.
+
+    The stream depends only on these four values, never on creation order or on other
+    generators (never spawned, section 6.1). The raw Philox stream is fixed by the key and
+    counter; values drawn through ``Generator`` methods follow NumPy's stream-compatibility
+    policy (NEP 19), so the NumPy version is recorded in the manifest.
     """
     if isinstance(counter, bool) or not isinstance(counter, numbers.Integral):
         raise TypeError(f"counter must be an int, got {type(counter).__name__}")

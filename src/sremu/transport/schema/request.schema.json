@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sremu:control:v1:request",
+  "title": "sremu control request, schema version 1 (DESIGN.md section 8.5)",
+  "description": "A client-to-emulator message on the control ROUTER socket. Exact times and rates are strings ('1/200', '5e-3', '23.04e6') or JSON integers; JSON floats are rejected for them. No field is ever interpreted as a filesystem path. Caps: a message is at most 1 MiB (1048576 bytes) and one command carries at most 65536 elements.",
+  "type": "object",
+  "required": ["v", "id", "op"],
+  "properties": {
+    "v": {"const": 1},
+    "id": {"$ref": "#/$defs/msg_id"},
+    "op": {
+      "enum": [
+        "hello", "caps.get", "time.now",
+        "ris.set_config", "ris.set_codebook", "ris.get_state", "ris.set_enabled",
+        "node.set_position", "node.set_trajectory",
+        "stream.open", "stream.close", "stream.cmd",
+        "ctrl.register", "ctrl.ack", "ctrl.unregister",
+        "rec.marker", "stats.get", "sim.pause", "sim.resume", "sim.shutdown"
+      ]
+    },
+    "src": {"$ref": "#/$defs/name"}
+  },
+  "allOf": [
+    {"if": {"required": ["op"], "properties": {"op": {"const": "hello"}}}, "then": {"$ref": "#/$defs/hello"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "caps.get"}}}, "then": {"$ref": "#/$defs/caps.get"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "time.now"}}}, "then": {"$ref": "#/$defs/empty"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ris.set_config"}}}, "then": {"$ref": "#/$defs/ris.set_config"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ris.set_codebook"}}}, "then": {"$ref": "#/$defs/ris.set_codebook"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ris.get_state"}}}, "then": {"$ref": "#/$defs/ris.get_state"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ris.set_enabled"}}}, "then": {"$ref": "#/$defs/ris.set_enabled"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "node.set_position"}}}, "then": {"$ref": "#/$defs/node.set_position"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "node.set_trajectory"}}}, "then": {"$ref": "#/$defs/node.set_trajectory"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "stream.open"}}}, "then": {"$ref": "#/$defs/stream.open"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "stream.close"}}}, "then": {"$ref": "#/$defs/stream.close"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "stream.cmd"}}}, "then": {"$ref": "#/$defs/stream.cmd"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ctrl.register"}}}, "then": {"$ref": "#/$defs/ctrl.register"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ctrl.ack"}}}, "then": {"$ref": "#/$defs/ctrl.ack"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "ctrl.unregister"}}}, "then": {"$ref": "#/$defs/ctrl.unregister"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "rec.marker"}}}, "then": {"$ref": "#/$defs/rec.marker"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "stats.get"}}}, "then": {"$ref": "#/$defs/empty"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "sim.pause"}}}, "then": {"$ref": "#/$defs/empty"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "sim.resume"}}}, "then": {"$ref": "#/$defs/empty"}},
+    {"if": {"required": ["op"], "properties": {"op": {"const": "sim.shutdown"}}}, "then": {"$ref": "#/$defs/empty"}}
+  ],
+  "$defs": {
+    "msg_id": {
+      "description": "Client-chosen message id, echoed in the reply; also the command id (cmd_id) of commands.",
+      "type": "string", "pattern": "^[A-Za-z0-9_.:\\-]{1,64}$"
+    },
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9_\\-]{1,64}$"},
+    "stream_id_text": {
+      "description": "Stream identifier '<node>.<stream>'.",
+      "type": "string", "maxLength": 129, "pattern": "^[A-Za-z0-9_\\-]{1,64}\\.[A-Za-z0-9_\\-]{1,64}$"
+    },
+    "handle": {"description": "Engine stream handle id from stream.open (uint32).", "type": "integer", "minimum": 0, "maximum": 4294967295},
+    "exact_nonneg": {
+      "description": "Exact non-negative quantity: a decimal or rational string, or a JSON integer.",
+      "anyOf": [
+        {"type": "string", "maxLength": 64,
+         "pattern": "^\\+?(?:[0-9]{1,30}/[0-9]{1,30}|(?:[0-9]{1,30}(?:\\.[0-9]{0,30})?|\\.[0-9]{1,30})(?:[eE][+\\-]?[0-9]{1,3})?)$"},
+        {"type": "integer", "minimum": 0, "maximum": 9223372036854775807}
+      ]
+    },
+    "finite": {"type": "number"},
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "b64": {"type": "string", "maxLength": 174764, "pattern": "^[A-Za-z0-9+/]*={0,2}$"},
+
+    "at": {
+      "description": "When a command applies: 'asap', {'t': exact switch time at the RIS, s}, or {'sample': {'stream', 'index'}} (the stream sees the switch at that sample).",
+      "anyOf": [
+        {"const": "asap"},
+        {"type": "object", "required": ["t"], "additionalProperties": false,
+         "properties": {"t": {"$ref": "#/$defs/exact_nonneg"}}},
+        {"type": "object", "required": ["sample"], "additionalProperties": false,
+         "properties": {"sample": {"type": "object", "required": ["stream", "index"], "additionalProperties": false,
+           "properties": {"stream": {"$ref": "#/$defs/stream_id_text"},
+                          "index": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807}}}}}
+      ]
+    },
+    "late_policy": {"enum": ["apply_on_arrival", "reject"]},
+    "transition": {
+      "type": "object", "required": ["model"], "additionalProperties": false,
+      "properties": {
+        "model": {"enum": ["step", "linear", "first_order"]},
+        "duration_s": {"anyOf": [{"$ref": "#/$defs/exact_nonneg"}, {"type": "null"}]},
+        "classes": {"enum": ["single", "by_edge"]}
+      }
+    },
+    "config": {
+      "description": "Exactly one form: states (base64 of little-endian int16, one per control, -1 = dead), a codebook row of the panel's 'default' codebook, phases in degrees (quantized by the panel), or phases in radians (sremu extension: float64 values pass through JSON exactly, so a remote controller issues bit-identical commands).",
+      "oneOf": [
+        {"type": "object", "required": ["states_b64", "dtype"], "additionalProperties": false,
+         "properties": {"states_b64": {"$ref": "#/$defs/b64"}, "dtype": {"const": "i2"}}},
+        {"type": "object", "required": ["codebook_index"], "additionalProperties": false,
+         "properties": {"codebook_index": {"type": "integer", "minimum": 0, "maximum": 65535}}},
+        {"type": "object", "required": ["phases_deg"], "additionalProperties": false,
+         "properties": {"phases_deg": {"type": "array", "items": {"type": "number"}, "minItems": 1, "maxItems": 65536},
+                        "quantizer": {"enum": ["max_real"]}}},
+        {"type": "object", "required": ["phases_rad"], "additionalProperties": false,
+         "properties": {"phases_rad": {"type": "array", "items": {"type": "number"}, "minItems": 1, "maxItems": 65536},
+                        "quantizer": {"enum": ["max_real"]}}}
+      ]
+    },
+    "elements": {
+      "anyOf": [
+        {"const": "all"},
+        {"type": "object", "required": ["indices"], "additionalProperties": false,
+         "properties": {"indices": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 2147483647}, "maxItems": 65536}}},
+        {"type": "object", "required": ["group"], "additionalProperties": false,
+         "properties": {"group": {"$ref": "#/$defs/name"}}}
+      ]
+    },
+    "trajectory": {
+      "description": "A section 9.2 trajectory without file references: static, waypoints, constant_velocity, rwp_1d or rwp_2d ('trace' names a file and is never accepted over the socket).",
+      "oneOf": [
+        {"type": "object", "required": ["model", "position_m"], "additionalProperties": false,
+         "properties": {"model": {"const": "static"}, "position_m": {"$ref": "#/$defs/vec3"}}},
+        {"type": "object", "required": ["model", "t_s", "positions_m"], "additionalProperties": false,
+         "properties": {"model": {"const": "waypoints"},
+                        "t_s": {"type": "array", "items": {"$ref": "#/$defs/exact_nonneg"}, "minItems": 1, "maxItems": 65536},
+                        "positions_m": {"type": "array", "items": {"$ref": "#/$defs/vec3"}, "minItems": 1, "maxItems": 65536}}},
+        {"type": "object", "required": ["model", "start_m", "velocity_mps"], "additionalProperties": false,
+         "properties": {"model": {"const": "constant_velocity"}, "start_m": {"$ref": "#/$defs/vec3"},
+                        "velocity_mps": {"$ref": "#/$defs/vec3"}}},
+        {"type": "object", "required": ["model", "p0_m", "p1_m", "speed_mps"], "additionalProperties": false,
+         "properties": {"model": {"const": "rwp_1d"}, "p0_m": {"$ref": "#/$defs/vec3"}, "p1_m": {"$ref": "#/$defs/vec3"},
+                        "speed_mps": {"type": "number", "exclusiveMinimum": 0}, "pause_s": {"$ref": "#/$defs/exact_nonneg"}}},
+        {"type": "object", "required": ["model", "bounds_m", "speed_mps"], "additionalProperties": false,
+         "properties": {"model": {"const": "rwp_2d"},
+                        "bounds_m": {"type": "array", "minItems": 2, "maxItems": 2,
+                                     "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+                        "z_m": {"type": "number"}, "speed_mps": {"type": "number", "exclusiveMinimum": 0},
+                        "pause_s": {"$ref": "#/$defs/exact_nonneg"}}}
+      ]
+    },
+    "scalar": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]},
+
+    "empty": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true}
+    },
+    "hello": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "client": {"type": "string", "maxLength": 64},
+                     "contract_version": {"type": "string", "pattern": "^[0-9]{1,4}\\.[0-9]{1,5}$"}}
+    },
+    "caps.get": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true, "panel": {"$ref": "#/$defs/name"}}
+    },
+    "ris.set_config": {
+      "type": "object", "required": ["panel", "at", "config"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "panel": {"$ref": "#/$defs/name"}, "at": {"$ref": "#/$defs/at"},
+                     "config": {"$ref": "#/$defs/config"}, "elements": {"$ref": "#/$defs/elements"},
+                     "transition": {"$ref": "#/$defs/transition"}, "late_policy": {"$ref": "#/$defs/late_policy"}}
+    },
+    "ris.set_codebook": {
+      "type": "object", "required": ["panel", "codebook_b64", "dtype", "shape"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "panel": {"$ref": "#/$defs/name"}, "name": {"$ref": "#/$defs/name"},
+                     "codebook_b64": {"$ref": "#/$defs/b64"}, "dtype": {"const": "i2"},
+                     "shape": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 65536},
+                               "minItems": 2, "maxItems": 2}}
+    },
+    "ris.get_state": {
+      "type": "object", "required": ["panel"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true, "panel": {"$ref": "#/$defs/name"}}
+    },
+    "ris.set_enabled": {
+      "type": "object", "required": ["panel", "at", "enabled"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "panel": {"$ref": "#/$defs/name"}, "at": {"$ref": "#/$defs/at"},
+                     "enabled": {"type": "boolean"}, "late_policy": {"$ref": "#/$defs/late_policy"}}
+    },
+    "node.set_position": {
+      "type": "object", "required": ["node", "at", "position_m"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "node": {"$ref": "#/$defs/name"}, "at": {"$ref": "#/$defs/at"},
+                     "position_m": {"$ref": "#/$defs/vec3"}, "late_policy": {"$ref": "#/$defs/late_policy"}}
+    },
+    "node.set_trajectory": {
+      "type": "object", "required": ["node", "at", "trajectory"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "node": {"$ref": "#/$defs/name"}, "at": {"$ref": "#/$defs/at"},
+                     "trajectory": {"$ref": "#/$defs/trajectory"}, "late_policy": {"$ref": "#/$defs/late_policy"}}
+    },
+    "stream.open": {
+      "type": "object", "required": ["stream", "direction", "fc_hz", "rate_sps"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "stream": {"$ref": "#/$defs/stream_id_text"}, "direction": {"enum": ["tx", "rx"]},
+                     "fc_hz": {"type": "number", "exclusiveMinimum": 0}, "rate_sps": {"$ref": "#/$defs/exact_nonneg"},
+                     "cpu": {"enum": ["fc32", "sc16"]}, "nchan": {"const": 1}}
+    },
+    "stream.close": {
+      "type": "object", "required": ["stream_id"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true, "stream_id": {"$ref": "#/$defs/handle"}}
+    },
+    "stream.cmd": {
+      "type": "object", "required": ["stream_id", "mode"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "stream_id": {"$ref": "#/$defs/handle"},
+                     "mode": {"enum": ["start_cont", "stop_cont", "num_done", "num_more"]},
+                     "num_samps": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+                     "stream_now": {"type": "boolean"}, "t": {"$ref": "#/$defs/exact_nonneg"}}
+    },
+    "ctrl.register": {
+      "type": "object", "required": ["name", "period_s", "min_latency_s"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "name": {"$ref": "#/$defs/name"}, "period_s": {"$ref": "#/$defs/exact_nonneg"},
+                     "min_latency_s": {"$ref": "#/$defs/exact_nonneg"},
+                     "latency": {"type": "object", "required": ["fixed_s"], "additionalProperties": false,
+                                 "properties": {"fixed_s": {"$ref": "#/$defs/exact_nonneg"},
+                                                "jitter": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}]}}},
+                     "observation": {"type": "object", "additionalProperties": false,
+                                     "properties": {"fields": {"type": "array", "maxItems": 5,
+                                                               "items": {"enum": ["rx_power_dbm", "ris_state", "positions", "csi_oracle", "iq_window"]}},
+                                                    "window_s": {"$ref": "#/$defs/exact_nonneg"},
+                                                    "position_delay_s": {"$ref": "#/$defs/exact_nonneg"},
+                                                    "position_noise_m": {"type": "number", "minimum": 0}}}}
+    },
+    "ctrl.ack": {
+      "type": "object", "required": ["controller", "t_b"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "controller": {"$ref": "#/$defs/name"}, "t_b": {"$ref": "#/$defs/exact_nonneg"}}
+    },
+    "ctrl.unregister": {
+      "type": "object", "required": ["controller"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true, "controller": {"$ref": "#/$defs/name"}}
+    },
+    "rec.marker": {
+      "type": "object", "required": ["label"], "additionalProperties": false,
+      "properties": {"v": true, "id": true, "op": true, "src": true,
+                     "at": {"$ref": "#/$defs/at"}, "label": {"type": "string", "minLength": 1, "maxLength": 256},
+                     "fields": {"type": "object", "maxProperties": 32,
+                                "propertyNames": {"pattern": "^[A-Za-z0-9_.\\-]{1,64}$"},
+                                "additionalProperties": {"$ref": "#/$defs/scalar"}}}
+    }
+  }
+}

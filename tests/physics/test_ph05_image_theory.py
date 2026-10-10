@@ -45,6 +45,8 @@ def test_ph05_oblique_plate_matches_image_and_no_j_teeth():
     assert abs(hn) == pytest.approx(abs(h), rel=1e-12)
 
 
+# the closed form is the Kirchhoff-obliquity disk; the option warns by design (D2)
+@pytest.mark.filterwarnings("ignore:obliquity='kirchhoff':sremu.errors.ValidityWarning")
 def test_ph05_disk_on_axis_discrete_vs_closed_form():
     d, radius = 2.0, 1.0
     p = np.array([0.0, 0.0, d])

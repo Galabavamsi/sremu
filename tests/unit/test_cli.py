@@ -87,7 +87,10 @@ def test_cli_info_json(runner):
     for key in ("cpu_model", "logical_cpus", "power_plan_or_governor", "gpu", "platform"):
         assert key in data
     assert isinstance(data["gpu"], list)
-    assert {"using_svml", "threading_layer_config", "num_threads"} <= set(data["numba"])
+    assert data["aws_instance"] is None or set(data["aws_instance"]) == {"type", "id"}
+    assert {"using_svml", "threading_layer_config", "num_threads", "cache_dir"} <= set(
+        data["numba"]
+    )
 
 
 def test_cli_deterministic_switch_sets_svml_env(runner, monkeypatch):
@@ -105,11 +108,19 @@ def test_cli_deterministic_switch_sets_svml_env(runner, monkeypatch):
     assert os.environ["NUMBA_DISABLE_INTEL_SVML"] == "1"
 
 
-def _info_in_fresh_process(args: list[str], svml_env: str | None) -> dict:
+def _info_in_fresh_process(
+    args: list[str], svml_env: str | None, cache_env: str | None = None
+) -> dict:
     """Run ``sremu <args> info --json`` in a new interpreter (numba not yet imported)."""
-    env = {k: v for k, v in os.environ.items() if k != "NUMBA_DISABLE_INTEL_SVML"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("NUMBA_DISABLE_INTEL_SVML", "NUMBA_CACHE_DIR")
+    }
     if svml_env is not None:
         env["NUMBA_DISABLE_INTEL_SVML"] = svml_env
+    if cache_env is not None:
+        env["NUMBA_CACHE_DIR"] = cache_env
     res = subprocess.run(
         [sys.executable, "-c", "from sremu.cli import app; app()", *args, "info", "--json"],
         capture_output=True,
@@ -134,6 +145,43 @@ def test_cli_d4_deterministic_mode_disables_svml_before_numba_import():
     state = _info_in_fresh_process(["--no-deterministic"], None)
     assert state["env_NUMBA_DISABLE_INTEL_SVML"] is None
     assert state["disable_intel_svml"] is False
+
+
+def _numba_user_cache_dir() -> str:
+    """Oracle: numba's own user-wide cache directory (numba.misc.appdirs)."""
+    from numba.misc.appdirs import AppDirs
+
+    return str(AppDirs(appname="numba", appauthor=False).user_cache_dir)
+
+
+def test_cli_d15_deterministic_mode_sets_nosvml_cache_dir(runner, monkeypatch, tmp_path):
+    monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)
+    res = runner.invoke(cli.app, ["--no-deterministic", "info", "--json"])
+    assert res.exit_code == 0, res.output
+    assert "NUMBA_CACHE_DIR" not in os.environ  # non-deterministic: numba's default
+    res = runner.invoke(cli.app, ["info", "--json"])
+    assert res.exit_code == 0, res.output
+    assert os.environ["NUMBA_CACHE_DIR"] == _numba_user_cache_dir() + "-nosvml"
+    # a user-chosen cache directory is the default cache: it gets the suffix, once
+    user = str(tmp_path / "nbcache")
+    monkeypatch.setenv("NUMBA_CACHE_DIR", user)
+    for _ in range(2):
+        res = runner.invoke(cli.app, ["info", "--json"])
+        assert res.exit_code == 0, res.output
+        assert os.environ["NUMBA_CACHE_DIR"] == user + "-nosvml"
+
+
+def test_cli_d15_cache_dir_is_set_before_numba_import(tmp_path):
+    """numba reads NUMBA_CACHE_DIR at import (``numba.config.CACHE_DIR``); a fresh process
+    shows whether the CLI set it first."""
+    state = _info_in_fresh_process([], None)
+    assert state["cache_dir"] == _numba_user_cache_dir() + "-nosvml"
+    assert state["env_NUMBA_CACHE_DIR"] == state["cache_dir"]
+    user = str(tmp_path / "cache")
+    assert _info_in_fresh_process([], "0", user)["cache_dir"] == user + "-nosvml"
+    state = _info_in_fresh_process(["--no-deterministic"], None, user)
+    assert state["cache_dir"] == user  # untouched without deterministic mode
+    assert _info_in_fresh_process(["--no-deterministic"], None)["cache_dir"] == ""
 
 
 def test_cli_import_does_not_import_numba_or_commands():

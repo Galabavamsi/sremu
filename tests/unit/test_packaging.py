@@ -6,7 +6,9 @@ Expected values are transcribed from the spec text, not read back from the files
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -105,19 +107,109 @@ def test_conftest_tier_markers_are_registered():
 
 
 def test_gitattributes_lf_for_csv_and_json_section_2_2():
-    lines = {
-        ln.split()[0]: ln.split()[1:]
+    rules = [
+        (ln.split()[0], ln.split()[1:])
         for ln in (REPO / ".gitattributes").read_text(encoding="utf-8").splitlines()
         if ln.strip() and not ln.startswith("#")
-    }
+    ]
+    order = {pattern: i for i, (pattern, _) in enumerate(rules)}
+    lines = dict(rules)
     for pattern in ("*.csv", "*.json"):
         assert {"text", "eol=lf"} <= set(lines[pattern]), pattern
+    # hash-pinned data stays byte-exact: its "-text" rules come later, so they win (gitattributes
+    # applies the last matching line per attribute)
+    for pinned in ("data/validation/**", "tests/golden/**"):
+        assert lines[pinned] == ["-text"], pinned
+        assert order[pinned] > max(order["*.csv"], order["*.json"]), pinned
 
 
 def test_readme_states_lineage_section_2_1():
     text = (REPO / "README.md").read_text(encoding="utf-8")
     assert "v1-legacy" in text and "03697a6" in text
     assert "v2-legacy" in text and "8abd671" in text
+
+
+def test_d13_offline_install_documented():
+    for doc in ("README.md", "CONTRIBUTING.md"):
+        text = (REPO / doc).read_text(encoding="utf-8")
+        assert "uv pip install --offline --no-deps -e ." in text, doc
+
+
+def test_d21_pytest_tasks_use_8_workers():
+    tasks = _load_tasks()
+    assert tasks.XDIST_WORKERS == 8
+    if importlib.util.find_spec("xdist") is not None:
+        assert tasks._xdist_args() == ["-n", "8"]
+
+
+class _Recorder:
+    def __init__(self, rc: int = 0) -> None:
+        self.rc = rc
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], budget_s: float | None = None) -> int:
+        self.calls.append(list(cmd))
+        return self.rc
+
+
+def test_d21_paper_junit_runs_ci_and_nightly_and_writes_the_sidecar(tmp_path, monkeypatch):
+    tasks = _load_tasks()
+    rec = _Recorder(rc=0)
+    monkeypatch.setattr(tasks, "_run", rec)
+    monkeypatch.setattr(tasks, "_git_state", lambda repo: ("0123abcd" * 5, True))
+    junit = tmp_path / "out" / "sremu-junit.xml"
+    assert tasks.main(["paper-junit", str(junit), "-x"]) == 0
+    (cmd,) = rec.calls
+    assert cmd[1:3] == ["-m", "pytest"]
+    i = cmd.index("-m", 3)
+    assert _names(cmd[i + 1]) == SPEC_CI | SPEC_NIGHTLY
+    assert f"--junitxml={junit}" in cmd and "-x" in cmd
+    meta = json.loads((tmp_path / "out" / "sremu-junit.meta.json").read_text(encoding="utf-8"))
+    assert meta == {"sremu_commit": "0123abcd" * 5, "sremu_dirty": True}
+    assert tasks.meta_path(Path("a/b/junit.xml")) == Path("a/b/junit.meta.json")
+
+
+def test_d21_paper_junit_relative_path_failures_and_git_errors(tmp_path, monkeypatch):
+    tasks = _load_tasks()
+    monkeypatch.chdir(tmp_path)
+    rec = _Recorder(rc=1)  # failing tests: the exit code propagates, the sidecar is written
+    monkeypatch.setattr(tasks, "_run", rec)
+    monkeypatch.setattr(tasks, "_git_state", lambda repo: ("f" * 40, False))
+    assert tasks.main(["paper-junit", "j.xml"]) == 1
+    assert f"--junitxml={tmp_path / 'j.xml'}" in rec.calls[0]
+    meta = json.loads((tmp_path / "j.meta.json").read_text(encoding="utf-8"))
+    assert meta == {"sremu_commit": "f" * 40, "sremu_dirty": False}
+
+    def no_git(repo):
+        raise RuntimeError("not a git repository")
+
+    rec2 = _Recorder()
+    monkeypatch.setattr(tasks, "_run", rec2)
+    monkeypatch.setattr(tasks, "_git_state", no_git)
+    assert tasks.main(["paper-junit", "k.xml"]) == 1
+    assert rec2.calls == [] and not (tmp_path / "k.meta.json").exists()
+
+
+def test_d21_git_state_uses_read_only_commands(monkeypatch):
+    """The two git calls (no git is run here): rev-parse HEAD and status --porcelain."""
+    tasks = _load_tasks()
+    seen: list[list[str]] = []
+    outputs = {"rev-parse": "abc\n", "status": " M src/sremu/units.py\n"}
+
+    def fake_run(args, **kw):
+        seen.append(list(args))
+        return subprocess.CompletedProcess(args, 0, outputs[args[3]], "")
+
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: "git")
+    monkeypatch.setattr(tasks.subprocess, "run", fake_run)
+    assert tasks._git_state(Path("R")) == ("abc", True)
+    assert [a[3:] for a in seen] == [["rev-parse", "HEAD"], ["status", "--porcelain"]]
+    assert all(a[:3] == ["git", "-C", "R"] for a in seen)
+    outputs["status"] = ""
+    assert tasks._git_state(Path("R")) == ("abc", False)
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="git not found"):
+        tasks._git_state(Path("R"))
 
 
 def test_lazy_facade_resolves_foundation_names_and_reports_missing_owners():
@@ -130,7 +222,7 @@ def test_lazy_facade_resolves_foundation_names_and_reports_missing_owners():
     assert sremu.Rate is sremu.timebase.Rate
     assert sremu.TxMetadata is sremu.contracts.TxMetadata
     assert sremu.ErrorCode is sremu.errors.ErrorCode
-    assert sremu.CONTRACT_VERSION == "1.0"
+    assert sremu.CONTRACT_VERSION == "1.1"
     assert {"Device", "StreamArgs", "TimeSpec"} <= set(dir(sremu))
     if importlib.util.find_spec("sremu.api.device") is None:  # until WP7 lands
         with pytest.raises(AttributeError, match="WP7"):
