@@ -26,7 +26,11 @@ __all__ = [
     "load_protocol",
     "prediction_spec",
     "prediction_spec_sha256",
+    "prior_variants",
+    "ring_split",
+    "sensitivity_run",
     "split_masks",
+    "variant_protocol",
 ]
 
 PROTOCOL_DIR: Final[Path] = Path(__file__).resolve().parent
@@ -55,9 +59,10 @@ def canonical_json_bytes(obj: Any) -> bytes:
 
 def prediction_spec(protocol: Mapping[str, Any]) -> dict[str, Any]:
     """The protocol subset that fixes the prediction tensor (cell grid, frame, prior,
-    models, K, seed, RNG streams, sigma_pos settings). The tensor cache records its hash;
-    the power-analysis result added to ``protocol.json`` later does not change it."""
-    return {
+    models, K, seed, RNG streams, sigma_pos settings; the variant id of an alternative-prior
+    sensitivity run). The tensor cache records its hash; the power-analysis result added to
+    ``protocol.json`` later does not change it."""
+    out = {
         "seed": protocol["seed"],
         "rng": protocol["rng"],
         "grid": {k: protocol["data"][k] for k in ("fc_hz", "theta_deg", "r_m", "cell_order")},
@@ -67,11 +72,60 @@ def prediction_spec(protocol: Mapping[str, Any]) -> dict[str, Any]:
         "K": protocol["primary_analysis"]["K"],
         "sigma_pos": protocol["uncertainty_budget"]["sigma_pos"],
     }
+    if protocol.get("variant") is not None:
+        out["variant"] = protocol["variant"]
+    return out
 
 
 def prediction_spec_sha256(protocol: Mapping[str, Any]) -> str:
     """SHA-256 of the canonical JSON of :func:`prediction_spec`."""
     return hashlib.sha256(canonical_json_bytes(prediction_spec(protocol))).hexdigest()
+
+
+def sensitivity_run(protocol: Mapping[str, Any], run_id: str) -> dict[str, Any]:
+    """The ``sensitivity_runs`` entry with ``id == run_id`` (``KeyError`` if absent)."""
+    for r in protocol.get("sensitivity_runs", []):
+        if str(r["id"]) == run_id:
+            return dict(r)
+    raise KeyError(f"no sensitivity run {run_id!r}")
+
+
+def prior_variants(protocol: Mapping[str, Any]) -> tuple[str, ...]:
+    """Ids of the sensitivity runs that use an alternative prior (``prior_overrides``)."""
+    return tuple(
+        str(r["id"]) for r in protocol.get("sensitivity_runs", []) if "prior_overrides" in r
+    )
+
+
+def variant_protocol(protocol: Mapping[str, Any], variant: str | None = None) -> dict[str, Any]:
+    """The protocol of a labelled alternative-prior sensitivity run (PROTOCOL.md section 11).
+
+    A deep copy of ``protocol`` in which every key of the run's ``prior_overrides`` replaces
+    the same key of ``prior`` (it must exist there) and every entry of ``rng_names`` replaces
+    the stream name of the same ``rng`` key; models, analysis, decisions and the power-analysis
+    design are unchanged. ``power_analysis_result`` (which belongs to the primary prior) is
+    dropped and ``variant`` records the run id, so the variant's prediction-spec hash differs
+    from the primary one. ``variant`` None or ``"primary"`` returns a plain deep copy.
+    """
+    out: dict[str, Any] = json.loads(json.dumps(protocol))
+    if variant in (None, "primary"):
+        return out
+    runs = {str(r["id"]): r for r in protocol.get("sensitivity_runs", [])}
+    spec = runs.get(str(variant))
+    if spec is None or "prior_overrides" not in spec:
+        raise KeyError(
+            f"{variant!r} is not an alternative-prior sensitivity run "
+            f"(known: {list(prior_variants(protocol))})"
+        )
+    for key, val in spec["prior_overrides"].items():
+        if key not in out["prior"]:
+            raise KeyError(f"{variant}: prior_overrides key {key!r} is not a prior key")
+        out["prior"][key] = json.loads(json.dumps(val))
+    for key, name in spec.get("rng_names", {}).items():
+        out["rng"][key]["name"] = str(name)
+    out.pop("power_analysis_result", None)
+    out["variant"] = str(variant)
+    return out
 
 
 @dataclass(frozen=True)
@@ -125,6 +179,21 @@ def cell_layout(protocol: Mapping[str, Any]) -> CellLayout:
 def _ring_mask(layout: CellLayout, rings_m: list[float]) -> np.ndarray:
     idx = [layout.rings_m.index(float(r)) for r in rings_m]
     return np.isin(layout.ring, idx)
+
+
+def ring_split(
+    protocol: Mapping[str, Any],
+    train_rings_m: list[float],
+    test_rings_m: list[float],
+    layout: CellLayout | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(train_mask, test_mask)`` of a ring split (disjoint; need not cover every cell)."""
+    lay = layout or cell_layout(protocol)
+    train = _ring_mask(lay, [float(r) for r in train_rings_m])
+    test = _ring_mask(lay, [float(r) for r in test_rings_m])
+    if np.any(train & test) or not train.any() or not test.any():
+        raise ValueError("a ring split needs disjoint, non-empty train and test rings")
+    return train, test
 
 
 def split_masks(

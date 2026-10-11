@@ -2,7 +2,8 @@
 
 Usage (only after the lead has locked the protocol, DESIGN.md section 10.9)::
 
-    python -m validation.ants_fig4b.run --tensor runs/vlab/<...>_vlab_tensor/pred_tensor.npz
+    python -m validation.ants_fig4b.run --tensor runs/vlab/<...>_vlab_tensor/pred_tensor.npz \
+        --tensor-sor runs/vlab/<...>_vlab_tensor_S-OR/pred_tensor.npz
 
 1. :func:`validation.ants_fig4b.protocol_lock.check_lock` (refuses while
    ``PREREGISTERED_SHA256`` is empty or the protocol files changed); then a clean sremu work
@@ -11,12 +12,17 @@ Usage (only after the lead has locked the protocol, DESIGN.md section 10.9)::
    :func:`~validation.ants_fig4b.protocol_lock.load_measured`.
 2. The tensor must carry the protocol's prediction-spec hash and, if the locked protocol
    records a power-analysis result, the same tensor content hash (``--allow-tensor-mismatch``
-   overrides this and records it).
+   overrides this and records it). The unblinded run also needs the S-OR tensor
+   (``--tensor-sor``, the alternative prior of sensitivity run S-OR; refused before any data
+   access when missing); it must carry the S-OR prediction-spec hash and, if
+   ``protocol.json`` records one, the recorded content hash.
 3. Primary analysis (paired bootstrap, ``bootstrap.n_resamples_primary``) with decisions
    C1-C3; secondary "optimistic" analysis; leave-one-ring-out and leave-one-wedge-out;
    sensitivity runs S1 (no (35 deg, 1.5 m) cell), S2 (no colorbar-pinned cells), S3 (coverage
-   at sigma_rep 0.5 / 2 dB; decoy rates from the locked protocol) and S4 (breakdown by
-   hypothesis); uncertainty budget.
+   at sigma_rep 0.5 / 2 dB; decoy rates from the locked protocol), S4 (breakdown by
+   hypothesis), S-OR (decisions under the v1 O_R geometry rows, own tensor) and S-NF
+   (decisions with the offsets fitted without the near-field ring r = 1.8 m, plus the
+   point-vs-patch spread at that ring); uncertainty budget.
 4. Writes ``F4.csv`` (per cell: measured DIG, prior-median prediction SIM-sremu, residual),
    ``F4_delta_rmse.csv`` (per draw), ``F4.meta.json``, ``table_v.csv``/``table_v.json``,
    ``results.json`` and ``report.md`` into a new run directory with a manifest.
@@ -40,8 +46,15 @@ os.environ.setdefault("NUMBA_DISABLE_INTEL_SVML", "1")
 import numpy as np
 from validation.ants_fig4b import analysis as an
 from validation.ants_fig4b import protocol_lock
-from validation.ants_fig4b.predict import TensorCache, load_cache
-from validation.ants_fig4b.protocol import cell_layout, load_protocol, split_masks
+from validation.ants_fig4b.predict import TensorCache, load_cache, point_vs_patch_spread
+from validation.ants_fig4b.protocol import (
+    cell_layout,
+    load_protocol,
+    ring_split,
+    sensitivity_run,
+    split_masks,
+    variant_protocol,
+)
 
 from sremu import rng as sremu_rng
 from sremu.record.manifest import git_state
@@ -66,8 +79,11 @@ def analyze(
     protocol: Mapping[str, Any],
     *,
     n_boot: int | None = None,
+    tensor_sor: TensorCache | None = None,
 ) -> dict[str, Any]:
-    """Every pre-registered analysis of one dataset (arrays under ``_`` keys)."""
+    """Every pre-registered analysis of one dataset (arrays under ``_`` keys). ``tensor_sor``
+    is the tensor of the alternative prior of S-OR (``sensitivity.S-OR`` is ``{"run": False}``
+    without it; the unblinded CLI requires it)."""
     nb = int(protocol["bootstrap"]["n_resamples_primary"] if n_boot is None else n_boot)
     lay = cell_layout(protocol)
     train, test = split_masks(protocol, lay)["primary"]
@@ -91,7 +107,7 @@ def analyze(
     )
     out["folds"] = an.run_folds(tensor, data, protocol)
     sens: dict[str, Any] = {}
-    s1 = protocol["sensitivity_runs"][0]
+    s1 = sensitivity_run(protocol, "S1")
     drop1 = [lay.index(float(t), float(r)) for t, r in s1["drop_cells_theta_r"]]
     pin = an.pinned_cells(data.y_dbm, protocol)
     for sid, drop in (("S1", drop1), ("S2", pin["cells"])):
@@ -109,6 +125,40 @@ def analyze(
         )
         sens[sid] = {"dropped_cells": [int(i) for i in drop], "result": r}
     sens["S2"]["pinned"] = pin
+    snf = sensitivity_run(protocol, "S-NF")
+    tr_nf, te_nf = ring_split(
+        protocol, snf["split"]["train_rings_m"], snf["split"]["test_rings_m"], lay
+    )
+    sens["S-NF"] = {
+        "train_rings_m": snf["split"]["train_rings_m"],
+        "test_rings_m": snf["split"]["test_rings_m"],
+        "result": an.run_split(
+            tensor,
+            data,
+            protocol,
+            train=tr_nf,
+            test=te_nf,
+            boot_idx=_boot_idx(protocol, "S-NF", int(te_nf.sum()), nb),
+            layout=lay,
+        ),
+        "point_vs_patch": point_vs_patch_spread(tensor.arrays, tensor.meta["codes"], protocol),
+    }
+    if tensor_sor is not None:
+        sens["S-OR"] = {
+            "run": True,
+            "tensor_content_sha256": tensor_sor.meta.get("content_sha256"),
+            "result": an.run_split(
+                tensor_sor,
+                data,
+                variant_protocol(protocol, "S-OR"),
+                train=train,
+                test=test,
+                boot_idx=_boot_idx(protocol, "S-OR", int(test.sum()), nb),
+                layout=lay,
+            ),
+        }
+    else:
+        sens["S-OR"] = {"run": False, "reason": "no S-OR tensor given"}
     out["sensitivity"] = sens
     out["budget"] = an.uncertainty_budget(tensor, data, prim, protocol, test=test)
     out["breakdown"] = an.breakdown(tensor, prim)
@@ -225,11 +275,23 @@ def _report_md(res: Mapping[str, Any], dry: bool) -> str:
         "Secondary analysis (optimistic): weighted Delta RMSE M0-M2 "
         f"{res['secondary']['delta_rmse']['M0-M2']:.2f} dB.",
     ]
-    for sid in ("S1", "S2"):
-        sd = res["sensitivity"][sid]["result"]["decisions"]
+    for sid in ("S1", "S2", "S-NF", "S-OR"):
+        sr = res["sensitivity"].get(sid) or {}
+        if "result" not in sr:
+            lines.append(f"Sensitivity {sid}: not run ({sr.get('reason', 'missing')}).")
+            continue
+        sd = sr["result"]["decisions"]
         lines.append(
             f"Sensitivity {sid}: "
             + ", ".join(f"{c} {'holds' if sd[c]['holds'] else 'fails'}" for c in ("C1", "C2", "C3"))
+        )
+    pvp = (res["sensitivity"].get("S-NF") or {}).get("point_vs_patch") or {}
+    ring = (pvp.get("rings_m") or {}).get("1.8")
+    if ring:
+        lines.append(
+            "Point-vs-patch spread at the 1.8 m ring (M2, offset removed): median "
+            f"{ring['median_abs_centred_db']:.2f} dB, 95th percentile "
+            f"{ring['q95_abs_centred_db']:.2f} dB ({pvp['n_draws']} paired draws)."
         )
     return "\n".join(lines) + "\n"
 
@@ -241,6 +303,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(prog="python -m validation.ants_fig4b.run")
     ap.add_argument("--tensor", type=Path, required=True)
+    ap.add_argument(
+        "--tensor-sor",
+        type=Path,
+        default=None,
+        help="tensor of the S-OR alternative prior (predict.py --variant S-OR); required "
+        "for the unblinded run",
+    )
     ap.add_argument("--out", type=Path, default=Path("runs") / "vlab")
     ap.add_argument(
         "--data", type=Path, default=None, help="measured CSV (default: $SREMU_PRIVATE_DATA)"
@@ -283,6 +352,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 2
             dirty_allowed = True
+        if args.tensor_sor is None:
+            print(
+                "refused: the unblinded run needs the S-OR tensor (--tensor-sor; "
+                "python -m validation.ants_fig4b.predict --variant S-OR)",
+                file=sys.stderr,
+            )
+            return 2
         try:
             md = protocol_lock.load_measured(args.data)
         except protocol_lock.ProtocolLockError as exc:
@@ -301,6 +377,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "columns": dict(md.columns),
         }
     tensor = load_cache(args.tensor, protocol=protocol)
+    tensor_sor = None
+    sor_mismatch = False
+    if args.tensor_sor is not None:
+        tensor_sor = load_cache(args.tensor_sor, protocol=variant_protocol(protocol, "S-OR"))
+        rec_sor = sensitivity_run(protocol, "S-OR").get("tensor_result") or {}
+        want = rec_sor.get("tensor_content_sha256")
+        sor_mismatch = bool(want) and want != tensor_sor.meta["content_sha256"]
+        if sor_mismatch and not (args.allow_tensor_mismatch or dry):
+            raise SystemExit(
+                f"the S-OR tensor differs from the one recorded in protocol.json ({want} vs "
+                f"{tensor_sor.meta['content_sha256']}); use --allow-tensor-mismatch (recorded)"
+            )
     pa: dict[str, Any] = dict(protocol.get("power_analysis_result") or {})
     mismatch = bool(pa) and pa.get("tensor_content_sha256") != tensor.meta["content_sha256"]
     if mismatch and not (args.allow_tensor_mismatch or dry):
@@ -313,9 +401,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.out, "vlab_dryrun_decoy" if dry else "vlab_unblinded", protocol, argv=sys.argv
     )
     rec.add_input(args.tensor, "SIM-sremu")
+    if args.tensor_sor is not None:
+        rec.add_input(args.tensor_sor, "SIM-sremu")
     if not dry:
         rec.add_input(str(source["path"]), "DIG")
-    res = analyze(tensor, data, protocol, n_boot=args.n_boot)
+    res = analyze(tensor, data, protocol, n_boot=args.n_boot, tensor_sor=tensor_sor)
     res["lock"] = lock_state()
     res["dirty_tree_allowed"] = dirty_allowed
     dc_meas = "SIM-sremu" if dry else "DIG"
@@ -366,7 +456,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     rec.add_output("table_v.json", dc_meas)
     rec.write_json(
         "results.json",
-        {"source": source, "tensor_mismatch_allowed": mismatch, **an.strip_private(res)},
+        {
+            "source": source,
+            "tensor_mismatch_allowed": mismatch,
+            "tensor_sor_mismatch_allowed": sor_mismatch,
+            **an.strip_private(res),
+        },
     )
     rec.add_output("results.json", dc_meas)
     (rec.run_dir / "report.md").write_text(_report_md(res, dry), encoding="utf-8", newline="\n")

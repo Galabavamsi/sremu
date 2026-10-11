@@ -48,12 +48,15 @@ from sremu.rng import RNG_SCHEME
 __all__ = ["ASSUMPTIONS", "RunRecorder", "background_load", "jsonable", "sha256_file"]
 
 ASSUMPTIONS: tuple[str, ...] = (
-    "V-LAB geometry prior of protocol.json (lab geometry unknown, human gate H-1)",
+    "V-LAB geometry prior of protocol.json v2: author-supplied lab facts (2026-10-11) with "
+    "ranges; the exact lab geometry is not supplied (human gate H-1)",
     "Gamma magnitudes U[0.6, 1.0] and phase offsets U[-15, 15] deg around "
     "lab_binary_3p5ghz (ASSUMED)",
-    "patch antenna options: CosPower front hemisphere with a 20 dB front-to-back floor [ENG]",
-    "floor polarization H or V with equal weight [ENG]; concrete from P.2040-3 (UNVERIFIED)",
-    "infeasible draws (node within one wavelength of the panel, LOS through the panel) rejected",
+    "antennas: isotropic or vertical short dipole (1.5 sin^2, 40 dB null floor) for the "
+    "VERT2450/VERT900 whips [ENG]",
+    "floor polarization V (vertical whips); concrete from P.2040-3 (UNVERIFIED)",
+    "element-wise near-field K1 summation; mutual coupling and the cells' reactive near field "
+    "not modelled; nodes within one wavelength of a tile rejected",
 )
 
 

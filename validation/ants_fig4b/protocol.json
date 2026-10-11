@@ -1,9 +1,78 @@
 {
   "schema": "sremu.vlab.protocol/1",
   "protocol_id": "V-LAB-ANTS-Fig4b",
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "title": "Prior-predictive consistency check of the sremu K1 model against the digitized ANTS Fig. 4(b) received-power map",
-  "design_reference": "sremu docs/DESIGN.md section 10.9 (v1.0 with lead amendments v1.1 and decisions v1.2)",
+  "design_reference": "sremu docs/DESIGN.md section 10.9 (v1.0 with lead amendments v1.1 and decisions v1.2); protocol v2 re-specifies the geometry prior from author-supplied lab facts (author_facts) and fixes the near-field handling (models.near_field), both before unblinding",
+  "revision_history": [
+    {
+      "version": "1.0",
+      "date": "2026-10-10",
+      "commit": "b03e52d",
+      "status": "superseded before unblinding; never locked",
+      "summary": "broad geometry prior of DESIGN 10.9: polar origin O_R (0.7) or O_T (0.3), theta = 0 along the panel normal or in the panel plane, one flat panel with layouts A/B/C, Tx at d ~ U[1, 3] m and a ~ U[-45, 0] deg, isotropic or patch antennas aimed at the RIS centre, plane height +-5 cm, floor polarization H or V",
+      "power": {
+        "c2_detection_rate": 0.0,
+        "c2_detection_count": "0/500",
+        "c2_detection_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "underpowered": true,
+        "median_delta_rmse_m0_m2_db_truth_m2_sigma_rep_1": -0.24163483019642928,
+        "tensor_content_sha256": "71d31b58fb9c4906fc59b3de38580aee301d541a944c2f8a647ccfc3e33a3355",
+        "prediction_spec_sha256": "9266db8680968ed8737d25d8dbf97a1fe709b58c946a38c74927eeec7df048ec",
+        "run_directory": "runs/vlab/20261010T165335Z_vlab_power",
+        "tensor_run_directory": "runs/vlab/20261010T165042Z_vlab_tensor"
+      }
+    },
+    {
+      "version": "2.0",
+      "date": "2026-10-11",
+      "status": "current; not locked (PREREGISTERED_SHA256 empty)",
+      "summary": "primary prior re-specified from the author-supplied lab facts 1-7 (author_facts): polar origin O_T, six 5 x 8 tiles [s1 s1 s2 s2 s1 s1] on an arc centred on the Tx, each facing the Tx, just behind the 1.8 m ring; vertical whips; plane height +-2 cm; near-field handling fixed by a lead decision (models.near_field); sensitivity runs S-OR (v1 O_R rows) and S-NF (without the 1.8 m ring) added",
+      "blinding": "specified before any unblinding: the measured file was never opened, read, listed, hashed or loaded by the authors of v1 or v2; v2 changes the prior only from the author's statements about the lab, which do not use the measured values",
+      "intermediate_drafts": "two v2 drafts (a flat-panel O_T prior; an arc prior that forced po_patch) were stopped by the lead before completion when the author supplied the arc placement; neither produced a power result or was locked",
+      "power": {
+        "c2_detection_rate": 0.0,
+        "c2_detection_count": "0/500",
+        "c2_detection_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "underpowered": true,
+        "specificity_sigma_rep_1": 1.0,
+        "median_delta_rmse_m0_m2_db_truth_m2_sigma_rep_1": -1.1630100553445297,
+        "tensor_content_sha256": "d365f555a1809e36f682aa68e894191cccd82a3fe7cc5a4bdb0b26c22325cea5",
+        "run_directory": "runs/vlab/20261010T223000Z_vlab_power",
+        "tensor_run_directory": "runs/vlab/20261010T221931Z_vlab_tensor"
+      },
+      "first_tensor_attempt": "with the v2 prior of this document, a first tensor run stopped with an error in the sigma_pos step (a 1 mm finite-difference step brought a point within one wavelength of a cell) before writing any result, and its run directory was deleted; the sigma_pos NaN rule (uncertainty_budget.sigma_pos.method; no decision role) was then added and the tensor of power_analysis_result computed (recorded by the independent reviewer, 2026-10-11)",
+      "independent_review": {
+        "date": "2026-10-11",
+        "before_unblinding": true,
+        "data_independent": true,
+        "power_reimplementation": "fits, metrics, paired bootstrap, Spearman/Fieller and decisions re-implemented from PROTOCOL.md with numpy/scipy (no import of the WP10 analysis code), run on the cached tensor and decoy truths with the protocol's keyed streams: all 3000 decoy rows (500 decoys x truths M2/M0 x sigma_rep 0.5/1/2 dB; primary and S-NF splits) agree with the power run (largest difference 4e-16; no decision differs)",
+        "independent_streams": "200 decoys, sigma_rep 1 dB, independent noise and bootstrap streams: C2 0/200 (truth M2; median Delta RMSE -1.16 dB) and 0/200 (truth M0)",
+        "k1_reimplementation": "numpy element-wise K1 sum built from author facts 1-5 and 7 reproduces the point-model tensor rows and decoy truths (M0, M1, M2) within 0.001 dB and the po_patch rows within 0.03 dB at the recorded sub-cell size",
+        "prediction_spec": "the prediction-spec hash of this protocol.json equals the one the tensor and the decoy truths were computed with"
+      }
+    }
+  ],
+  "author_facts": {
+    "source": "Galaba Vamsi (author), chat with the project lead, 2026-10-11, including a hand sketch on ANTS Fig. 4(b); relayed to the protocol author by the lead",
+    "recorded_before_unblinding": true,
+    "facts": {
+      "1_polar_origin": "Polar measurement origin = the Tx (O_T). The author first said 'RIS centre', then corrected himself; in panel (a) of the ANTS figure the Tx triangle sits at the apex of the node fan, consistent with O_T. Primary prior: O_T with probability 1; one labelled sensitivity analysis S-OR uses the v1 O_R rows.",
+      "2_tiles_on_arc": "RIS = six 5x8 tiles in the order s1 s1 s2 s2 s1 s1 placed along an arc centred on the Tx, just behind the last arc of measurement positions, each tile turned to face the Tx (tile normal pointing at the Tx). Tile k centre at (R cos phi_k, R sin phi_k, h) in the grid frame, phi the same polar angle as the measurement theta; normal = -(cos phi_k, sin phi_k, 0); the tile's in-plane horizontal axis is tangential.",
+      "3_radius": "'right behind (~10-20 cm)' the last arc of positions (cell centres at r = 1.8 m) -> R ~ U[1.90, 2.00] m (one R per draw, shared by all tiles); the protocol may widen to U[1.88, 2.05] m if justified before computing.",
+      "4_tile_orientation": "Tiles are mounted with the short side (5 cells) horizontal along the arc and the long side (8 cells) vertical.",
+      "5_arc_span": "The row covers the whole 0-45 deg sector, extending a little past both ends: tile centres evenly spaced in phi over a span S ~ U[40, 52] deg whose centre is 22.5 deg + U[-3, 3] deg (one value each per draw); phi_k = centre + (k + 0.5 - 3) S/6, k = 0..5; order from the lowest phi s1 s1 s2 s2 s1 s1 (symmetric); gaps between tiles along the arc are inert.",
+      "6_radios": "Ettus B200 with VERT2450 and VERT900 vertical whips (neither specified for 3.5 GHz; absolute gain absorbed by the fitted offset C), co-polarized vertical, azimuth-omnidirectional; all coplanar, so evaluated at about 0 deg elevation (isotropic, or a short-dipole elevation pattern as a 50/50 model-form alternative).",
+      "7_heights": "Tx, RIS centres and Rx at the same height; measurement-plane height uncertainty +-2 cm (one per draw); in-plane point error +-2 cm."
+    },
+    "lead_decision_near_field": "The outer ring (r = 1.8 m) is about 0.10-0.20 m (1.2-2.3 wavelengths at 3.5 GHz) from the tiles. The recommended analytic model is the element-wise near-field summation (ETSI GR RIS 003 element-wise model, Tang et al. 2022 cell pattern) = sremu K1 with exact per-cell distances; each unit cell (about lambda/2) is in its own far field beyond about 0.5 lambda, so the point-cell model remains applicable at >= 1 lambda. The v1 model-form prior cell_model point/po_patch 50/50 is kept; po_patch uses Richardson refinement with the converged sub-cell size recorded; the r < 3 lambda ValidityWarning is suppressed (only it) and the minimum point-to-cell distance recorded per draw; a draw is rejected only if a point is < 1 lambda from a cell; sensitivity S-NF excludes the 1.8 m ring."
+  },
   "naming": {
     "geometry_supplied_by_lab": false,
     "label": "consistency check under geometric uncertainty",
@@ -87,7 +156,7 @@
     ],
     "pinned_match_tol_db": 0.005,
     "pinned_rule": "a cell is colorbar-pinned if its value is within pinned_match_tol_db of a pinned value; if no cell matches a pinned value, the maximum (for -10.06) or minimum (for -33.20) cell is used and the fallback is reported",
-    "reference_unknown": "the physical reference of r and of theta = 0 is unknown",
+    "reference_unknown": "v1: the physical reference of r and of theta = 0 was unknown; v2: r is measured from the Tx (author fact 1) and theta = 0 is fixed relative to the tile arc through the arc prior (author fact 5)",
     "disclosed_descriptive_statistics": {
       "ring_means_dbm": [
         -11.42,
@@ -135,119 +204,82 @@
     "units": "m, deg; z up; ground plane z = 0 (used by M3 only)",
     "measurement_plane": "z = h + dz, h = antenna_height_m, dz = plane_height error (common to all points)",
     "points": "p_i = (r_i cos(theta_i) + dx_i, r_i sin(theta_i) + dy_i, h + dz) with polar origin O = (0, 0)",
-    "hypotheses": {
-      "O_R/normal": {
-        "ris_center": "(0, 0, h)",
-        "normal": "(1, 0, 0)",
-        "tx": "(d cos a, d sin a, h)"
-      },
-      "O_R/plane": {
-        "ris_center": "(0, 0, h)",
-        "normal": "(0, 1, 0)",
-        "tx": "(d sin a, d cos a, h)"
-      },
-      "O_T/normal": {
-        "tx": "(0, 0, h)",
-        "ris_center": "(d cos a, d sin a, h)",
-        "normal": "(-1, 0, 0)"
-      },
-      "O_T/plane": {
-        "tx": "(0, 0, h)",
-        "ris_center": "(d cos a, d sin a, h)",
-        "normal": "(0, 1, 0)"
-      }
+    "primary": {
+      "polar_origin": "O_T: the Tx at (0, 0, h)",
+      "tiles": "tile k (k = 0..5 from the lowest phi): centre (R cos phi_k, R sin phi_k, h), normal -(cos phi_k, sin phi_k, 0) (faces the Tx), u = z x n = (sin phi_k, -cos phi_k, 0) (horizontal, tangential), v = n x u = (0, 0, 1)",
+      "phi_k": "centre + (k + 0.5 - 3) S/6 with centre = 22.5 deg + offset"
     },
-    "angle_a_meaning": "O_R: incidence angle of the Tx from the panel normal, negative = opposite side of the normal from the measurement sector; O_T: polar angle of the RIS centre in the measurement grid frame (roles of Tx and RIS centre swapped)",
-    "u_axis": "u = z x n (horizontal); v = n x u = (0, 0, 1); cells n = iv*n_u + iu (D17)",
-    "panel_center_height": "the RIS centre is at the antenna height h"
+    "S-OR": {
+      "note": "the v1 O_R rows (sensitivity run S-OR only); the six tiles form one flat row",
+      "hypotheses": {
+        "O_R/normal": {
+          "ris_center": "(0, 0, h)",
+          "normal": "(1, 0, 0)",
+          "tx": "(d cos a, d sin a, h)"
+        },
+        "O_R/plane": {
+          "ris_center": "(0, 0, h)",
+          "normal": "(0, 1, 0)",
+          "tx": "(d sin a, d cos a, h)"
+        }
+      },
+      "angle_a_meaning": "incidence angle of the Tx from the panel normal, negative = opposite side of the normal from the measurement sector",
+      "tiles": "tile k centre c + (k - 2.5)(n_u pitch_u + gap) u, all with the panel normal n and u = z x n (D17: spacing across a tile boundary is the tile width plus gap)"
+    },
+    "u_axis": "per tile u = z x n (horizontal, the 5-cell side); v = n x u = (0, 0, 1) (the 8-cell side); cells n = iv*n_u + iu (D17)",
+    "tile_center_height": "every tile centre is at the antenna height h (author fact 7)"
   },
   "prior": {
     "fc_hz": 3500000000.0,
-    "polar_origin": {
-      "values": [
-        "O_R",
-        "O_T"
+    "geometry": {
+      "model": "arc_facing_tx",
+      "polar_origin": "O_T",
+      "radius_m": [
+        1.88,
+        2.05
       ],
-      "weights": [
-        0.7,
-        0.3
-      ]
-    },
-    "theta0_direction": {
-      "values": [
-        "normal",
-        "plane"
+      "radius_author_m": [
+        1.9,
+        2.0
       ],
-      "weights": [
-        0.5,
-        0.5
-      ]
-    },
-    "placement": {
-      "d_m": [
-        1.0,
+      "radius_rule": "one R per draw, shared by all tiles: the distance from the Tx to every tile centre (author fact 3, interval widened to U[1.88, 2.05] m before computing, PROTOCOL.md section 4.1)",
+      "span_deg": [
+        40.0,
+        52.0
+      ],
+      "centre_nominal_deg": 22.5,
+      "centre_offset_deg": [
+        -3.0,
         3.0
       ],
-      "a_deg": [
-        -45.0,
-        0.0
-      ],
-      "distribution": "independent uniform"
+      "tile_phi_rule": "phi_k = centre_nominal_deg + centre_offset + (k + 0.5 - n_tiles/2) span/n_tiles, k = 0..n_tiles-1 from the lowest phi",
+      "tile_center": "(R cos phi_k, R sin phi_k, h)",
+      "tile_normal": "-(cos phi_k, sin phi_k, 0) (faces the Tx)",
+      "tile_u_axis": "z x n = (sin phi_k, -cos phi_k, 0) (horizontal, tangential)",
+      "draw_order": [
+        "radius_m",
+        "span_deg",
+        "centre_offset_deg"
+      ]
     },
-    "layout": {
-      "values": [
-        "A",
-        "B",
-        "C"
+    "tiles": {
+      "n_tiles": 6,
+      "states_by_position": [
+        0,
+        0,
+        1,
+        1,
+        0,
+        0
       ],
-      "weights": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "tiles_u_v": {
-        "A": [
-          3,
-          1
-        ],
-        "B": [
-          6,
-          1
-        ],
-        "C": [
-          3,
-          2
-        ]
-      },
-      "tile_column_states": {
-        "A": [
-          0,
-          1,
-          0
-        ],
-        "B": [
-          0,
-          0,
-          1,
-          1,
-          0,
-          0
-        ],
-        "C": [
-          0,
-          1,
-          0
-        ]
-      },
       "state_labels": [
         "sigma1",
         "sigma2"
       ],
-      "rule": "every cell of tile column tu takes state tile_column_states[layout][tu]; layout C has two tile rows with the same column pattern"
-    },
-    "tile_cells": {
-      "n_u": 8,
-      "n_v": 5
+      "n_u": 5,
+      "n_v": 8,
+      "orientation": "short side (5 cells, u) horizontal along the arc, long side (8 cells, v) vertical (author fact 4)",
+      "rule": "every cell of tile k takes state states_by_position[k] (k from the lowest phi); one sremu RIS panel per tile with its own pose; gaps between tiles are inert (no gap reflection)"
     },
     "pitch": {
       "values": [
@@ -260,17 +292,14 @@
       ],
       "pitch_u_m": [
         0.0428,
-        0.038
+        0.02598
       ],
       "pitch_v_m": [
         0.0428,
-        0.02598
-      ]
+        0.038
+      ],
+      "note": "u is the horizontal 5-cell side; the INDICON cell keeps its v1 orientation relative to the tile (38 mm along the 8-cell side, now vertical), so the tile is 214 x 342.4 mm (square) or 129.9 x 304 mm (INDICON), u x v"
     },
-    "tile_gap_m": [
-      0.0,
-      0.005
-    ],
     "cell_model": {
       "values": [
         "point",
@@ -300,28 +329,30 @@
     "antenna": {
       "values": [
         "isotropic",
-        "patch_6dbi",
-        "patch_9dbi"
+        "short_dipole_z"
       ],
       "weights": [
         0.5,
-        0.25,
-        0.25
+        0.5
       ],
-      "g0_dbi": [
+      "peak_gain_linear": [
         null,
-        6.0,
-        9.0
+        1.5
       ],
-      "pattern": "G(psi) = G0 max(cos(psi)^alpha, 10^(-front_to_back_db/10)) with alpha = G0/2 - 1 (sremu CosPower in the front hemisphere), tabulated every 0.5 deg (sremu Tabulated, bilinear in dBi)",
-      "front_to_back_db": 20.0,
+      "pattern": "isotropic, or a vertical short dipole G(psi) = 1.5 max(sin^2 psi, 10^(-null_floor_db/10)) with psi the angle from +z, tabulated every 0.5 deg (sremu Tabulated, boresight +z, azimuth-independent)",
+      "null_floor_db": 40.0,
       "table_step_deg": 0.5,
-      "aim": "boresight from the antenna toward the RIS centre",
-      "applies_to": "the Tx and every Rx point use the same drawn option"
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "applies_to": "the Tx and every Rx point use the same drawn option (a model-form alternative)",
+      "hardware": "Ettus B200 radios with VERT2450 and VERT900 vertical whips (author fact 6), neither specified at 3.5 GHz; co-polarized vertical, azimuth-omnidirectional; the absolute gain is absorbed by the fitted offset C"
     },
     "point_error": {
       "xy_half_width_m": 0.02,
-      "plane_height_half_width_m": 0.05
+      "plane_height_half_width_m": 0.02
     },
     "floor": {
       "used_by": [
@@ -333,33 +364,28 @@
       "sigma_s_per_m": 0.12308694702706031,
       "polarization": {
         "values": [
-          "H",
           "V"
         ],
         "weights": [
-          0.5,
-          0.5
+          1.0
         ]
       },
+      "polarization_note": "vertical whips (author fact 6): the field lies in the plane of incidence of the floor reflection, sremu polarization 'V' (TM)",
       "antenna_height_m": [
         0.8,
         1.5
       ]
     },
     "feasibility": {
-      "min_node_panel_distance_wavelengths": 1.0,
-      "los_must_not_cross_panel": true,
+      "min_node_tile_distance_wavelengths": 1.0,
+      "los_must_not_cross_tiles": false,
+      "tiles_must_not_overlap": true,
       "max_attempts": 10000,
-      "rule": "a candidate draw is rejected and redrawn from the same keyed stream if the Tx or any point is closer than one wavelength to the panel rectangle (the K1 validity limit) or if any Tx-point segment crosses the panel rectangle"
+      "rule": "a candidate draw is rejected and redrawn from the same keyed stream if the Tx or any point is closer than one wavelength to a tile rectangle (reason near_tile; the K1 error limit, so no point is < 1 lambda from any cell or sub-cell) or if two tiles overlap (reason tiles_overlap; impossible within the prior bounds). The v1 LOS-through-panel rule is not applied to the arc: every tile point is at least R >= 1.88 m from the Tx, every measurement point at most 1.8 + 0.02 sqrt(2) < 1.83 m, so no Tx-point segment can reach a tile."
     },
     "draw_order": [
-      "polar_origin",
-      "theta0_direction",
-      "d_m",
-      "a_deg",
-      "layout",
+      "geometry (geometry.draw_order)",
       "pitch",
-      "tile_gap_m",
       "cell_model",
       "gamma_mag[2]",
       "gamma_phase_offset_deg[2]",
@@ -369,7 +395,7 @@
       "antenna_height_m",
       "floor_polarization"
     ],
-    "categorical_rule": "u = rng.random(); index = searchsorted(cumsum(w)/sum(w), u, side='right')",
+    "categorical_rule": "u = rng.random(); index = searchsorted(cumsum(w)/sum(w), u, side='right') (one uniform is consumed even for a single value)",
     "uniform_rule": "rng.uniform(lo, hi)"
   },
   "models": {
@@ -381,10 +407,10 @@
     ],
     "M0": "LOS only (Friis and antenna patterns); RIS absent",
     "M0n": "log-distance y = C - n 10 log10(d), d = 3-D distance from the drawn Tx to the drawn point; (C, n) fitted by OLS on the training cells",
-    "M1": "LOS + K1 RIS path with every cell in state sigma1 (a mirror)",
-    "M2": "LOS + K1 RIS path with the lab configuration (layout)",
-    "M3": "M2 + concrete floor: ground image path and RIS hop variants 1-3 (sremu ground mechanism)",
-    "evaluation": "sremu.physics.propagation.from_scenario per draw, snapshot at t = 0; narrowband channel h = sum amp exp(-j 2 pi fc tau); the drawn Gamma is applied to the separable RIS coefficients C[r, n] of the snapshot",
+    "M1": "LOS + K1 RIS paths of the six tiles with every cell in state sigma1 (a uniform mirror arc)",
+    "M2": "LOS + K1 RIS paths of the six tiles in the lab configuration [s1 s1 s2 s2 s1 s1]",
+    "M3": "M2 + concrete floor: ground image path and RIS hop variants 1-3 of every tile (sremu ground mechanism)",
+    "evaluation": "sremu.physics.propagation.from_scenario per draw with one RIS panel per tile (six panels with independent poses), snapshot at t = 0; narrowband channel h = sum amp exp(-j 2 pi fc tau); the drawn Gamma is applied to the separable RIS coefficients C[r, n] of every panel",
     "offset_fit": "C = mean over the training cells of (y - p) (one offset per model and draw; unweighted least squares)",
     "power_floor_db": -300.0,
     "po_patch_quadrature": {
@@ -395,7 +421,26 @@
       ],
       "richardson_tol_db": 0.05,
       "max_halvings": 2,
-      "rule": "sremu's po_patch Richardson check (tolerance 0.05 dB, at most two halvings) starts at the default sub-cell size lambda/5; if sremu raises RefinementNotConverged the scene is rebuilt with lambda/10, then lambda/20; a candidate that still does not converge is rejected (reason po_patch_not_converged) and redrawn from the same keyed stream"
+      "rule": "sremu's po_patch Richardson check (tolerance 0.05 dB, at most two halvings) starts at the default sub-cell size lambda/5; if sremu raises RefinementNotConverged the scene is rebuilt with lambda/10, then lambda/20; a candidate that still does not converge is rejected (reason po_patch_not_converged) and redrawn from the same keyed stream",
+      "recorded": "per draw: the initial sub-cell size used, the largest Richardson level and estimate over the tiles, and the converged sub-cell side (largest over the tiles, m)"
+    },
+    "near_field": {
+      "model": "element-wise near-field summation (ETSI GR RIS 003 element-wise model; Tang et al. 2022 cell pattern) = sremu K1 with the exact distances from the Tx and from each point to every cell (point) or sub-cell (po_patch); no far-field or plane-wave approximation of a tile",
+      "validity": "each unit cell (about lambda/2) is in its own far field beyond about 0.5 lambda, so the point-cell model remains applicable at >= 1 lambda; the 1.8 m ring (about 1.2-2.3 lambda from the tiles) is at the edge of the element-wise model's validity",
+      "cell_model_prior": "kept at point/po_patch 0.5/0.5 (prior.cell_model); not forced",
+      "warnings": "sremu's ValidityWarning for a node within 3 lambda of a cell ('point-scatterer approximation is marginal') is expected at the outer ring: it alone is suppressed and counted per draw; every other ValidityWarning is counted separately and reported",
+      "recorded": "per draw: minimum distance from a measurement point to a physical cell centre and to a tile rectangle (m)",
+      "rejection": "a draw is rejected only if a node is < 1 lambda from a tile (prior.feasibility)",
+      "not_modelled": [
+        "mutual coupling between cells",
+        "the reactive near field of the cells",
+        "multiple scattering between the tiles, the antennas and the mounts"
+      ],
+      "rigorous_reference": "a full-wave (MoM/FDTD) model of the real tiles would be the rigorous reference; it is impossible because the cell design files are unavailable",
+      "point_vs_patch": {
+        "n_draws": 200,
+        "rule": "for the first n_draws prior draws the same geometry is also evaluated with the other cell_model (paired; NaN if the po_patch escalation does not converge); stored as pred_alt_cm_db; reported per ring: quantiles over draws of |M2(point) - M2(po_patch)| after removing its mean over the primary training cells"
+      }
     },
     "same_draws": "every model uses the same K prior draws"
   },
@@ -438,8 +483,8 @@
     "sigma_dig": "per cell, from the CSV",
     "sigma_pos": {
       "xy_half_width_m": 0.02,
-      "z_half_width_m": 0.05,
-      "method": "central differences of the M2 prediction at fixed quadrature (external trajectories), step fd_step_m, propagated with the uniform standard deviations half_width/sqrt(3)",
+      "z_half_width_m": 0.02,
+      "method": "central differences of the M2 prediction at fixed quadrature (external trajectories), step fd_step_m, propagated with the uniform standard deviations half_width/sqrt(3); a draw in which a step brings a point within one wavelength of a cell (sremu GeometryError) gets NaN and is excluded from the medians",
       "fd_step_m": 0.001,
       "n_draws": 200,
       "note": "point errors are also sampled in the prior, so sigma_pos is contained in sigma_geom; it is reported for reference"
@@ -517,7 +562,101 @@
     },
     {
       "id": "S4",
-      "description": "descriptive breakdown by discrete hypothesis (origin, theta0, layout, pitch, cell_model, antenna): median test RMSE(M2) and Delta RMSE; no decisions"
+      "description": "descriptive breakdown by discrete prior variable (pitch, cell_model, antenna) and by tertile of the arc radius R: median test RMSE(M2) and Delta RMSE; no decisions"
+    },
+    {
+      "id": "S-OR",
+      "description": "alternative geometry prior with the v1 O_R rows (polar origin = RIS centre, flat row of the six tiles, theta = 0 along the normal or in the plane 0.5/0.5, Tx at d ~ U[1, 3] m and a ~ U[-45, 0] deg, tile gap U[0, 5] mm, v1 feasibility rules incl. LOS through a tile); every other v2 prior entry unchanged; primary analysis and decisions C1-C3 with its own tensor (K = 2000); labelled sensitivity, no effect on the primary decisions",
+      "prior_overrides": {
+        "geometry": {
+          "model": "flat_panel_v1",
+          "polar_origin": "O_R",
+          "theta0_direction": {
+            "values": [
+              "normal",
+              "plane"
+            ],
+            "weights": [
+              0.5,
+              0.5
+            ]
+          },
+          "d_m": [
+            1.0,
+            3.0
+          ],
+          "a_deg": [
+            -45.0,
+            0.0
+          ],
+          "tile_gap_m": [
+            0.0,
+            0.005
+          ],
+          "ris_center": "(0, 0, h)",
+          "tile_center": "c + (k - (n_tiles - 1)/2)(n_u pitch_u + gap) u",
+          "draw_order": [
+            "theta0_direction",
+            "d_m",
+            "a_deg",
+            "tile_gap_m"
+          ]
+        },
+        "feasibility": {
+          "min_node_tile_distance_wavelengths": 1.0,
+          "los_must_not_cross_tiles": true,
+          "tiles_must_not_overlap": true,
+          "max_attempts": 10000,
+          "rule": "v1 rules: rejected if the Tx or any point is closer than one wavelength to a tile rectangle (near_tile) or a Tx-point segment crosses a tile (los_through_tile)"
+        }
+      },
+      "rng_names": {
+        "prior_draw": "vlab_prior_sor/{k}"
+      },
+      "bootstrap_stream": "vlab_bootstrap/S-OR",
+      "tensor_result": {
+        "computed_before_unblinding": true,
+        "run_directory": "runs/vlab/20261010T223008Z_vlab_tensor_S-OR",
+        "K": 2000,
+        "tensor_content_sha256": "ce4d8d982233c8bcc6e06fe8dc6f54e48c54ccd3956685ba8b06d08cf2546ad9",
+        "prediction_spec_sha256": "b23f29c043c3b8be373288230ac9e96ce86d8ce936cfa07469b299fd0c072ab0",
+        "sremu_commit": "9dca79f37955dc38fa8890110bea0f342eea207d",
+        "sremu_dirty": true,
+        "acceptance_rate": 0.7527286413248024,
+        "rejected_by_reason": {
+          "O_R/plane:near_tile": 657
+        },
+        "accepted_theta0_fraction": {
+          "normal": 0.655,
+          "plane": 0.345
+        },
+        "accepted_pitch_counts": {
+          "O_R/normal": {
+            "square_42p8mm": 671,
+            "indicon_38x25p98mm": 639
+          },
+          "O_R/plane": {
+            "square_42p8mm": 0,
+            "indicon_38x25p98mm": 690
+          }
+        },
+        "implicit_conditioning": "under O_R/plane the theta = 0 points lie in the panel plane and the 1.284 m flat row of six 42.8 mm-cell tiles passes within one wavelength of them, so every accepted O_R/plane draw has the INDICON cell (row 0.78 m); S-OR results for O_R/plane are conditional on the INDICON cell (recorded by the independent reviewer after the S-OR tensor was computed; the S-OR prior and tensor are unchanged)"
+      }
+    },
+    {
+      "id": "S-NF",
+      "description": "primary analysis and decisions C1-C3 without the near-field ring r = 1.8 m: offsets fitted on the rings {0.6, 1.2} m (12 cells), test on {0.9, 1.5} m (12 cells, the primary test cells); also reported: the point-vs-patch spread at the 1.8 m ring (models.near_field.point_vs_patch)",
+      "split": {
+        "train_rings_m": [
+          0.6,
+          1.2
+        ],
+        "test_rings_m": [
+          0.9,
+          1.5
+        ]
+      },
+      "bootstrap_stream": "vlab_bootstrap/S-NF"
     }
   ],
   "primary_keeps_all_cells": true,
@@ -546,11 +685,12 @@
       "truth_model": "M0",
       "purpose": "informational specificity check: rate at which C2 fires when the truth has no RIS path",
       "decision_use": "none"
-    }
+    },
+    "informational": "the S-NF split (sensitivity_runs S-NF) is also analysed on every decoy with the same bootstrap indices (the test cells are the primary ones); its rates are reported, with no decision use"
   },
   "validity_domain": {
-    "rule": "feasibility uses sremu's error limit (one wavelength from the panel); draws with a node between one and three wavelengths from a cell are kept, and sremu emits a ValidityWarning (point-scatterer approximation marginal, DESIGN 5.3); no draw is dropped or reweighted for it",
-    "reported_in": "tensor summary.json: draws_with_validity_warnings, fraction_draws_with_validity_warnings"
+    "rule": "feasibility uses sremu's error limit (one wavelength from a tile); nodes between one and three wavelengths from a cell are expected at the 1.8 m ring and kept; sremu's ValidityWarning for them is suppressed (only that warning) and counted, and the minimum point-to-cell distance is recorded per draw (models.near_field)",
+    "reported_in": "tensor summary.json: nearfield_warning_draws, other_validity_warnings_total, min_point_cell_distance_m quantiles, point_vs_patch"
   },
   "lock": {
     "digest": "sha256(PROTOCOL.md bytes with CRLF replaced by LF, immediately followed by the canonical JSON bytes of protocol.json)",
@@ -568,13 +708,13 @@
     "data_classes": "measured: DIG; predictions: SIM-sremu; Gamma magnitudes and geometry: ASSUMED (prior)"
   },
   "power_analysis_result": {
-    "computed_utc": "2026-10-10T17:13:02.012279Z",
-    "run_directory": "runs\\vlab\\20261010T165335Z_vlab_power",
-    "sremu_commit": "2a016a65efe156db33380abaf0bf5b76d9699979",
+    "computed_utc": "2026-10-10T23:02:26.242227Z",
+    "run_directory": "runs\\vlab\\20261010T223000Z_vlab_power",
+    "sremu_commit": "9dca79f37955dc38fa8890110bea0f342eea207d",
     "sremu_dirty": true,
-    "tensor_content_sha256": "71d31b58fb9c4906fc59b3de38580aee301d541a944c2f8a647ccfc3e33a3355",
-    "decoy_truth_content_sha256": "c1b2bd02a899ea051d6af8e4d3ca7bd0734aa331461431b6406276db71229d9c",
-    "prediction_spec_sha256": "9266db8680968ed8737d25d8dbf97a1fe709b58c946a38c74927eeec7df048ec",
+    "tensor_content_sha256": "d365f555a1809e36f682aa68e894191cccd82a3fe7cc5a4bdb0b26c22325cea5",
+    "decoy_truth_content_sha256": "4230985ee804829abb58c310add4e1caef60a7c92bd91e59add98472151df5f0",
+    "prediction_spec_sha256": "cbf69364bc0c56b9bb23164671d8b15697ffba2eb459bce965d538b4bda54406",
     "n_decoys": 500,
     "n_bootstrap_per_decoy": 2000,
     "c2_detection_rate": 0.0,
@@ -585,32 +725,32 @@
     "underpowered": true,
     "rates": {
       "M2/sigma_rep_0.5": {
-        "C1": 0.046,
+        "C1": 0.0,
         "C2": 0.0,
         "C3": 0.0
       },
       "M2/sigma_rep_1": {
-        "C1": 0.048,
+        "C1": 0.0,
         "C2": 0.0,
         "C3": 0.0
       },
       "M2/sigma_rep_2": {
-        "C1": 0.056,
+        "C1": 0.002,
         "C2": 0.0,
         "C3": 0.0
       },
       "M0/sigma_rep_0.5": {
-        "C1": 0.004,
+        "C1": 0.0,
         "C2": 0.0,
         "C3": 0.0
       },
       "M0/sigma_rep_1": {
-        "C1": 0.006,
+        "C1": 0.0,
         "C2": 0.0,
         "C3": 0.0
       },
       "M0/sigma_rep_2": {
-        "C1": 0.01,
+        "C1": 0.0,
         "C2": 0.0,
         "C3": 0.0
       }
@@ -619,64 +759,889 @@
       "M2/sigma_rep_0.5": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.288
+        "spearman_ok": 0.038
       },
       "M2/sigma_rep_1": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.264
+        "spearman_ok": 0.034
       },
       "M2/sigma_rep_2": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.22
+        "spearman_ok": 0.026
       },
       "M0/sigma_rep_0.5": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.462
+        "spearman_ok": 0.016
       },
       "M0/sigma_rep_1": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.448
+        "spearman_ok": 0.016
       },
       "M0/sigma_rep_2": {
         "c2_median_ok": 0.0,
         "c2_frac_ok": 0.0,
-        "spearman_ok": 0.38
+        "spearman_ok": 0.016
       }
     },
     "median_over_decoys": {
       "M2/sigma_rep_0.5": {
-        "c2_median_delta_db": -0.2562630887979066,
-        "secondary_delta_m0_m2_db": -0.017709406616567835,
-        "median_rmse_m2_db": 4.717138971697736
+        "c2_median_delta_db": -1.1912838336745555,
+        "secondary_delta_m0_m2_db": -0.15016954539873284,
+        "median_rmse_m2_db": 4.25727908114267,
+        "median_rmse_m0_db": 3.0702095397458997
       },
       "M2/sigma_rep_1": {
-        "c2_median_delta_db": -0.24163483019642928,
-        "secondary_delta_m0_m2_db": -0.00882588592173128,
-        "median_rmse_m2_db": 4.796960555061626
+        "c2_median_delta_db": -1.1630100553445297,
+        "secondary_delta_m0_m2_db": -0.18995058519718544,
+        "median_rmse_m2_db": 4.339562324606049,
+        "median_rmse_m0_db": 3.1947507256144068
       },
       "M2/sigma_rep_2": {
-        "c2_median_delta_db": -0.20871607482824617,
-        "secondary_delta_m0_m2_db": -0.02910314579163642,
-        "median_rmse_m2_db": 5.087612655283496
+        "c2_median_delta_db": -1.050158688502295,
+        "secondary_delta_m0_m2_db": -0.25645608261915376,
+        "median_rmse_m2_db": 4.686972600544552,
+        "median_rmse_m0_db": 3.628167971900673
       },
       "M0/sigma_rep_0.5": {
-        "c2_median_delta_db": -0.3340270514070336,
-        "secondary_delta_m0_m2_db": -0.22746958567975706,
-        "median_rmse_m2_db": 3.9800567089611745
+        "c2_median_delta_db": -2.487894123189033,
+        "secondary_delta_m0_m2_db": -0.14791787725754807,
+        "median_rmse_m2_db": 3.0052391456945537,
+        "median_rmse_m0_db": 0.5268400201096293
       },
       "M0/sigma_rep_1": {
-        "c2_median_delta_db": -0.31867399301957056,
-        "secondary_delta_m0_m2_db": -0.18814567361307766,
-        "median_rmse_m2_db": 4.087996560390081
+        "c2_median_delta_db": -2.1345221657527373,
+        "secondary_delta_m0_m2_db": -0.09999467340869161,
+        "median_rmse_m2_db": 3.126511181326396,
+        "median_rmse_m0_db": 0.9989180331812499
       },
       "M0/sigma_rep_2": {
-        "c2_median_delta_db": -0.2817057865848749,
-        "secondary_delta_m0_m2_db": -0.18405785877915726,
-        "median_rmse_m2_db": 4.491611252232191
+        "c2_median_delta_db": -1.5979437547654514,
+        "secondary_delta_m0_m2_db": -0.11452477170600162,
+        "median_rmse_m2_db": 3.5644048021153605,
+        "median_rmse_m0_db": 1.964116333526524
+      }
+    },
+    "specificity": {
+      "M0/sigma_rep_0.5": {
+        "c2_false_detection_rate": 0.0,
+        "c2_false_detection_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "specificity": 1.0,
+        "specificity_ci95": [
+          0.9926493899480923,
+          1.0
+        ]
+      },
+      "M0/sigma_rep_1": {
+        "c2_false_detection_rate": 0.0,
+        "c2_false_detection_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "specificity": 1.0,
+        "specificity_ci95": [
+          0.9926493899480923,
+          1.0
+        ]
+      },
+      "M0/sigma_rep_2": {
+        "c2_false_detection_rate": 0.0,
+        "c2_false_detection_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "specificity": 1.0,
+        "specificity_ci95": [
+          0.9926493899480923,
+          1.0
+        ]
+      }
+    },
+    "s_nf_informational": {
+      "M2/sigma_rep_0.5": {
+        "C1": 0.034,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.038,
+        "median_delta_rmse_db": -1.1887920657861153
+      },
+      "M2/sigma_rep_1": {
+        "C1": 0.04,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.034,
+        "median_delta_rmse_db": -1.1581385110906717
+      },
+      "M2/sigma_rep_2": {
+        "C1": 0.058,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.026,
+        "median_delta_rmse_db": -1.0435178887786623
+      },
+      "M0/sigma_rep_0.5": {
+        "C1": 0.0,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.016,
+        "median_delta_rmse_db": -2.488006131980118
+      },
+      "M0/sigma_rep_1": {
+        "C1": 0.0,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.016,
+        "median_delta_rmse_db": -2.1347852276757844
+      },
+      "M0/sigma_rep_2": {
+        "C1": 0.012,
+        "C2": 0.0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "C3": 0.0,
+        "c2_median_ok": 0.0,
+        "c2_frac_ok": 0.0,
+        "spearman_ok": 0.016,
+        "median_delta_rmse_db": -1.5946660268561854
+      }
+    },
+    "prediction_spread": {
+      "definition": "SD over prior draws of the fitted prediction per cell (sigma_geom, section 9; data-independent), its median over all cells and over the test cells; RIS signature = SD over the 30 cells of M2 - M0 per draw (quantiles over draws); ring-mean-removed M2 SD = median over test cells of the SD over draws of the ring-mean-removed M2 prediction",
+      "current": {
+        "K": 2000,
+        "models": {
+          "M0": {
+            "median_sd_all_cells_db": 0.08302927359161821,
+            "median_sd_test_cells_db": 0.09243969691413265
+          },
+          "M1": {
+            "median_sd_all_cells_db": 2.782017626237267,
+            "median_sd_test_cells_db": 2.8817776141904003
+          },
+          "M2": {
+            "median_sd_all_cells_db": 2.7332500001233315,
+            "median_sd_test_cells_db": 3.099247921970549
+          },
+          "M3": {
+            "median_sd_all_cells_db": 2.875954720597038,
+            "median_sd_test_cells_db": 3.2667161999797765
+          }
+        },
+        "ris_signature_db": {
+          "q05": 1.768536167748835,
+          "median": 2.6855659316975853,
+          "q95": 4.302864348637931
+        },
+        "ring_removed_m2_sd_db": 2.8610103833127445
+      },
+      "v1": {
+        "K": 2000,
+        "models": {
+          "M0": {
+            "median_sd_all_cells_db": 3.3586039870438538,
+            "median_sd_test_cells_db": 2.9016502959906187
+          },
+          "M1": {
+            "median_sd_all_cells_db": 3.6223169112187197,
+            "median_sd_test_cells_db": 3.4505496710437584
+          },
+          "M2": {
+            "median_sd_all_cells_db": 4.1148826174319435,
+            "median_sd_test_cells_db": 3.9559929775780054
+          },
+          "M3": {
+            "median_sd_all_cells_db": 4.217987325342115,
+            "median_sd_test_cells_db": 4.154696141007774
+          }
+        },
+        "ris_signature_db": {
+          "q05": 0.12204517423503465,
+          "median": 2.2557468679733184,
+          "q95": 6.968837227673454
+        },
+        "ring_removed_m2_sd_db": 3.4485359654397945
+      },
+      "reference_label": "v1",
+      "reference_tensor_content_sha256": "71d31b58fb9c4906fc59b3de38580aee301d541a944c2f8a647ccfc3e33a3355",
+      "reference_median_delta_rmse_truth_m2_db": -0.24163483019642928
+    }
+  },
+  "diagnostic_not_part_of_protocol": {
+    "label": "diagnostic, not part of the protocol",
+    "computed_utc": "2026-10-10T23:50:02.715465Z",
+    "run_directory": "runs\\vlab\\20261010T232914Z_vlab_diagnostic",
+    "sremu_commit": "b4247316d882116b27e7e10768d537319c626941",
+    "sremu_dirty": true,
+    "baseline": {
+      "M2": {
+        "n_decoys": 500,
+        "C2_rate": 0.0,
+        "C2_count": 0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "median_delta_rmse_db": -1.1630100553445297,
+        "median_n_draws": 2000.0
+      },
+      "M0": {
+        "n_decoys": 500,
+        "C2_rate": 0.0,
+        "C2_count": 0,
+        "C2_ci95": [
+          0.0,
+          0.007350610051907784
+        ],
+        "median_delta_rmse_db": -2.1345221657527373,
+        "median_n_draws": 2000.0
+      }
+    },
+    "methods": {
+      "subset": "protocol tensor and decoys; per decoy only the draws consistent with the decoy's truth within the tolerance (window centred on the truth)",
+      "restricted": "smaller tensor and fresh decoys from a prior narrowed to +-tol around the nominal value (streams vlab_diag_<fact>/...)"
+    },
+    "facts": {
+      "R_pm10mm": {
+        "question": "Tx-to-tile distance R to +-1 cm",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.002,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.028,
+          "median_delta_rmse_db": -1.1459563450083547,
+          "median_n_draws": 255.0
+        },
+        "M0": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.008,
+          "median_delta_rmse_db": -2.1334656322787335,
+          "median_n_draws": 255.0
+        }
+      },
+      "R_pm2p5mm": {
+        "question": "Tx-to-tile distance R to +-2.5 mm",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 497,
+          "n_skipped": 3,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007394815473294639
+          ],
+          "C1_rate": 0.006036217303822937,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.05030181086519115,
+          "median_delta_rmse_db": -1.134063595789179,
+          "median_n_draws": 64.0
+        },
+        "M0": {
+          "n_decoys": 497,
+          "n_skipped": 3,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007394815473294639
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.022132796780684104,
+          "median_delta_rmse_db": -2.1298379123768796,
+          "median_n_draws": 64.0
+        }
+      },
+      "arc_angles": {
+        "question": "angular positions of the tiles (arc centre to +-0.5 deg, span to +-1 deg)",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 498,
+          "n_skipped": 2,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.0073800213747353995
+          ],
+          "C1_rate": 0.002008032128514056,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.060240963855421686,
+          "median_delta_rmse_db": -1.1451903396469405,
+          "median_n_draws": 53.0
+        },
+        "M0": {
+          "n_decoys": 498,
+          "n_skipped": 2,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.0073800213747353995
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.02208835341365462,
+          "median_delta_rmse_db": -2.146405313429751,
+          "median_n_draws": 53.0
+        }
+      },
+      "pitch": {
+        "question": "which unit cell (42.8 mm square or INDICON)",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.002,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.024,
+          "median_delta_rmse_db": -1.1895800746632497,
+          "median_n_draws": 964.0
+        },
+        "M0": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.012,
+          "median_delta_rmse_db": -2.3019081488606568,
+          "median_n_draws": 964.0
+        }
+      },
+      "antenna": {
+        "question": "the whips' elevation pattern at 3.5 GHz (isotropic-like or dipole-like)",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.038,
+          "median_delta_rmse_db": -1.1666193230282171,
+          "median_n_draws": 999.0
+        },
+        "M0": {
+          "n_decoys": 500,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.007350610051907784
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.022,
+          "median_delta_rmse_db": -2.1255539502272476,
+          "median_n_draws": 999.0
+        }
+      },
+      "gamma": {
+        "question": "the two tile states' reflection coefficients (|Gamma| to +-0.1, phase to +-5 deg)",
+        "method": "subset",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 439,
+          "n_skipped": 61,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.008367708667706919
+          ],
+          "C1_rate": 0.004555808656036446,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.03644646924829157,
+          "median_delta_rmse_db": -1.153191812218654,
+          "median_n_draws": 37.0
+        },
+        "M0": {
+          "n_decoys": 439,
+          "n_skipped": 61,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.008367708667706919
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.02050113895216401,
+          "median_delta_rmse_db": -2.100501189859034,
+          "median_n_draws": 37.0
+        }
+      },
+      "points_pm5mm": {
+        "question": "the 30 measurement positions and the plane height to +-5 mm",
+        "method": "restricted",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.005,
+          "median_delta_rmse_db": -1.0512564808201925,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.005,
+          "median_delta_rmse_db": -1.9161238085408865,
+          "median_n_draws": 1000.0
+        }
+      },
+      "points_pm1mm": {
+        "question": "the 30 measurement positions and the plane height to +-1 mm",
+        "method": "restricted",
+        "single_fact": true,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.01,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.005,
+          "median_delta_rmse_db": -1.0061189124700243,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.015,
+          "median_delta_rmse_db": -1.8425634548250336,
+          "median_n_draws": 1000.0
+        }
+      },
+      "R_pm2p5mm_points_pm5mm": {
+        "question": "combination: R to +-2.5 mm and the positions to +-5 mm",
+        "method": "restricted",
+        "single_fact": false,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.52,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.535,
+          "median_delta_rmse_db": -0.3561146340564083,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.045,
+          "median_delta_rmse_db": -1.9378260146512023,
+          "median_n_draws": 1000.0
+        }
+      },
+      "tiles_known": {
+        "question": "combination: the as-built tile geometry exactly (R, arc angles, cell type); positions still +-2 cm",
+        "method": "restricted",
+        "single_fact": false,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.065,
+          "median_delta_rmse_db": -1.3674977221609854,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.035,
+          "median_delta_rmse_db": -2.5969317012080158,
+          "median_n_draws": 1000.0
+        }
+      },
+      "tiles_known_points_pm5mm": {
+        "question": "combination: the tile geometry exactly and the positions to +-5 mm",
+        "method": "restricted",
+        "single_fact": false,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.855,
+          "C3_rate": 0.095,
+          "c2_median_ok_rate": 0.05,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.82,
+          "median_delta_rmse_db": 0.238975170899277,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.03,
+          "median_delta_rmse_db": -2.1696345217562336,
+          "median_n_draws": 1000.0
+        }
+      },
+      "tiles_known_points_pm1mm": {
+        "question": "combination: the tile geometry exactly and the positions to +-1 mm",
+        "method": "restricted",
+        "single_fact": false,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.53,
+          "C2_count": 106,
+          "C2_ci95": [
+            0.458330500411475,
+            0.6007670588028855
+          ],
+          "C1_rate": 1.0,
+          "C3_rate": 0.87,
+          "c2_median_ok_rate": 0.7,
+          "c2_frac_ok_rate": 0.54,
+          "spearman_ok_rate": 0.995,
+          "median_delta_rmse_db": 1.2198078432689083,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.03,
+          "median_delta_rmse_db": -1.554371041752285,
+          "median_n_draws": 1000.0
+        }
+      },
+      "geometry_known": {
+        "question": "upper bound: every geometric quantity known exactly (R, arc angles, cell type, positions); Gamma, antenna pattern and cell model still unknown",
+        "method": "restricted",
+        "single_fact": false,
+        "M2": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.63,
+          "C2_count": 126,
+          "C2_ci95": [
+            0.5590535152152594,
+            0.6970301757287629
+          ],
+          "C1_rate": 0.995,
+          "C3_rate": 0.95,
+          "c2_median_ok_rate": 0.7,
+          "c2_frac_ok_rate": 0.645,
+          "spearman_ok_rate": 0.995,
+          "median_delta_rmse_db": 1.2983184575241133,
+          "median_n_draws": 1000.0
+        },
+        "M0": {
+          "n_decoys": 200,
+          "n_skipped": 0,
+          "C2_rate": 0.0,
+          "C2_count": 0,
+          "C2_ci95": [
+            0.0,
+            0.018275340355136237
+          ],
+          "C1_rate": 0.0,
+          "C3_rate": 0.0,
+          "c2_median_ok_rate": 0.0,
+          "c2_frac_ok_rate": 0.0,
+          "spearman_ok_rate": 0.025,
+          "median_delta_rmse_db": -1.4867325582987783,
+          "median_n_draws": 1000.0
+        }
+      }
+    },
+    "settings": {
+      "sigma_rep_db": 1.0,
+      "n_boot": 2000,
+      "n_decoys_subset": 500,
+      "K_restricted": 1000,
+      "n_decoys_restricted": 200,
+      "min_draws": 20,
+      "power_run": "runs\\vlab\\20261010T223000Z_vlab_power",
+      "merged_runs": [
+        "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      ]
+    },
+    "best_single_fact": null,
+    "closest_single_fact_by_delta_rmse": "points_pm1mm",
+    "fact_runs": {
+      "tiles_known": {
+        "tensor_content_sha256": "701e249e36ed9e3b097a7ee85899ec9b1dbba3f41ea9d12e793b80a34194f6d4",
+        "decoy_truth_content_sha256": "faf20632f9ed7f45ebee82f43f0d2dac7196918c2474399c9d55df432acdd349",
+        "prediction_spec_sha256": "328b46a069dc3114d2f9fefedee9ed706a7b93cf33f68e41131f2bf99b7bbc7a",
+        "rejected_candidates": {},
+        "wall_s": 430.8886910000001
+      },
+      "tiles_known_points_pm5mm": {
+        "tensor_content_sha256": "b16a12646435dfb48541007d38623b4ff18817bea0abf785f895b5e2c3c3f36b",
+        "decoy_truth_content_sha256": "20c29a0e03efaf71281a306ac5af6f2fb651d92aa6f08f84daba5cb78b7acaa4",
+        "prediction_spec_sha256": "321fa556342f727a14718eaeec549db18fd33685d040c766b11c674801eac560",
+        "rejected_candidates": {},
+        "wall_s": 407.03975709999213
+      },
+      "tiles_known_points_pm1mm": {
+        "tensor_content_sha256": "91b34ab8be7d5dd11f559485b5c8aec2b6018ec2b6d00a0d89acc1538f718f98",
+        "decoy_truth_content_sha256": "3698179e99cd592261a1c9f23b3794727710f6d5dc5926439025e9a02c1e2633",
+        "prediction_spec_sha256": "f2ee3e51221145a9a49351becfbcc14de56e844ed879e58d33d61b8a467ffca0",
+        "rejected_candidates": {},
+        "wall_s": 394.6092762000044
+      },
+      "points_pm5mm": {
+        "tensor_content_sha256": "438f370ce98eac97ad7f5996994a62b7092dfcbfc99f023a5f3ab57d6a045782",
+        "decoy_truth_content_sha256": "d45852db2018648585e65704fd5c6e310592b40603f5ab54560eaf32c957d178",
+        "prediction_spec_sha256": "0f0fc016bc45d85bb4897a0d6b9fc3d244c4d997cdb77b820ae84d7a487b1475",
+        "rejected_candidates": {
+          "O_T/arc:near_tile": 53
+        },
+        "wall_s": 703.6999891000014,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "points_pm1mm": {
+        "tensor_content_sha256": "6f616500c68db5b9033b3f166b7725ab7bcfd9ff8c7779a5c8f9ffbfb002bf62",
+        "decoy_truth_content_sha256": "177ddc6ed98a5c5a2f4d514f85d254cbf29337de51e256157a39b6d94f8a4299",
+        "prediction_spec_sha256": "4ec093d1da7b4d95206e8510ed13ee2f493ede3fd0e19e5d29d97348338d650a",
+        "rejected_candidates": {
+          "O_T/arc:near_tile": 39
+        },
+        "wall_s": 256.66040449999855,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "R_pm2p5mm_points_pm5mm": {
+        "tensor_content_sha256": "394808fc4e1f6e8d45c34b89912eb4c5b90a14fc31eea21ba10156bba1f92319",
+        "decoy_truth_content_sha256": "fda290d5897e1842b37af5061f33737d1c547fe5bdaaf84cff786a7e2c80e2a0",
+        "prediction_spec_sha256": "914d4fdc7feeed09e5e24dcbee0e5e14c01d8adb4592f710b4aad0a2c72948b5",
+        "rejected_candidates": {},
+        "wall_s": 330.9970528999984,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "geometry_known": {
+        "tensor_content_sha256": "5e00ca2c20ee9ff8ad3cee444b819688fafd55f3c2f8309fb0baeb198f7dbece",
+        "decoy_truth_content_sha256": "b52cec32c9de539c73f5fb1199b211512cb698a4ea4b405c943472e4a3880c3f",
+        "prediction_spec_sha256": "f507624b268302ffe51c8276e278b3df1fb1cef01046a6db9ce7da7ee1ab1ced",
+        "rejected_candidates": {},
+        "wall_s": 304.9574578000029,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "R_pm10mm": {
+        "wall_s": 41.147506199995405,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "R_pm2p5mm": {
+        "wall_s": 16.722723399987444,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "arc_angles": {
+        "wall_s": 15.162925800002995,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "pitch": {
+        "wall_s": 166.88401449999947,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "antenna": {
+        "wall_s": 160.1625641999999,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
+      },
+      "gamma": {
+        "wall_s": 50.898612000004505,
+        "run_directory": "runs\\vlab\\20261010T224804Z_vlab_diagnostic"
       }
     }
   }

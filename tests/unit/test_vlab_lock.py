@@ -222,7 +222,14 @@ def test_run_cli_refuses_a_dirty_tree_without_touching_data(
     monkeypatch.setattr(pl, "PREREGISTERED_SHA256", pl.protocol_digest())
     f = tmp_path / "x.csv"
     _synthetic_csv(f)
-    base = ["--tensor", str(tmp_path / "missing.npz"), "--out", str(tmp_path / "runs")]
+    base = [
+        "--tensor",
+        str(tmp_path / "missing.npz"),
+        "--tensor-sor",
+        str(tmp_path / "missing_sor.npz"),
+        "--out",
+        str(tmp_path / "runs"),
+    ]
     for state in (GitState("a" * 40, True, b"patch"), GitState(None, None, None, "no git")):
         monkeypatch.setattr(run, "git_state", lambda *a, _s=state, **k: _s)
         rc = run.main([*base, "--data", str(f)])
@@ -248,5 +255,37 @@ def test_run_cli_refuses_while_unlocked(
     rc = run.main(["--tensor", str(tmp_path / "missing.npz"), "--out", str(tmp_path / "runs")])
     assert rc == 2
     assert "not locked" in capsys.readouterr().err
+    assert no_data_access == []
+    assert not (tmp_path / "runs").exists()
+
+
+def test_run_cli_refuses_without_the_s_or_tensor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_data_access: list[Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Protocol v2: the unblinded run needs the pre-computed S-OR tensor (sensitivity run
+    S-OR); without it the run is refused before any data access."""
+    from validation.ants_fig4b import run
+
+    from sremu.record.manifest import GitState
+
+    monkeypatch.setattr(pl, "PREREGISTERED_SHA256", pl.protocol_digest())
+    monkeypatch.setattr(run, "git_state", lambda *a, **k: GitState("a" * 40, False, None))
+    f = tmp_path / "x.csv"
+    _synthetic_csv(f)
+    rc = run.main(
+        [
+            "--tensor",
+            str(tmp_path / "missing.npz"),
+            "--out",
+            str(tmp_path / "runs"),
+            "--data",
+            str(f),
+        ]
+    )
+    assert rc == 2
+    assert "S-OR" in capsys.readouterr().err
     assert no_data_access == []
     assert not (tmp_path / "runs").exists()

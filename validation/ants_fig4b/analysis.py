@@ -39,6 +39,7 @@ __all__ = [
     "decide",
     "fitted_predictions",
     "pinned_cells",
+    "prediction_spread",
     "ring_removed",
     "run_folds",
     "run_split",
@@ -451,7 +452,12 @@ def uncertainty_budget(
     s_geom = np.std(yhat, axis=0, ddof=1)
     s_dig = np.asarray(data.sigma_dig_db, dtype=np.float64)
     sp = tensor.arrays.get("sigma_pos_db")
-    s_pos = np.median(sp, axis=0) if sp is not None else np.full(center.size, math.nan)
+    finite = None if sp is None else sp[np.all(np.isfinite(sp), axis=1)]
+    s_pos = (
+        np.median(finite, axis=0)
+        if finite is not None and finite.shape[0] > 0
+        else np.full(center.size, math.nan)
+    )
     z = float(ub["coverage"]["z"])
     y = np.asarray(data.y_dbm, dtype=np.float64)
     cov = {}
@@ -474,26 +480,74 @@ def uncertainty_budget(
     }
 
 
-def breakdown(tensor: TensorCache, primary: Mapping[str, Any]) -> dict[str, Any]:
-    """S4: median test RMSE(M2) and Delta RMSE per value of each discrete prior variable."""
+def _group_stats(primary: Mapping[str, Any], sel: np.ndarray) -> dict[str, Any]:
     met = primary["_metrics"]
+    if not np.any(sel):
+        return {"n_draws": 0}
+    return {
+        "n_draws": int(sel.sum()),
+        "median_rmse_m2": float(np.median(met["M2"]["rmse"][sel])),
+        "median_rmse_m0": float(np.median(met["M0"]["rmse"][sel])),
+        "median_delta_m0_m2": float(np.median(primary["_delta"]["M0-M2"][sel])),
+        "median_delta_m1_m2": float(np.median(primary["_delta"]["M1-M2"][sel])),
+    }
+
+
+def breakdown(tensor: TensorCache, primary: Mapping[str, Any]) -> dict[str, Any]:
+    """S4: median test RMSE(M2) and Delta RMSE per value of each discrete prior variable and,
+    when the tensor has arc radii, per tertile of the radius R (edges: the tensor's own R
+    tertiles, data-independent)."""
     out: dict[str, Any] = {}
     for key in tensor.meta["codes"]:
         lab = tensor.codes(key)
-        rec: dict[str, dict[str, Any]] = {}
-        for v in tensor.meta["codes"][key]:
-            sel = lab == v
-            if not np.any(sel):
-                rec[str(v)] = {"n_draws": 0}
-                continue
-            rec[str(v)] = {
-                "n_draws": int(sel.sum()),
-                "median_rmse_m2": float(np.median(met["M2"]["rmse"][sel])),
-                "median_rmse_m0": float(np.median(met["M0"]["rmse"][sel])),
-                "median_delta_m0_m2": float(np.median(primary["_delta"]["M0-M2"][sel])),
-                "median_delta_m1_m2": float(np.median(primary["_delta"]["M1-M2"][sel])),
-            }
-        out[key] = rec
+        out[key] = {str(v): _group_stats(primary, lab == v) for v in tensor.meta["codes"][key]}
+    rad = tensor.arrays.get("radius_m")
+    if rad is not None and np.all(np.isfinite(rad)):
+        edges = np.quantile(rad, [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
+        rec: dict[str, Any] = {}
+        for i in range(3):
+            lo, hi = float(edges[i]), float(edges[i + 1])
+            sel = (rad >= lo) & ((rad < hi) if i < 2 else (rad <= hi))
+            rec[f"[{lo:.4f}, {hi:.4f}] m"] = _group_stats(primary, sel)
+        out["radius_tertile"] = rec
+    return out
+
+
+def prediction_spread(
+    pred_db: np.ndarray,
+    train: np.ndarray,
+    test: np.ndarray,
+    ring: np.ndarray,
+    *,
+    models: Sequence[str] = MODELS,
+) -> dict[str, Any]:
+    """Data-independent spread of the prior predictions (no measured or decoy values).
+
+    The fitted prediction of draw ``k`` is ``P_k + mean_train(y) - mean_train(P_k)``, so its
+    standard deviation over draws at cell ``i`` (``sigma_geom``, section 9) does not depend on
+    the dataset: it is the SD over draws of ``P_k,i - mean_train(P_k)``. Per model: that SD's
+    median over all cells and over the test cells. ``ris_signature_db``: quantiles over draws
+    of the SD over the 30 cells of ``M2 - M0`` (the size of the RIS fingerprint a draw adds to
+    LOS); ``ring_removed_m2_sd_db``: median over test cells of the SD over draws of the
+    ring-mean-removed M2 prediction (the spread of the structure the Spearman condition
+    uses)."""
+    p = np.asarray(pred_db, dtype=np.float64)
+    out: dict[str, Any] = {"K": int(p.shape[0]), "models": {}}
+    for j, m in enumerate(models):
+        pm = p[:, :, j]
+        c = pm - pm[:, train].mean(axis=1, keepdims=True)
+        sd = np.std(c, axis=0, ddof=1)
+        out["models"][m] = {
+            "median_sd_all_cells_db": float(np.median(sd)),
+            "median_sd_test_cells_db": float(np.median(sd[test])),
+        }
+    if "M2" in models and "M0" in models:
+        i2, i0 = list(models).index("M2"), list(models).index("M0")
+        sig = np.std(p[:, :, i2] - p[:, :, i0], axis=1)
+        q = np.quantile(sig, [0.05, 0.5, 0.95])
+        out["ris_signature_db"] = {"q05": float(q[0]), "median": float(q[1]), "q95": float(q[2])}
+        rr = ring_removed(p[:, :, i2], test, ring)
+        out["ring_removed_m2_sd_db"] = float(np.median(np.std(rr, axis=0, ddof=1)))
     return out
 
 

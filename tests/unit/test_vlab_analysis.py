@@ -307,3 +307,112 @@ def test_power_summary_and_underpowered_rule(proto: dict) -> None:
     assert next(iter(s["groups"])).startswith("M2/")
     rows2 = [{**r, "C2": r["truth_model"] == "M2"} for r in rows]
     assert dc.summarize_power(rows2, proto)["underpowered"] is False
+
+
+# --------------------------------------------------------------------------- protocol v2
+
+
+def test_decoy_analysis_includes_the_s_nf_split(proto: dict) -> None:
+    """S-NF (offsets fitted without the 1.8 m ring) shares the primary test cells and the
+    bootstrap indices; it is informational in the power analysis."""
+    t, truth = _structured(proto, 12, ris_db=3.0, seed="snf")
+    ds = an.Dataset(truth - 15, np.full(30, 0.07), "synthetic", "SIM-sremu")
+    res = dc.analyze_dataset(
+        t, ds, proto, n_boot=100, rng=sremu_rng.generator(10, "trial", "vlab_test/bt")
+    )
+    snf = res["S-NF"]
+    assert (snf["n_train"], snf["n_test"]) == (12, 12)
+    assert set(snf["decisions"]) == {"C1", "C2", "C3"}
+    row = dc._decoy_row(0, res, "M2", 1.0)
+    assert row["snf_C2"] == snf["decisions"]["C2"]["holds"]
+    no = dc.analyze_dataset(
+        t,
+        ds,
+        proto,
+        n_boot=100,
+        rng=sremu_rng.generator(10, "trial", "vlab_test/bt"),
+        with_snf=False,
+    )
+    assert "S-NF" not in no
+    np.testing.assert_array_equal(
+        no["primary"]["_delta"]["M0-M2"], res["primary"]["_delta"]["M0-M2"]
+    )
+
+
+def test_power_summary_specificity_and_s_nf(proto: dict) -> None:
+    rows = []
+    for i in range(10):
+        for tm, hit, snf in (("M2", i < 3, i < 6), ("M0", i < 1, i < 2)):
+            r = _row(i, tm, c2=hit, sp=hit)
+            r.update(
+                snf_C1=False,
+                snf_C2=snf,
+                snf_C3=False,
+                snf_c2_median_delta_db=0.5,
+                snf_c2_median_ok=snf,
+                snf_c2_frac_ok=snf,
+                snf_spearman_ok=snf,
+            )
+            rows.append(r)
+    s = dc.summarize_power(rows, proto)
+    sp = s["specificity"]["M0/sigma_rep_1"]
+    assert sp["c2_false_detection_rate"] == 0.1 and sp["specificity"] == pytest.approx(0.9)
+    lo, hi = sstats.clopper_pearson(1, 10)
+    assert sp["specificity_ci95"] == pytest.approx([1 - hi, 1 - lo])
+    g = s["groups"]["M2/sigma_rep_1"]
+    assert g["snf_C2_rate"] == 0.6 and g["snf_C2_count"] == 6
+    meta = {"content_sha256": "0" * 64, "prediction_spec_sha256": "1" * 64, "K": 10}
+    lay = cell_layout(proto)
+    pred = np.zeros((4, 30, 4))
+    spread_ref = an.prediction_spread(pred + lay.r_m[None, :, None], *_masks(proto), lay.ring)
+    spread_cur = an.prediction_spread(pred, *_masks(proto), lay.ring)
+    run_info = {
+        "t_utc": "t",
+        "run_dir": "r",
+        "git_commit": "c",
+        "git_dirty": False,
+        "truth_sha256": "2" * 64,
+        "n_boot": 10,
+        "prediction_spread": {
+            "current": spread_cur,
+            "v1": spread_ref,
+            "reference_label": "v1",
+            "reference_median_delta_rmse_truth_m2_db": -0.24,
+        },
+    }
+    pr, md = dc._protocol_result(s, meta, run_info)
+    assert pr["specificity"]["M0/sigma_rep_1"]["specificity"] == pytest.approx(0.9)
+    assert pr["s_nf_informational"]["M2/sigma_rep_1"]["C2"] == 0.6
+    assert "specificity 0.900" in md and "S-NF (information only" in md
+    assert "| v1 | this protocol |" in md and "| -0.24 |" in md
+
+
+def _masks(proto: dict) -> tuple[np.ndarray, np.ndarray]:
+    return split_masks(proto, cell_layout(proto))["primary"]
+
+
+def test_prediction_spread_is_data_independent(proto: dict) -> None:
+    lay = cell_layout(proto)
+    tr, te = _masks(proto)
+    g = sremu_rng.generator(11, "trial", "vlab_test/spread")
+    pred = g.normal(0.0, 1.0, (50, 30, 4))
+    out = an.prediction_spread(pred, tr, te, lay.ring)
+    c = pred[:, :, 2] - pred[:, :, 2][:, tr].mean(axis=1, keepdims=True)
+    assert out["models"]["M2"]["median_sd_all_cells_db"] == pytest.approx(
+        float(np.median(np.std(c, axis=0, ddof=1)))
+    )
+    # a common offset per draw is absorbed by the fit: no spread
+    flat = np.tile(np.arange(30.0)[None, :, None], (50, 1, 4)) + g.normal(0, 5, (50, 1, 1))
+    assert an.prediction_spread(flat, tr, te, lay.ring)["models"]["M0"][
+        "median_sd_all_cells_db"
+    ] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_breakdown_by_radius_tertile(proto: dict) -> None:
+    t, truth = _structured(proto, 12, ris_db=3.0, seed="tertile")
+    t.arrays["radius_m"] = np.linspace(1.88, 2.05, 12)  # type: ignore[index]
+    ds = an.Dataset(truth - 15, np.full(30, 0.07), "synthetic", "SIM-sremu")
+    tr, te = _masks(proto)
+    prim = an.run_split(t, ds, proto, train=tr, test=te, boot_idx=None)
+    br = an.breakdown(t, prim)
+    assert sum(v["n_draws"] for v in br["radius_tertile"].values()) == 12

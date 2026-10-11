@@ -12,7 +12,9 @@ decoy with the cached tensor and ``n_bootstrap = 2000`` resamples (indices from
 ``("decoy", "vlab/<i>", counter 2)``), and reports the C2 detection rate with a
 Clopper-Pearson 95 % interval. If the rate is below 0.5 the study is labelled
 "underpowered" whatever the outcome. Null decoys (truth M0, informational) estimate how
-often C2 fires without a RIS path.
+often C2 fires without a RIS path (the specificity check). The S-NF split (offsets fitted
+without the near-field ring r = 1.8 m; the same test cells and bootstrap indices) is also
+analysed on every decoy and reported as information only.
 
 No measured data are used anywhere in this module.
 """
@@ -49,6 +51,8 @@ from validation.ants_fig4b.protocol import (
     cell_layout,
     load_protocol,
     prediction_spec_sha256,
+    ring_split,
+    sensitivity_run,
     split_masks,
 )
 
@@ -61,6 +65,7 @@ __all__ = [
     "analyze_dataset",
     "decoy_dataset",
     "decoy_noise",
+    "prediction_spread_comparison",
     "run_power_analysis",
     "synthetic_decoy",
     "write_protocol_result",
@@ -171,8 +176,11 @@ def analyze_dataset(
     *,
     n_boot: int,
     rng: np.random.Generator,
+    with_snf: bool = True,
 ) -> dict[str, Any]:
-    """Primary (bootstrapped, decisions) and secondary analyses on the primary split."""
+    """Primary (bootstrapped, decisions) and secondary analyses on the primary split; with
+    ``with_snf`` also the S-NF split (offsets fitted without the 1.8 m ring) with the same
+    bootstrap indices (its test cells are the primary ones)."""
     lay = cell_layout(protocol)
     train, test = split_masks(protocol, lay)["primary"]
     idx = rng.integers(0, int(test.sum()), size=(int(n_boot), int(test.sum())))
@@ -184,7 +192,16 @@ def analyze_dataset(
         test=test,
         sigma_tot_db=float(protocol["secondary_analysis"]["sigma_tot_db"]),
     )
-    return {"primary": prim, "secondary": sec}
+    out: dict[str, Any] = {"primary": prim, "secondary": sec}
+    if with_snf:
+        sp = sensitivity_run(protocol, "S-NF")["split"]
+        tr2, te2 = ring_split(protocol, sp["train_rings_m"], sp["test_rings_m"], lay)
+        if not np.array_equal(te2, test):
+            raise ValueError("S-NF must test the primary test cells (shared bootstrap indices)")
+        out["S-NF"] = an.run_split(
+            tensor, data, protocol, train=tr2, test=te2, boot_idx=idx, layout=lay
+        )
+    return out
 
 
 def _decoy_row(
@@ -214,6 +231,22 @@ def _decoy_row(
         "median_rmse_m0_db": prim["metrics"]["M0"]["rmse"]["median"],
         "secondary_delta_m0_m2_db": sec["delta_rmse"]["M0-M2"],
         "secondary_rmse_m2_db": sec["models"]["M2"]["rmse"],
+        **_snf_fields(res),
+    }
+
+
+def _snf_fields(res: Mapping[str, Any]) -> dict[str, Any]:
+    if "S-NF" not in res:
+        return {}
+    d = res["S-NF"]["decisions"]
+    return {
+        "snf_C1": d["C1"]["holds"],
+        "snf_C2": d["C2"]["holds"],
+        "snf_C3": d["C3"]["holds"],
+        "snf_c2_median_delta_db": d["C2"]["median_delta_rmse_db"],
+        "snf_c2_median_ok": d["C2"]["median_ok"],
+        "snf_c2_frac_ok": d["C2"]["frac_ok"],
+        "snf_spearman_ok": d["C2"]["spearman_ok"],
     }
 
 
@@ -326,6 +359,17 @@ def summarize_power(
             rec[f"{c}_count"] = k
         for sub in ("c2_median_ok", "c2_frac_ok", "spearman_ok"):
             rec[f"{sub}_rate"] = float(np.mean([bool(r[sub]) for r in rs]))
+        if all("snf_C2" in r for r in rs):
+            for c in ("C1", "C2", "C3"):
+                k = int(sum(bool(r[f"snf_{c}"]) for r in rs))
+                rec[f"snf_{c}_rate"] = k / n
+                rec[f"snf_{c}_count"] = k
+                rec[f"snf_{c}_ci95"] = list(clopper_pearson(k, n, 0.95))
+            for sub in ("c2_median_ok", "c2_frac_ok", "spearman_ok"):
+                rec[f"snf_{sub}_rate"] = float(np.mean([bool(r[f"snf_{sub}"]) for r in rs]))
+            rec["snf_c2_median_delta_db"] = an.summarize(
+                np.array([r["snf_c2_median_delta_db"] for r in rs], dtype=np.float64)
+            )
         for q in (
             "c2_median_delta_db",
             "c2_frac_ci_excl0",
@@ -341,14 +385,56 @@ def summarize_power(
     key = f"{pa['truth_model']}/sigma_rep_{float(pa['sigma_rep_db']):g}"
     main = res[key]
     thr = float(pa["underpowered_if_c2_rate_below"])
+    null_key = f"{pa['null_decoys']['truth_model']}/sigma_rep_{float(pa['sigma_rep_db']):g}"
+    spec: dict[str, Any] = {}
+    for gk, rec in res.items():
+        if rec["truth_model"] != pa["null_decoys"]["truth_model"]:
+            continue
+        lo, hi = rec["C2_ci95"]
+        spec[gk] = {
+            "c2_false_detection_rate": rec["C2_rate"],
+            "c2_false_detection_ci95": [lo, hi],
+            "specificity": 1.0 - rec["C2_rate"],
+            "specificity_ci95": [1.0 - hi, 1.0 - lo],
+        }
     return {
         "primary_key": key,
+        "null_key": null_key if null_key in res else None,
         "c2_detection_rate": main["C2_rate"],
         "c2_detection_ci95": main["C2_ci95"],
         "underpowered_threshold": thr,
         "underpowered": bool(main["C2_rate"] < thr),
+        "specificity": spec,
         "groups": res,
     }
+
+
+def prediction_spread_comparison(
+    tensor: TensorCache,
+    protocol: Mapping[str, Any],
+    reference: TensorCache | None = None,
+    reference_label: str = "v1",
+) -> dict[str, Any]:
+    """Data-independent spread of the prior predictions (:func:`analysis.prediction_spread`)
+    of ``tensor`` and, if given, of a ``reference`` tensor of an earlier protocol version
+    (same cells and primary split)."""
+    lay = cell_layout(protocol)
+    train, test = split_masks(protocol, lay)["primary"]
+    out: dict[str, Any] = {
+        "definition": (
+            "SD over prior draws of the fitted prediction per cell (sigma_geom, section 9; "
+            "data-independent), its median over all cells and over the test cells; RIS "
+            "signature = SD over the 30 cells of M2 - M0 per draw (quantiles over draws); "
+            "ring-mean-removed M2 SD = median over test cells of the SD over draws of the "
+            "ring-mean-removed M2 prediction"
+        ),
+        "current": an.prediction_spread(tensor.pred_db, train, test, lay.ring),
+    }
+    if reference is not None:
+        out[reference_label] = an.prediction_spread(reference.pred_db, train, test, lay.ring)
+        out["reference_label"] = reference_label
+        out["reference_tensor_content_sha256"] = reference.meta.get("content_sha256")
+    return out
 
 
 # =========================================================================== protocol result
@@ -411,10 +497,29 @@ def _protocol_result(
                 "c2_median_delta_db": v["c2_median_delta_db"]["median"],
                 "secondary_delta_m0_m2_db": v["secondary_delta_m0_m2_db"]["median"],
                 "median_rmse_m2_db": v["median_rmse_m2_db"]["median"],
+                "median_rmse_m0_db": v["median_rmse_m0_db"]["median"],
             }
             for k, v in g.items()
         },
+        "specificity": summ.get("specificity", {}),
     }
+    snf = {k: v for k, v in g.items() if "snf_C2_rate" in v}
+    if snf:
+        pr["s_nf_informational"] = {
+            k: {
+                "C1": v["snf_C1_rate"],
+                "C2": v["snf_C2_rate"],
+                "C2_ci95": v["snf_C2_ci95"],
+                "C3": v["snf_C3_rate"],
+                "c2_median_ok": v["snf_c2_median_ok_rate"],
+                "c2_frac_ok": v["snf_c2_frac_ok_rate"],
+                "spearman_ok": v["snf_spearman_ok_rate"],
+                "median_delta_rmse_db": v["snf_c2_median_delta_db"]["median"],
+            }
+            for k, v in snf.items()
+        }
+    if run.get("prediction_spread") is not None:
+        pr["prediction_spread"] = run["prediction_spread"]
     lines = [
         f"Computed {run['t_utc']} (sremu commit {run['git_commit']}, dirty {run['git_dirty']}) "
         f"from tensor `{meta['content_sha256'][:16]}...` (K = {meta['K']}), "
@@ -454,6 +559,17 @@ def _protocol_result(
         ),
         "Rows with truth M0 are the informational specificity check (C2 should rarely hold).",
     ]
+    for nk, sp in (summ.get("specificity") or {}).items():
+        if nk.split("/", 1)[1] != str(summ["primary_key"]).split("/", 1)[1]:
+            continue
+        nv = g[nk]
+        lo, hi = sp["c2_false_detection_ci95"]
+        lines.append(
+            f"Specificity (truth {nv['truth_model']}, no RIS path, sigma_rep "
+            f"{nv['sigma_rep_db']:g} dB): C2 fires for {nv['C2_rate']:.3f} "
+            f"({nv['C2_count']}/{nv['n_decoys']}; 95 % CI {lo:.3f}-{hi:.3f}) of the decoys, "
+            f"i.e. specificity {sp['specificity']:.3f}."
+        )
     pk = str(summ["primary_key"])
     pm = g[pk]
     lines.append(
@@ -473,6 +589,60 @@ def _protocol_result(
             "truth"
             + (", so on its own it does not indicate RIS-specific structure." if b >= a else ".")
         )
+    if snf:
+        lines += [
+            "",
+            "S-NF (information only; offsets fitted without the 1.8 m ring, same test cells and "
+            "bootstrap indices):",
+            "",
+            "| Truth | sigma_rep (dB) | C1 rate | C2 rate (95 % CI) | C3 rate | median Delta "
+            "RMSE (dB) |",
+            "|---|---|---|---|---|---|",
+        ]
+        for v in snf.values():
+            lo, hi = v["snf_C2_ci95"]
+            lines.append(
+                f"| {v['truth_model']} | {v['sigma_rep_db']:g} | {v['snf_C1_rate']:.3f} "
+                f"| {v['snf_C2_rate']:.3f} ({v['snf_C2_count']}/{v['n_decoys']}; 95 % CI "
+                f"{lo:.3f}-{hi:.3f}) | {v['snf_C3_rate']:.3f} "
+                f"| {v['snf_c2_median_delta_db']['median']:.2f} |"
+            )
+    spread = run.get("prediction_spread")
+    if spread is not None and spread.get("reference_label"):
+        ref = spread["reference_label"]
+        cur, old = spread["current"], spread[ref]
+        lines += [
+            "",
+            f"Spread of the prior predictions ({ref} prior vs this prior; data-independent):",
+            "",
+            f"| Quantity | {ref} | this protocol |",
+            "|---|---|---|",
+        ]
+        for m in ("M0", "M2"):
+            lines.append(
+                f"| median over cells of the SD over draws of the fitted {m} prediction (dB) "
+                f"| {old['models'][m]['median_sd_all_cells_db']:.2f} "
+                f"| {cur['models'][m]['median_sd_all_cells_db']:.2f} |"
+            )
+            lines.append(
+                f"| the same over the test cells (dB) "
+                f"| {old['models'][m]['median_sd_test_cells_db']:.2f} "
+                f"| {cur['models'][m]['median_sd_test_cells_db']:.2f} |"
+            )
+        lines.append(
+            "| RIS signature: median over draws of the SD over cells of M2 - M0 (dB) "
+            f"| {old['ris_signature_db']['median']:.2f} | {cur['ris_signature_db']['median']:.2f} |"
+        )
+        lines.append(
+            "| ring-mean-removed M2: median over test cells of the SD over draws (dB) "
+            f"| {old['ring_removed_m2_sd_db']:.2f} | {cur['ring_removed_m2_sd_db']:.2f} |"
+        )
+        ref_delta = spread.get("reference_median_delta_rmse_truth_m2_db")
+        if ref_delta is not None:
+            lines.append(
+                "| median over decoys of the median Delta RMSE (M0 - M2), truth M2, sigma_rep "
+                f"1 dB (dB) | {ref_delta:.2f} | {pm['c2_median_delta_db']['median']:.2f} |"
+            )
     return pr, "\n".join(lines)
 
 
@@ -491,6 +661,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--truth-cache", type=Path, default=None, help="reuse decoy_truth.npz")
     ap.add_argument("--write-protocol-result", action="store_true")
+    ap.add_argument(
+        "--reference-tensor",
+        type=Path,
+        default=None,
+        help="tensor of an earlier protocol version for the prediction-spread comparison",
+    )
+    ap.add_argument("--reference-label", default="v1")
     ap.add_argument("--name", default="vlab_power")
     ap.add_argument("--bg-seconds", type=float, default=5.0, help="background-load probe")
     args = ap.parse_args(argv)
@@ -528,6 +705,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     t_all = time.perf_counter() - t0
     rec.sample_load()
     summ = summarize_power(rows, protocol)
+    reference = None
+    if args.reference_tensor is not None:
+        reference = load_cache(args.reference_tensor)
+        rec.add_input(args.reference_tensor, "SIM-sremu")
+    spread = prediction_spread_comparison(tensor, protocol, reference, args.reference_label)
+    if reference is not None:
+        for rh in protocol.get("revision_history", []):
+            pw = rh.get("power") or {}
+            if pw.get("tensor_content_sha256") == reference.meta.get("content_sha256"):
+                spread["reference_median_delta_rmse_truth_m2_db"] = pw.get(
+                    "median_delta_rmse_m0_m2_db_truth_m2_sigma_rep_1"
+                )
     run_info = {
         "t_utc": utc_now_iso(),
         "run_dir": str(rec.run_dir),
@@ -535,6 +724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "git_dirty": rec.git.dirty,
         "truth_sha256": truth_meta["content_sha256"],
         "n_boot": nb,
+        "prediction_spread": spread,
     }
     pr, pr_md = _protocol_result(summ, tensor.meta, run_info)
     summ_out = {
