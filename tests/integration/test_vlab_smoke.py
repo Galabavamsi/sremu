@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from validation.ants_fig4b import decoy, predict, run
+from validation.ants_fig4b import decoy, predict, protocol_lock, run
 from validation.ants_fig4b.protocol import load_protocol, variant_protocol
 
 from sremu.record.manifest import read_manifest
@@ -56,7 +56,10 @@ def test_vlab_pipeline_smoke(tmp_path: Path) -> None:
     man = read_manifest(tdir)
     assert man.seed == proto["seed"] and man.scenario_name == "vlab/vlab_tensor"
     meta = json.loads((tdir / "meta.json").read_text(encoding="utf-8"))
-    assert meta["locked"] is False and "SIM-sremu" in meta["data_classes"]
+    # "locked" mirrors the committed lock constant: False in the blinded phase, True after
+    # the lead's lock commit 101ee87.
+    assert meta["locked"] is bool(protocol_lock.PREREGISTERED_SHA256)
+    assert "SIM-sremu" in meta["data_classes"]
 
     assert (
         decoy.main(
