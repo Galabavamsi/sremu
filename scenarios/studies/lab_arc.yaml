@@ -1,0 +1,113 @@
+# E-B on the lab arc (DESIGN.md section 11, E-B): geometry MODELLED ON THE LAB ARRANGEMENT
+# (SIM, nominal geometry). Author-supplied 2026-10-11 (the V-LAB author facts,
+# validation/ants_fig4b/protocol.json "author_facts"); every value is NOMINAL: the middle of
+# the author's intervals (R ~ U[1.90, 2.00] m -> 1.95 m; span ~ U[40, 52] deg -> 46 deg;
+# centre 22.5 deg + U[-3, 3] deg -> 22.5 deg; antenna height in [0.8, 1.5] m -> 1.0 m).
+# It is not a measured geometry and no measurement is compared with it here.
+#
+# Frame: z up; the Tx is the polar origin, at (0, 0, h) with h = 1.0 m; the Tx, the tile centres
+# and both receivers are at z = h. Polar angles are measured in the x-y plane from +x.
+# RIS: six tiles of 5 x 8 cells at 42.8 mm pitch, one sremu panel per tile, t0 ... t5 from the
+# lowest polar angle. Tile k: phi_k = 22.5 deg + (k + 0.5 - 3) * 46/6 deg (3.333 ... 41.667 deg),
+# centre (R cos phi_k, R sin phi_k, h) with R = 1.95 m; normal -(cos phi_k, sin phi_k, 0) (faces
+# the Tx); u = z x n = (sin phi_k, -cos phi_k, 0), the horizontal, tangential 5-cell side;
+# v = n x u = +z, the vertical 8-cell side (D17). The numbers below are the output of the
+# arc branch of validation/ants_fig4b/prior.py (_tile_poses) at these nominal values, printed
+# to 1e-9 m / 1e-12 (tests/unit/test_eb_arc.py recomputes them). Gaps between tiles along
+# the arc are inert (no gap reflection).
+# Tile states s1 s1 s2 s2 s1 s1 (the lab arrangement) are the initial configuration here;
+# E-B replaces them by the exact optima for RX1 and RX2 (experiments/eb.py).
+# States: lab_binary_3p5ghz, sigma1 = 49.64 deg, sigma2 = -153.77 deg, |Gamma| = 1 ASSUMED.
+# The E-B driver also runs the ideal 1-bit alphabet {1, -1} on the same geometry.
+# Antennas: the vertical whips are modelled isotropic in the horizontal plane (all nodes
+# coplanar; the half-wave dipole elevation pattern across the +-0.17 m tile height is
+# ignored: per cell at most 0.28 dB for both legs (outer cell rows of the tile nearest a
+# receiver), about 0.1 dB on the coherent RIS term and 0.08 dB on |h| at RX1/RX2) [ENG].
+# RX1 at r = 1.2 m, theta = 15 deg; RX2 at r = 1.2 m, theta = 35 deg (polar origin = Tx).
+# No floor, walls or diffuse term: free space with LOS plus the RIS [ENG].
+# LOS-blocked variant: experiments/eb.py (los = "blocked") adds one opaque plate across both
+# Tx-RX LOS segments (eb.los_blocker). sremu applies occluders to the LOS path only (section
+# 5.2), so RIS hops are not attenuated. In this arc a plate large enough to block the LOS
+# physically (first Fresnel-zone radius about 0.16 m at mid-path at 3.5 GHz) also lies across
+# Tx -> tile rays (the rays to the innermost cell rows pass within about 6 mm of the LOS
+# height at the plate; RX2's direction lies inside tile t4's angular span), so the variant is
+# the idealized regime "LOS removed, RIS hops unattenuated" [ENG]; the driver records how
+# many Tx -> cell segments the plate crosses (152 of 240).
+# Waveform and noise as in scenarios/lab_like_A.yaml (1 MS/s, 0.8 MHz occupied, NF 7 dB).
+schema_version: "1.0"
+name: lab_arc
+seed: 20261010
+description: "E-B lab arc: modelled on the lab arrangement (SIM, nominal geometry); six 5x8 tiles on an arc of radius 1.95 m around the Tx, 3.5 GHz"
+numerics: {backend: numba_cpu}
+nodes:
+  - id: ap
+    position_m: [0.0, 0.0, 1.0]                          # Tx = polar origin, h = 1.0 m
+    antenna: {pattern: isotropic}
+    streams: [{name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 8.0e5, full_scale_dbm: 0}]
+  - id: rx1
+    position_m: [1.159110992, 0.310582854, 1.0]          # r = 1.2 m, theta = 15 deg
+    antenna: {pattern: isotropic}
+    streams: [{name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}]
+  - id: rx2
+    position_m: [0.982982453, 0.688291724, 1.0]          # r = 1.2 m, theta = 35 deg
+    antenna: {pattern: isotropic}
+    streams: [{name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7}]
+ris:
+  - id: t0                                               # phi = 3.333333 deg, state s1
+    pose: {center_m: [1.946700909, 0.113382416, 1.0], normal: [-0.998308158271, -0.058144828910, 0.0], u_axis: [0.058144828910, -0.998308158271, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+  - id: t1                                               # phi = 11.000000 deg, state s1
+    pose: {center_m: [1.914173008, 0.372077541, 1.0], normal: [-0.981627183448, -0.190808995377, 0.0], u_axis: [0.190808995377, -0.981627183448, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+  - id: t2                                               # phi = 18.666667 deg, state s2
+    pose: {center_m: [1.847423453, 0.624120650, 1.0], normal: [-0.947396642514, -0.320061871757, 0.0], u_axis: [0.320061871757, -0.947396642514, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 1}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+  - id: t3                                               # phi = 26.333333 deg, state s2
+    pose: {center_m: [1.747645595, 0.865005707, 1.0], normal: [-0.896228510314, -0.443592670477, 0.0], u_axis: [0.443592670477, -0.896228510314, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 1}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+  - id: t4                                               # phi = 34.000000 deg, state s1
+    pose: {center_m: [1.616623266, 1.090426162, 1.0], normal: [-0.829037572555, -0.559192903471, 0.0], u_axis: [0.559192903471, -0.829037572555, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+  - id: t5                                               # phi = 41.666667 deg, state s1
+    pose: {center_m: [1.456698889, 1.296351938, 1.0], normal: [-0.747025071241, -0.664795865614, 0.0], u_axis: [0.664795865614, -0.747025071241, 0.0]}
+    grid: {n_u: 5, n_v: 8, pitch_u_m: 0.0428, pitch_v_m: 0.0428, cell_model: auto}
+    tiles: {n_tiles_u: 1, n_tiles_v: 1, gap_m: 0.0}
+    states: {library: lab_binary_3p5ghz, assume_mag: {sigma1: 1.0, sigma2: 1.0}}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+    capabilities: {reconfiguration_time_s: null}
+controllers: []
+run: {mode: lockstep, coupling: barrier, duration_s: "5", late_policy: apply_on_arrival}
+record: {iq: false, events: true, metrics: true}
+traffic: [{stream: ap.tx0, generator: qpsk_packets, params: {sps: 4, preamble_syms: 64, payload_syms: 512, guard_s: "5e-4"}}]
