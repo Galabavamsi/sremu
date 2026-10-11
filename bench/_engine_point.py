@@ -333,6 +333,19 @@ def _decisions(eng: Any) -> dict[str, Any]:
 # =========================================================================== F5 (ZMQ)
 
 
+def _served_state(srv: Any, eng: Any, n_total: int) -> str:
+    """Where a served run stood when a client failed (for the error message): per rate
+    group the cursor, end and TX streams waited on, RX samples delivered, engine error."""
+    groups = "; ".join(
+        f"cursor {g.cursor} end {g.end} waiting_on {list(g.waiting_on)}" for g in eng.groups
+    )
+    rx = {r: int(st.delivered) for r, st in eng.rx.items()}
+    return (
+        f"server: {groups}; streamed {n_total}/stream; rx delivered {rx}; "
+        f"paused {srv.paused}; engine_error {srv.engine_error!r}"
+    )
+
+
 def measure_zmq(
     scenario: Mapping[str, Any],
     *,
@@ -346,9 +359,12 @@ def measure_zmq(
 ) -> dict[str, Any]:
     """F5: lockstep served over native ZMQ to a TX client process and an RX client process.
 
-    Each repetition is a fresh served engine (the clients send/read ``warmup + dur``
-    samples per stream; the RX client times only the samples after the warm-up). The
-    recorder of F4 stays attached (cumulative feature sets)."""
+    Each repetition is a fresh served engine whose run lasts exactly ``warmup + dur`` (the
+    clients send/read that many samples per stream; the RX client times only the samples
+    after the warm-up), whatever the scenario's ``run.duration_s``. The recorder of F4 stays
+    attached (cumulative feature sets). With ``rtf_floor`` set and the pilot below it the
+    point is ``below_floor`` (no repetitions); ``counters`` are the transport's worst
+    ``bad_packets`` and ``seq_errors`` over the pilot and the repetitions."""
     from bench._scenes import ris_path_check
     from sremu.commands.run import make_recorder
     from sremu.transport.control_server import ControlServer, ServerConfig
@@ -370,7 +386,19 @@ def measure_zmq(
         n_total = int((warm + dur) * rate)
         n_warm = int(warm * rate)
         rec_dir = Path(tempfile.mkdtemp(prefix="sremu_b2_zmq_"))
-        eng = build_engine(res, "F4", traffic={}, always_active=False, unopened_tx="wait")
+        # the served run must last as long as the clients stream: with the scenario's
+        # run.duration_s (1 s in the bench scenes) a pilot RTF above ~0.16 sized dur past
+        # the end of the run, the server ended the RX streams there and the RX client
+        # waited its whole recv timeout for samples that are never computed (B2 run
+        # 20261011T084048Z; tests/bench/test_bench_zmq_point.py)
+        eng = build_engine(
+            res,
+            "F4",
+            traffic={},
+            always_active=False,
+            unopened_tx="wait",
+            duration_s=warm + dur,
+        )
         sink, close_rec = make_recorder(rec_dir, eng, iq=True, events=True, metrics=True)
         eng.add_sink(sink)
         cfg = ServerConfig(
@@ -424,12 +452,22 @@ def measure_zmq(
             ]
             c_role = {id(p): r for p, r in zip(procs, ("rx", "tx"), strict=True)}
             outs = []
-            for p in procs:
-                o, e = p.communicate(timeout=max(600.0, point_wall_cap_s * 4))
-                if p.returncode != 0:
-                    role = c_role[id(p)]
-                    raise RuntimeError(f"ZMQ client failed ({role}): {e.strip()[-2000:]}")
-                outs.append(o)
+            try:
+                for p in procs:
+                    o, e = p.communicate(timeout=max(600.0, point_wall_cap_s * 4))
+                    if p.returncode != 0:
+                        msg = f"ZMQ client failed ({c_role[id(p)]}): {e.strip()[-2000:]}"
+                        for q in procs:  # e.g. an RX timeout caused by a failed TX client
+                            if q is not p and q.poll() not in (None, 0):
+                                eq = q.communicate()[1].strip()[-2000:]
+                                msg += f" [{c_role[id(q)]} client exit {q.returncode}: {eq}]"
+                        raise RuntimeError(f"{msg} [{_served_state(srv, eng, n_total)}]")
+                    outs.append(o)
+            finally:
+                for p in procs:  # never leave a client behind (e.g. blocked on a dead server)
+                    if p.poll() is None:
+                        p.kill()
+                        p.communicate()
             rx_res = json.loads(outs[0].strip().splitlines()[-1])
             counters = dict(srv.counters.snapshot())
         finally:
@@ -460,8 +498,9 @@ def measure_zmq(
     out_reps = [one(dur) for _ in range(n_reps)]
     rtfs = [r["rtf"] for r in out_reps if r["rtf"] is not None]
     agg = [r["aggregate_sps"] for r in out_reps if r["aggregate_sps"] is not None]
+    # over the pilot too: a below-floor point has no repetitions (max() of nothing raised)
     bad = {
-        k: max(int(r["transport_counters"].get(k, 0)) for r in out_reps)
+        k: max(int(r["transport_counters"].get(k, 0)) for r in (pilot, *out_reps))
         for k in ("bad_packets", "seq_errors")
     }
     return {
