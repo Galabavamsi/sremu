@@ -774,10 +774,13 @@ class RxStream:
         y = acc
         if self._noise is not None and n:
             y = y + self._noise(k0, n)
+        # np.multiply with y as the first operand: NumPy temporary elision (Linux/macOS, >= 16384
+        # complex128 samples) can otherwise swap the operand order, and complex multiply is not
+        # bitwise commutative, which broke chunk invariance on Linux (DESIGN D-4)
         if n and self._lo is not None:
-            y = y * self._lo(k0, n)
+            y = np.multiply(y, self._lo(k0, n))
         if n and self.pn is not None:
-            y = y * np.conj(self.pn.phasor(k0, n))
+            y = np.multiply(y, np.conj(self.pn.phasor(k0, n)))
         if self.capture is not None:
             self.capture.append((k0, np.array(y, dtype=np.complex128, copy=True)))
         if self._plain_front:  # unit scale, no clip: RxFrontEnd.apply is a plain cast

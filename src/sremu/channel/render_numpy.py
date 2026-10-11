@@ -506,9 +506,13 @@ def render_prepared(seg: PreparedSegment, out: NDArray[np.complex128]) -> None:
                 a = a + gv[t] * (st.t_dAa[t, p] + w * st.t_ddA[t, p])
             c = st.p_ca[p] + w * st.p_dc[p]
             c = c - np.rint(c)
-            y = y + (a * _expj(c, -1.0)) * env[int(st.p_g[p])]
+            # explicit np.multiply (complex x complex): ``a * _expj(...)`` lets NumPy elide the
+            # >= 256 KiB right-hand temporary on Linux/macOS and compute _expj(...) * a, and
+            # its FMA complex multiply is not bitwise commutative, so the bits would depend on
+            # the segment length (see sremu.impair.oscillator, "Evaluation order")
+            y = y + np.multiply(a, _expj(c, -1.0)) * env[int(st.p_g[p])]
         if st.has_lo:
-            y = y * _expj(frac_cycles_of_index(n, st.q_hi, st.q_lo), 1.0)
+            y = np.multiply(y, _expj(frac_cycles_of_index(n, st.q_hi, st.q_lo), 1.0))
         out += y
 
 

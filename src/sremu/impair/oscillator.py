@@ -20,6 +20,15 @@ block j a Brownian bridge from per-sample keyed variates ``e_k ~ N(0, 2*pi*beta/
 ``phi(jM + m) = Phi_j + (m/M)(Phi_{j+1} - Phi_j) + S_m - (m/M) S_M`` with
 ``S_m = sum_{i<m} e_{jM+i}``. The block is a fixed M = 1024 samples on the absolute grid
 (not the RX page), so changing ``page_target_s`` cannot change the realization [ENG].
+
+**Evaluation order (D-4).** NumPy's SIMD complex128 multiply uses FMA and is not bitwise
+commutative (the imaginary part of ``a*b`` is ``fma(ar, bi, ai*br)``, of ``b*a``
+``fma(br, ai, bi*ar)``). NumPy builds with backtrace support (Linux/glibc, macOS; not
+Windows) elide temporaries of >= 256 KiB, i.e. >= 16384 complex128 samples: ``x * f(...)``
+with an owning temporary on the right runs in place as ``f(...) *= x``, with the operands
+swapped. A product written ``x * cfo_phasor(k0, n)`` then changed its bits with the chunk
+length on Linux only. Hence the phasors are returned as non-owning views (never elided, see
+:func:`_no_elide`), and every product here is an explicit ``np.multiply`` in a fixed order.
 """
 
 from __future__ import annotations
@@ -66,6 +75,16 @@ PN_LANE_BRIDGE: Final[int] = 2
 _CHECKPOINT: Final[int] = 256  # blocks between cached block-phase checkpoints
 
 
+def _no_elide(a: NDArray[np.complex128]) -> NDArray[np.complex128]:
+    """``a`` as a non-owning view (same values and memory) that NumPy never elides.
+
+    NumPy only elides a temporary that owns its data, so ``x * _no_elide(t)`` always runs
+    as written (``np.multiply(x, t)``), never as ``t *= x``, whatever the length and OS
+    (see the module docstring, "Evaluation order").
+    """
+    return a.view()
+
+
 def cycles_per_sample(df_hz: float, f_s: Fraction | int | str) -> tuple[float, float]:
     """``df/f_s`` cycles per sample as an exact double-double ``(hi, lo)``."""
     fs = parse_exact(f_s, name="f_s")
@@ -100,26 +119,31 @@ def _cfo_table(q_hi: float, q_lo: float) -> NDArray[np.complex128]:
 
 
 def cfo_phasor(df_hz: float, f_s: Fraction | int | str, k0: int, n: int) -> NDArray[np.complex128]:
-    """``exp(+j*2*pi*frac(df*k/f_s))`` for k in [k0, k0 + n): absolute anchor x table."""
+    """``exp(+j*2*pi*frac(df*k/f_s))`` for k in [k0, k0 + n): absolute anchor x table.
+
+    The result is a non-owning view (:func:`_no_elide`), so ``x * cfo_phasor(...)`` is
+    evaluated as written for any n and is bitwise chunk-invariant on every OS.
+    """
     k = _indices(k0, n)
     if n == 0:
         return np.zeros(0, dtype=np.complex128)
     q_hi, q_lo = cycles_per_sample(df_hz, f_s)
     if q_hi == 0.0 and q_lo == 0.0:
-        return np.ones(int(n), dtype=np.complex128)
+        return _no_elide(np.ones(int(n), dtype=np.complex128))
     blk = np.floor_divide(k, CFO_BLOCK)
     m = k - blk * CFO_BLOCK
     ub, inv = np.unique(blk, return_inverse=True)
     anchors = np.exp(2j * np.pi * frac_cycles_of_index(ub * CFO_BLOCK, q_hi, q_lo))
-    return anchors[inv] * _cfo_table(q_hi, q_lo)[m]
+    # anchor x table, in this order (bitwise equal to the engine's aligned outer product)
+    return _no_elide(np.multiply(anchors[inv], _cfo_table(q_hi, q_lo)[m]))
 
 
 def apply_cfo(
     x: NDArray[np.complexfloating], df_hz: float, f_s: Fraction | int | str, k0: int
 ) -> NDArray[np.complex64]:
     """``x * exp(+j*phi(k))`` with x starting at absolute index ``k0`` (complex64 out)."""
-    xx = np.asarray(x)
-    return (xx.astype(np.complex128) * cfo_phasor(df_hz, f_s, k0, xx.shape[0])).astype(np.complex64)
+    xx = np.asarray(x).astype(np.complex128)
+    return np.multiply(xx, cfo_phasor(df_hz, f_s, k0, xx.shape[0])).astype(np.complex64)
 
 
 class WienerPhaseNoise:
@@ -213,9 +237,10 @@ class WienerPhaseNoise:
         return full[off : off + n].copy()
 
     def phasor(self, k0: int, n: int) -> NDArray[np.complex128]:
-        """``exp(+j*phi(k))`` for absolute samples [k0, k0 + n)."""
+        """``exp(+j*phi(k))`` for absolute samples [k0, k0 + n) (a non-owning view, so
+        ``x * pn.phasor(...)`` is evaluated as written; see :func:`_no_elide`)."""
         ph = self.phase(k0, n)
-        return np.cos(ph) + 1j * np.sin(ph)
+        return _no_elide(np.cos(ph) + 1j * np.sin(ph))
 
 
 def apply_lo(
@@ -229,15 +254,16 @@ def apply_lo(
 ) -> NDArray[np.complex64]:
     """Apply an LO's CFO and phase noise to samples starting at absolute index ``k0``.
 
-    A TX LO multiplies by ``exp(+j(phi_cfo + phi_pn))``, an RX LO by the conjugate.
+    A TX LO multiplies by ``exp(+j(phi_cfo + phi_pn))``, an RX LO by the conjugate. The
+    products run in the fixed order ``x * (cfo * pn)`` for every chunk length.
     """
     xx = np.asarray(x).astype(np.complex128)
     n = xx.shape[0]
     rot = cfo_phasor(cfo_hz, f_s, k0, n) if cfo_hz != 0.0 else np.ones(n, dtype=np.complex128)
     if pn is not None:
-        rot = rot * pn.phasor(k0, n)
+        rot = np.multiply(rot, pn.phasor(k0, n))
     if direction == "rx":
         rot = np.conj(rot)
     elif direction != "tx":
         raise ConfigurationError(f"direction must be 'tx' or 'rx', got {direction!r}")
-    return (xx * rot).astype(np.complex64)
+    return np.multiply(xx, rot).astype(np.complex64)
