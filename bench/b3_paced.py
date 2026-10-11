@@ -252,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
                         "bg_busy_mean": load["mean"],
                         "bg_busy_max": load["max"],
                         "scenario_sha256": sha,
+                        # numba threading layer and the render driver calls so far (this
+                        # process; paced engines use the serial driver below 2**18 work)
+                        "threading_layer": (r.get("threading") or {}).get("layer"),
+                        "render_calls": ((r.get("threading") or {}).get("render") or {}).get(
+                            "calls"
+                        ),
                     }
                     rows.append(row)
                     reps.append(row)

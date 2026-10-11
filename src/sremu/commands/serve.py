@@ -71,6 +71,43 @@ def parse_raw_peer(text: str) -> Any:
         raise typer.BadParameter(f"--raw-peer: {exc}") from None
 
 
+def _scenario_mode(scenario: Path) -> str | None:
+    """``run.mode`` of a scenario file read without validation (None when absent or unreadable;
+    the real load validates it later)."""
+    try:
+        if scenario.suffix.lower() in (".yaml", ".yml"):
+            import yaml
+
+            data = yaml.safe_load(scenario.read_text(encoding="utf-8"))
+        elif scenario.suffix.lower() == ".json":
+            import json
+
+            data = json.loads(scenario.read_text(encoding="utf-8"))
+        else:
+            import tomllib
+
+            data = tomllib.loads(scenario.read_text(encoding="utf-8"))
+        run = data.get("run") if isinstance(data, dict) else None
+        mode = run.get("mode") if isinstance(run, dict) else None
+        return str(mode) if mode is not None else None
+    except Exception:
+        return None
+
+
+def _passive_omp_for_paced() -> None:
+    """A paced server runs few, short OpenMP regions (paced pages render serially below
+    ``render_numba.PACED_PARALLEL_MIN_WORK``); with the runtime's default wait policy the idle
+    workers spin for milliseconds after each region beside the control and transport threads.
+    Set ``OMP_WAIT_POLICY=PASSIVE`` before numba starts, as the B4 and E-B3 suites measure it
+    (DESIGN 4.10). An explicit environment setting wins, and nothing changes once numba is
+    imported."""
+    import os
+    import sys
+
+    if "OMP_WAIT_POLICY" not in os.environ and "numba" not in sys.modules:
+        os.environ["OMP_WAIT_POLICY"] = "PASSIVE"
+
+
 def run_served(
     scenario: Path,
     *,
@@ -91,6 +128,8 @@ def run_served(
     echo: Any = print,
 ) -> int:
     """Serve a scenario until shutdown (see the module docstring); returns the exit code."""
+    if mode == "paced" or (mode is None and _scenario_mode(scenario) == "paced"):
+        _passive_omp_for_paced()
     from sremu.commands.run import _apply_overrides, make_recorder
     from sremu.engine.emulator import Emulator
     from sremu.errors import SremuError

@@ -821,7 +821,17 @@ class ControlServer:
 
     def _paced_main(self) -> None:
         eng: Any = self.engine
+        # collect and freeze the heap while the run is still held: done in run_paced it would
+        # delay the run's t0 by the collection (~25-55 ms) after sim.resume, and a client that
+        # estimates virtual time from its resume would run that far ahead of the pacer
+        freeze = getattr(eng, "freeze_heap", None)
+        if callable(freeze):
+            freeze()
         if not self._wait_resume():
+            # stopped before the resume: no run_paced will release the freeze
+            thaw = getattr(eng, "_thaw_heap", None)
+            if callable(thaw):
+                thaw()
             return
         # read_rx must wait for the paced loop instead of stepping the scheduler itself,
         # as with the engine's own served thread (Emulator.start); CCR WP8-2 asks WP6 for a

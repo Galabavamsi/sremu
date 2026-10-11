@@ -210,6 +210,10 @@ def test_run_job_steps_cover_every_job(tmp_path: Path) -> None:
     b3b4 = rj.steps("b3b4", tmp_path, "py", _plan(), 16)
     assert [s.name for s in b3b4] == ["b3", "b4_lockstep", "b4_paced"]
     assert all(s.env["SREMU_CLIENT_CPUS"] == "17-18" for s in b3b4)
+    (classic,) = rj.steps("b4classic", tmp_path, "py", _plan(), 16)
+    a = classic.argv
+    assert a[a.index("--plan") + 1] == "classic" and a[a.index("--tag") + 1] == "paced_classic"
+    assert classic.cpus == list(range(1, 17)) and classic.env["SREMU_CLIENT_CPUS"] == "17-18"
     with pytest.raises(SystemExit):
         rj.steps("b5", tmp_path, "py", _plan(), 16)
 

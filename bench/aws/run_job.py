@@ -26,8 +26,10 @@ still upload):
   the next ``--client-cores`` cores (sized for a quiet c7i.8xlarge).
 * ``b4``: B4 lockstep part (lateness must be 0) then the paced + async part with plan
   ``served-1ms`` (1 ms pages, timed leads 2-12 ms, asap; see :mod:`bench.b4_control`),
-  pinned as b3. ``python -m bench.b4_control --part paced --plan classic`` repeats the first
-  run's settings (0.5 ms pages, 2 ms lead).
+  pinned as b3.
+* ``b4classic``: the B4 paced + async part with plan ``classic`` (the first run's settings:
+  0.5 ms pages, rates 10-10000/s, timed with a 2 ms lead and asap), pinned as b3; run
+  directory tag ``paced_classic``.
 * ``b3b4``: ``b3`` then ``b4``.
 * ``eb3``: the E-B3 timing demonstration (external TDMA controller), pinned as b3.
 * ``smoke``: quick versions of B1, B2 (server plan, 2 workers), B3 and B4 (minutes).
@@ -60,7 +62,7 @@ if str(SRC) not in sys.path:
 
 from bench._cpus import Core, format_cpu_list, plan_slots, read_topology  # noqa: E402
 
-JOBS = ("b1", "b2", "b1b2", "b3", "b4", "b3b4", "eb3", "smoke")
+JOBS = ("b1", "b2", "b1b2", "b3", "b4", "b4classic", "b3b4", "eb3", "smoke")
 SIGINT_GRACE_S = 90.0
 DEFAULT_BUDGET_MIN = 150.0
 
@@ -164,6 +166,10 @@ def steps(
     if job == "eb3":
         eb3 = [*m, "bench.eb3_paced", "--budget-min", "{budget}", "--out", runs]
         return [Step("eb3", eb3, eng, env)]
+    if job == "b4classic":
+        argv = [*m, "bench.b4_control", "--part", "paced", "--plan", "classic"]
+        argv += ["--tag", "paced_classic", "--budget-min", "{budget}", "--out", runs]
+        return [Step("b4_paced_classic", argv, eng, env, tail_min=5.0)]
     if job == "b1":
         return [b1]
     if job == "b2":

@@ -9,7 +9,7 @@
 #   bash bench/aws/job.sh b1b2 --deadline-min 210       (c7i.48xlarge)
 #   bash bench/aws/job.sh b3b4 --deadline-min 210       (c7i.8xlarge)
 #
-# JOB: b1 | b2 | b1b2 | b3 | b4 | b3b4 | eb3 | smoke (see bench/aws/run_job.py).
+# JOB: b1 | b2 | b1b2 | b3 | b4 | b4classic | b3b4 | eb3 | smoke (see bench/aws/run_job.py).
 # The bundle has no .git: prefix the command with SREMU_GIT_COMMIT=<sha> SREMU_GIT_DIRTY=0|1
 # so every manifest records the source commit.
 # It quiets the host (stops package timers and snaps; best effort, needs root), asks for the

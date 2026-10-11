@@ -47,13 +47,17 @@ Same prepared inputs as ``render_numpy`` (shared ``prepare_segment``), evaluated
 * **Parallelism** over blocks with ``prange`` (never over a summation index, D-3) when the
   estimated work ``(k1 - k0)*units`` reaches :data:`PARALLEL_MIN_WORK`; smaller segments run
   the same block function serially, which avoids the parallel-region launch (about 10 us on
-  the development laptop) on small pages. The parallel driver splits the blocks into
-  ``numba.get_num_threads()`` contiguous runs, one ``prange`` iteration and one private
-  scratch slot each. Every block starts from its own anchors and both drivers execute
+  the development laptop) on small pages. Paced engines pass the higher
+  :data:`PACED_PARALLEL_MIN_WORK` (``render(..., parallel_min_work=...)``): they compute one
+  page per release, the worker threads have gone to sleep (or must be woken) by the next
+  page, and a short parallel region costs more than it saves. The parallel driver splits the
+  blocks into ``numba.get_num_threads()`` contiguous runs, one ``prange`` iteration and one
+  private scratch slot each. Every block starts from its own anchors and both drivers execute
   identical floating-point operations, so the output does not depend on the thread count,
   the split or the driver (I2a). The renderer never changes the thread count: changing it
   between calls re-sizes the OpenMP team, which cost more than it saved; a run should fix it
-  once.
+  once. :func:`driver_stats` counts the calls of each driver and names the threads that ran
+  the parallel one (with numba's OpenMP layer every such thread keeps its own worker pool).
 * **No fastmath** (D-4).
 * **Caches.** Each memoized ``LinkStatic`` carries its packed kernel arrays (built once);
   link sets with several links are concatenated once per tuple of statics (LRU). Polyphase
@@ -84,10 +88,12 @@ from .render_numpy import clear_caches as _clear_numpy_caches
 
 __all__ = [
     "BLOCK",
+    "PACED_PARALLEL_MIN_WORK",
     "PARALLEL_MIN_WORK",
     "NumbaCpuBackend",
     "bank_size",
     "clear_caches",
+    "driver_stats",
     "noise",
     "render",
     "render_prepared",
@@ -99,7 +105,20 @@ BLOCK: Final[int] = 64
 PARALLEL_MIN_WORK: Final[int] = 1 << 16
 """[ENG] Segments whose work estimate ``(k1 - k0)*units`` is below this run the block loop
 serially (``units`` = FD taps over all groups + 4*(paths*(1 + transition terms)) per sample);
-about 20 us of single-thread work on the development laptop, twice the parallel launch cost."""
+about 20 us of single-thread work on the development laptop, twice the parallel launch cost.
+Lockstep computes pages back to back, so the worker threads are still spinning from the
+previous region when the next one starts."""
+
+PACED_PARALLEL_MIN_WORK: Final[int] = 1 << 18
+"""[MEASURED] The same threshold for paced engines (one page per release). With a 1 ms gap
+between calls the parallel driver was slower than the serial one below about 1.5e5 work on
+WSL2 (OpenMP, 12 threads) and 7e4 on Windows (MS OpenMP, 16 threads), and in paced runs
+(served and headless, OpenMP) the serial driver gave the lower compute time per page up to
+1.5e5 and about the same at 2.9e5 (1 MS/s pages of 1024 samples with 4 links per RX:
+724 vs 752 us); at 2.9e5 with 2048-sample pages the parallel one won (320 vs 506 us). A
+parallel region after a sleep wakes the pool (tens to hundreds of microseconds), and the
+pool's threads then spin on the engine's CPUs while the serial parts of the page and the
+served engine's control and transport threads run."""
 
 _SPLITTER = 134217729.0
 
@@ -785,19 +804,53 @@ def clear_caches() -> None:
 # --------------------------------------------------------------------------- public API
 
 
+_drv_lock = threading.Lock()
+_drv_calls = {"serial": 0, "parallel": 0}
+_drv_threads: dict[threading.Thread, None] = {}  # threads that ran the parallel driver
+
+
+def _count_driver(parallel: bool) -> None:
+    with _drv_lock:
+        if not parallel:
+            _drv_calls["serial"] += 1
+            return
+        _drv_calls["parallel"] += 1
+        _drv_threads.setdefault(threading.current_thread(), None)
+
+
+def driver_stats() -> dict[str, object]:
+    """Render driver choices of this process so far (diagnostic, for manifests and benchmark
+    records): the two thresholds, the number of calls of each driver, and the names of the
+    threads that ran the parallel driver, with those still alive. With numba's OpenMP
+    threading layer every thread that runs a parallel region keeps its own worker pool while
+    it lives, so two live names mean two pools competing for the same CPUs."""
+    with _drv_lock:
+        threads = list(_drv_threads)
+        calls = dict(_drv_calls)
+    return {
+        "parallel_min_work": PARALLEL_MIN_WORK,
+        "paced_parallel_min_work": PACED_PARALLEL_MIN_WORK,
+        "calls": calls,
+        "parallel_threads": [t.name for t in threads],
+        "parallel_threads_alive": [t.name for t in threads if t.is_alive()],
+    }
+
+
 def render_prepared(
     seg: PreparedSegment,
     out: NDArray[np.complex128],
     *,
     parallel: bool | None = None,
     n_chunks: int | None = None,
+    min_work: int | None = None,
 ) -> None:
     """numba evaluation of a prepared segment (adds into ``out``).
 
-    ``parallel``: None chooses the driver from the work estimate (:data:`PARALLEL_MIN_WORK`);
-    True/False force the ``prange`` or the serial driver. ``n_chunks`` overrides the number of
-    contiguous block runs of the parallel driver (default ``numba.get_num_threads()``). Every
-    choice executes the same arithmetic per sample, so the output is bitwise the same.
+    ``parallel``: None chooses the driver from the work estimate and ``min_work`` (default
+    :data:`PARALLEL_MIN_WORK`); True/False force the ``prange`` or the serial driver.
+    ``n_chunks`` overrides the number of contiguous block runs of the parallel driver
+    (default ``numba.get_num_threads()``). Every choice executes the same arithmetic per
+    sample, so the output is bitwise the same.
     """
     if seg.n == 0 or not seg.links:
         return
@@ -820,14 +873,16 @@ def render_prepared(
     bank = _bank  # read after packing: contains every table the pack refers to
     work = seg.n * pk.units
     if parallel is None:
-        parallel = work >= PARALLEL_MIN_WORK
+        parallel = work >= (PARALLEL_MIN_WORK if min_work is None else min_work)
     if not parallel:
+        _count_driver(False)
         _call(_kernel_ser, seg, out, pk, X_i, xc, bank)
         return
     if n_chunks is None:
         n_chunks = nb.get_num_threads()
     if n_chunks < 1:
         raise ConfigurationError(f"n_chunks must be >= 1, got {n_chunks}")
+    _count_driver(True)
     _call(_kernel_par, seg, out, pk, X_i, xc, bank, int(n_chunks))
 
 
@@ -870,8 +925,13 @@ def _call(
     )
 
 
-def render(job: SegmentJob, out: NDArray[np.complex128]) -> None:
-    """``numba_cpu`` render: add the segment's received signal into ``out`` (section 3.4)."""
+def render(
+    job: SegmentJob, out: NDArray[np.complex128], *, parallel_min_work: int | None = None
+) -> None:
+    """``numba_cpu`` render: add the segment's received signal into ``out`` (section 3.4).
+
+    ``parallel_min_work``: driver threshold (default :data:`PARALLEL_MIN_WORK`; paced engines
+    pass :data:`PACED_PARALLEL_MIN_WORK`). It selects a driver only, never a value."""
     if not isinstance(out, np.ndarray) or out.dtype != np.complex128 or out.ndim != 1:
         raise ConfigurationError("out must be a 1-D complex128 accumulator")
     if out.shape[0] != int(job.k1) - int(job.k0):
@@ -880,7 +940,7 @@ def render(job: SegmentJob, out: NDArray[np.complex128]) -> None:
         )
     if not out.flags.c_contiguous:
         raise ConfigurationError("out must be C-contiguous")
-    render_prepared(prepare_segment(job), out)
+    render_prepared(prepare_segment(job), out, min_work=parallel_min_work)
 
 
 def noise(rx_key: tuple[int, int], k0: int, n: int, sigma: float) -> NDArray[np.complex64]:

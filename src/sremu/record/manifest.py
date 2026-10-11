@@ -24,6 +24,10 @@ Schema via ``sremu schema manifest``):
 * ``counters``, ``nondeterministic_inputs``, ``oracle_csi_used``;
 * ``argv``, ``t_start_utc``, ``t_end_utc``, ``wall_s``, ``host_load_samples``.
 
+Optional beyond section 3.6: ``threading`` (:func:`sremu.sysinfo.threading_info` when the run
+finishes: numba threading layer in use, thread count, process threads, render driver choices
+and the threads that ran the parallel driver; null in manifests written before it existed).
+
 **Host probes** (versions, CPU model, power plan or governor, GPUs, AWS instance, numba
 threads and SVML state) come from the layer-0 module :mod:`sremu.sysinfo` (D12), shared
 with ``sremu info``; this module has no probes of its own.
@@ -181,6 +185,7 @@ class Manifest(_M):
     t_end_utc: str | None
     wall_s: float | None
     host_load_samples: list[HostLoadSample]
+    threading: dict[str, Any] | None = None
 
 
 def manifest_json_schema() -> dict[str, Any]:
@@ -485,6 +490,11 @@ class ManifestRecorder:
         """Record the worker thread count."""
         self._data["threads"] = threads
 
+    def set_threading(self, info: Mapping[str, Any] | None) -> None:
+        """Record the threading state (default at :meth:`finish`:
+        :func:`sremu.sysinfo.threading_info`)."""
+        self._data["threading"] = None if info is None else dict(info)
+
     def update_verify_interp(self, max_rel: float) -> None:
         """Keep the maximum ``verify_interp`` relative error."""
         cur = self._data["verify_interp_max_rel"]
@@ -529,10 +539,13 @@ class ManifestRecorder:
         return Manifest.model_validate(self._data)
 
     def finish(self) -> Manifest:
-        """Stamp ``t_end_utc`` and ``wall_s``, write ``manifest.json`` and return it."""
+        """Stamp ``t_end_utc`` and ``wall_s`` (and ``threading`` unless set), write
+        ``manifest.json`` and return it."""
         self.sample_host_load()
         self._data["t_end_utc"] = utc_now_iso()
         self._data["wall_s"] = time.perf_counter() - self._t0
+        if self._data.get("threading") is None:
+            self._data["threading"] = sysinfo.threading_info()
         m = self.manifest()
         write_manifest(self.run_dir, m)
         return m

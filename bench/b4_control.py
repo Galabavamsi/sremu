@@ -43,6 +43,11 @@ plus a lead) or ``asap``. Per repetition: ``--warmup-s`` warm-up, then ``--measu
 measured (commands issued during the warm-up are excluded). Reported: lateness distribution
 (samples) per RX, command visible latency ``t_wall_visible - t_wall_recv`` percentiles,
 statuses, client round-trip percentiles, deadline misses and page latency of the paced run.
+The paced part sets ``OMP_WAIT_POLICY=PASSIVE`` (``--omp-wait-policy``; an explicit
+environment setting wins): its pages render serially (``render_numba.PACED_PARALLEL_MIN_WORK``)
+and the few parallel regions (noise blocks) left the OpenMP workers spinning for milliseconds
+beside the control and transport threads (WSL2, 1 ms pages: compute p50 261 vs 203 us, round
+trip p99 12.8 vs 4.6 ms, miss rate at 5 ms 1.5 % vs 0.05 %).
 Paced plans (``--plan``):
 
 * ``classic`` (default; the first B4 run): 0.5 ms pages (512 samples), ``--rates`` x
@@ -55,6 +60,29 @@ Paced plans (``--plan``):
   2, 4, 6, 8 and 12 ms and asap at 100 and 10 commands/s, then timed (8 ms) and asap at
   1000 commands/s (where the engine is command-bound). Summary keys name the lead
   (``timed_lead8ms@100Hz``) and give ``late_fraction``.
+
+**Validity of a paced repetition.** The timed client sets ``at = tv0 + (now - wsync) +
+lead``: it assumes that virtual time follows wall time. When the engine lags (a backlog of
+pages), a command arrives ``lead + lag`` ahead of the page that holds its switch, so
+``late_applied = 0`` is vacuous and ``t_wall_visible - t_wall_recv`` grows with the lag
+instead of measuring command latency. A repetition is **backlogged** (``backlogged``, with
+``backlog_reasons``) when its page latency p50 exceeds one page or its miss rate at 5 ms slack
+exceeds 1 % (:func:`backlog_reasons`). A backlogged repetition's ``visible_latency_us`` is
+empty (the distribution is kept as ``visible_minus_recv_us``, never as a latency) and it is
+left out of the per-key latency, late and exact fractions (``backlogged_reps`` counts it).
+
+**Timed-command metrics** per repetition (:func:`timed_metrics`, commands of the measured
+window; ``t0``, ``D_lag`` from the paced run's pacer):
+
+* ``late_fraction``: ``late_applied`` / commands; ``exact_fraction``: applied with lateness 0
+  on every RX (on the scheduled sample) / commands;
+* ``send_to_schedule_rtt_us``: the client's round trip of ``ris.set_config`` (send to receipt);
+* ``virtual_margin_us`` (timed): ``t_req - (t_wall_recv - t0 - D_lag)``, how far ahead of the
+  pacer's wall schedule (the virtual time whose page is released at the receipt) the switch
+  was requested; it does not depend on how far the engine lags;
+* ``apply_delay_us``: ``t_wall_visible - (t0 + k1/f + D_lag)``, wall time from the nominal
+  release of the page holding the applied switch (it ends at sample ``k1``) to the record
+  being emitted after that page: compute time on time, the backlog when the engine lags.
 """
 
 from __future__ import annotations
@@ -152,6 +180,72 @@ def _record_stats(recs: list[Any], src: str, t_from: Fraction | None = None) -> 
         "lateness_max": max(late) if late else None,
         "lateness_by_rx_max": {k: max(v) for k, v in late_by_rx.items()},
         "visible_latency_us": percentiles(vis, (50, 90, 99, 99.9)) if vis else {},
+    }
+
+
+BACKLOG_MISS_5MS = 0.01
+"""A paced repetition whose miss rate at 5 ms slack exceeds this is backlogged."""
+
+
+def backlog_reasons(
+    page_latency_us: dict[str, Any] | None, miss_rate: dict[str, Any] | None, page_s: float
+) -> list[str]:
+    """Why a paced repetition is backlogged (empty: it is not): page latency p50 above one
+    page (``page_s``) or miss rate at 5 ms slack above :data:`BACKLOG_MISS_5MS`. Without
+    paced statistics the repetition cannot be validated and counts as backlogged."""
+    p50 = (page_latency_us or {}).get("p50")
+    m5 = (miss_rate or {}).get("5ms")
+    if p50 is None and m5 is None:
+        return ["no paced page statistics"]
+    out = []
+    if p50 is not None and float(p50) > page_s * 1e6:
+        out.append(f"page latency p50 {float(p50):.0f} us > one page ({page_s * 1e6:.0f} us)")
+    if m5 is not None and float(m5) > BACKLOG_MISS_5MS:
+        out.append(f"miss rate at 5 ms {float(m5):.3g} > {BACKLOG_MISS_5MS:g}")
+    return out
+
+
+def timed_metrics(
+    recs: list[Any],
+    *,
+    page: int,
+    rate: Fraction,
+    t0_ns: int,
+    d_lag_ns: int,
+    end: int | None = None,
+    timed: bool = True,
+) -> dict[str, Any]:
+    """Command metrics of a paced repetition (``recs``: the records of its measured window;
+    ``page``, ``rate``, ``end``: the RX rate group; ``t0_ns``, ``d_lag_ns``: its pacer; see
+    the module docstring): ``commands``, ``late_fraction``, ``exact_fraction``,
+    ``virtual_margin_us`` (timed commands only) and ``apply_delay_us`` percentiles."""
+    n = len(recs)
+    late = sum(1 for r in recs if r.status == "late_applied")
+    exact = sum(
+        1
+        for r in recs
+        if r.status == "applied"
+        and r.lateness_samples
+        and all(int(v) == 0 for v in r.lateness_samples.values())
+    )
+    margin: list[float] = []
+    delay: list[float] = []
+    for r in recs:
+        if timed and r.t_req is not None and r.t_wall_recv_ns is not None:
+            t_virt_ns = r.t_wall_recv_ns - t0_ns - d_lag_ns  # pacer schedule at the receipt
+            margin.append((float(Fraction(r.t_req) * 10**9) - t_virt_ns) * 1e-3)
+        if r.status in ("applied", "late_applied") and r.k_applied and r.t_wall_visible_ns:
+            k1 = (min(int(k) for k in r.k_applied.values()) // page + 1) * page
+            if end is not None:
+                k1 = min(k1, int(end))
+            release_ns = t0_ns + round(Fraction(k1) / rate * 10**9) + d_lag_ns
+            delay.append((r.t_wall_visible_ns - release_ns) * 1e-3)
+    return {
+        "commands": n,
+        "late_fraction": late / n if n else None,
+        "exact_fraction": exact / n if n else None,
+        "virtual_margin_us": percentiles(margin, (1, 50, 99)) if margin else {},
+        "apply_delay_us": percentiles(delay, (50, 90, 99)) if delay else {},
     }
 
 
@@ -421,7 +515,13 @@ def paced_point(
 ) -> dict[str, Any]:
     """One paced + async repetition with an external command process (``lead_s``: lead of
     timed commands; ``page_target_s``: the scene's page target)."""
-    from bench._engine_point import _resolve, _restart_paced_stats, build_engine, prewarm
+    from bench._engine_point import (
+        _resolve,
+        _restart_paced_stats,
+        build_engine,
+        prewarm,
+        threading_record,
+    )
     from bench._scenes import ris_path_check
     from sremu.transport.control_server import ControlServer, ServerConfig
 
@@ -471,8 +571,11 @@ def paced_point(
             cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         t0 = time.perf_counter()
+        th_rec: dict[str, Any] | None = None
         while not srv.is_done():
             time.sleep(0.05)
+            if th_rec is None and state.get("done"):  # in the measured window: pools alive
+                th_rec = threading_record()
             if time.perf_counter() - t0 > float(total) * 10 + 300:
                 raise RuntimeError("paced run did not finish")
         wall = time.perf_counter() - t0
@@ -498,13 +601,31 @@ def paced_point(
         and counters.get("late_samples", 0) == 0
         and counters.get("overflow_pages", 0) == 0
     )
-    stats = _record_stats(list(eng.records), "b4async", t_from=warmup_s)
+    recs = list(eng.records)
+    stats = _record_stats(recs, "b4async", t_from=warmup_s)
+    pacer = eng._pacer
+    mine = [r for r in recs if r.src == "b4async" and r.t_req is not None and r.t_req >= warmup_s]
+    tm: dict[str, Any] = {}
+    if pacer is not None and pacer.t0_ns is not None:
+        tm = timed_metrics(
+            mine,
+            page=int(g.page),
+            rate=g.rate,
+            t0_ns=int(pacer.t0_ns),
+            d_lag_ns=int(pacer.d_lag_ns),
+            end=g.end,
+            timed=mode == "timed",
+        )
+    page_s = float(Fraction(int(g.page)) / g.rate)
+    reasons = backlog_reasons(paced.get("latency_us"), paced.get("miss_rate"), page_s)
+    vis = stats.pop("visible_latency_us")
     eng.close()
     return {
         "rate_hz": rate_hz,
         "mode": mode,
         "lead_s": float(Fraction(lead_s)) if mode == "timed" else None,
         "page_samples": int(g.page),
+        "page_s": page_s,
         "page_target_s": page_target_s,
         "rep": rep,
         "warmup_s": float(warmup_s),
@@ -512,6 +633,19 @@ def paced_point(
         "warmup_restart_ok": bool(state.get("done")),
         "wall_s": wall,
         **stats,
+        # a backlogged repetition's visible - recv is lead + lag, not a command latency
+        "backlogged": bool(reasons),
+        "backlog_reasons": reasons,
+        "visible_latency_us": {} if reasons else vis,
+        "visible_minus_recv_us": vis,
+        "late_fraction": tm.get("late_fraction"),
+        "exact_fraction": tm.get("exact_fraction"),
+        "virtual_margin_us": tm.get("virtual_margin_us", {}),
+        "apply_delay_us": tm.get("apply_delay_us", {}),
+        "send_to_schedule_rtt_us": client.get("rtt_us"),
+        "pacer_t0_ns": None if pacer is None else pacer.t0_ns,
+        "d_lag_ns": None if pacer is None else pacer.d_lag_ns,
+        "threading": th_rec,
         "client": client,
         "pages": paced.get("pages"),
         "miss_rate": paced.get("miss_rate"),
@@ -528,6 +662,107 @@ def paced_point(
         "min_ris_minus_los_db": chk["min_ris_minus_los_db"],
         "scenario_sha256": res.sha256(),
     }
+
+
+BACKLOG_RULE = (
+    "a repetition is backlogged when its page latency p50 exceeds one page or its miss rate "
+    f"at 5 ms slack exceeds {BACKLOG_MISS_5MS:g}; its visible - recv time (lead + lag for "
+    "timed commands) is not reported as latency and it is left out of the per-key latency, "
+    "late and exact fractions"
+)
+
+
+def is_backlogged(r: dict[str, Any]) -> bool:
+    """A paced row's ``backlogged`` flag; rows written before it existed are judged from their
+    page latency, miss rate and page length (:func:`backlog_reasons`; B4 scene at 1 MS/s)."""
+    if "backlogged" in r:
+        return bool(r["backlogged"])
+    page_s = r.get("page_s") or int(r.get("page_samples") or 0) / 1e6
+    return bool(backlog_reasons(r.get("page_latency_us"), r.get("miss_rate"), float(page_s)))
+
+
+def _med(xs: list[Any]) -> float | None:
+    ys = [float(x) for x in xs if x is not None]
+    return statistics.median(ys) if ys else None
+
+
+def paced_by_key(
+    rows: list[dict[str, Any]],
+    combos: list[tuple[int, str, str | None]],
+    keys_with_lead: bool,
+    virt: float,
+) -> dict[str, Any]:
+    """Per-combination summary of the paced rows. Latency, lateness and the late and exact
+    fractions come from the repetitions that are not backlogged (:func:`is_backlogged`;
+    ``backlogged_reps`` counts the others); the apply delay, virtual margin and round trip
+    are wall-clock figures that stay meaningful in a backlog and use every repetition."""
+    by: dict[str, Any] = {}
+    for rate, mode, lead in combos:
+        key = combo_key(rate, mode, lead, keys_with_lead)
+        if key in by:
+            continue
+        rs = [r for r in rows if r["key"] == key]
+        if not rs:
+            continue
+        ok = [r for r in rs if not is_backlogged(r)]
+        p99 = [r["lateness_samples"].get("p99") for r in ok if r["lateness_samples"]]
+        vis = [r["visible_latency_us"].get("p99") for r in ok if r.get("visible_latency_us")]
+        ach = [
+            r["client"]["achieved_rate_hz"]
+            for r in rs
+            if isinstance(r.get("client"), dict) and r["client"].get("achieved_rate_hz")
+        ]
+        late = sum(r["status"].get("late_applied", 0) for r in ok)
+        n_ok = sum(r["commands"] for r in ok)
+        exact = [(r.get("exact_fraction"), r["commands"]) for r in ok]
+        n_exact = sum(n for f, n in exact if f is not None)
+        rtt = [((r.get("send_to_schedule_rtt_us") or {}).get("p99")) for r in rs]
+        by[key] = {
+            "rate_hz": rate,
+            "mode": mode,
+            "lead_s": rs[0]["lead_s"],
+            "page_samples": rs[0]["page_samples"],
+            "reps": len(rs),
+            "backlogged_reps": len(rs) - len(ok),
+            # the client waits for each reply (REQ/REP): a slow engine caps its rate
+            "achieved_rate_hz_median": statistics.median(ach) if ach else None,
+            "wall_over_virtual_max": max(float(r["wall_s"]) / virt for r in rs),
+            "lateness_p99_samples_median": statistics.median(p99) if p99 else None,
+            "lateness_max_samples_worst": max(((r["lateness_max"] or 0) for r in ok), default=None),
+            "visible_latency_p99_us_worst": max(vis) if vis else None,
+            "late_applied_total": late,
+            # applied late / commands in the measured windows, over the valid repetitions
+            "late_fraction": late / n_ok if n_ok else None,
+            # applied on the scheduled sample (lateness 0 on every RX) / commands, likewise
+            "exact_fraction": sum(f * n for f, n in exact if f is not None) / n_exact
+            if n_exact
+            else None,
+            "apply_delay_p50_us_median": _med(
+                [(r.get("apply_delay_us") or {}).get("p50") for r in rs]
+            ),
+            "apply_delay_p99_us_worst": max(
+                (x for r in rs if (x := (r.get("apply_delay_us") or {}).get("p99")) is not None),
+                default=None,
+            ),
+            "virtual_margin_p50_us_median": _med(
+                [(r.get("virtual_margin_us") or {}).get("p50") for r in rs]
+            ),
+            "virtual_margin_p1_us_min": min(
+                (x for r in rs if (x := (r.get("virtual_margin_us") or {}).get("p1")) is not None),
+                default=None,
+            ),
+            "send_to_schedule_rtt_p99_us_worst": max(
+                (x for x in rtt if x is not None), default=None
+            ),
+            "sustainable_reps": sum(1 for r in rs if r["sustainable"]),
+            "commands_total": sum(r["commands"] for r in rs),
+            "commands_valid": n_ok,
+            "commands_per_virtual_s_median": statistics.median(
+                r["commands_per_virtual_s"] for r in rs
+            ),
+            "engine_bound_reps": sum(1 for r in rs if r["engine_bound"]),
+        }
+    return by
 
 
 def paced_combos(
@@ -593,11 +828,16 @@ def run_paced(
                 r["key"] = key
                 slow = max(slow, 1.1 * float(r["wall_s"]) / virt)
                 rows.append(r)
+                vis = (
+                    f"BACKLOGGED ({'; '.join(r['backlog_reasons'])}): no latency"
+                    if r["backlogged"]
+                    else f"vis p99={r['visible_latency_us'].get('p99')} us"
+                )
                 print(
                     f"paced {key} rep {rep}: commands={r['commands']} "
                     f"late p99={r['lateness_samples'].get('p99')} max={r['lateness_max']} "
-                    f"vis p99={r['visible_latency_us'].get('p99')} us miss={r['miss_rate']} "
-                    f"sustainable={r['sustainable']}",
+                    f"{vis} apply p99={r['apply_delay_us'].get('p99')} us "
+                    f"miss={r['miss_rate']} sustainable={r['sustainable']}",
                     flush=True,
                 )
                 run.write_json("paced.json", rows)
@@ -607,44 +847,7 @@ def run_paced(
         run.write_csv("paced_dropped.csv", dropped)
     if failed:
         run.write_csv("paced_failed.csv", failed)
-    by: dict[str, Any] = {}
-    for rate, mode, lead in combos:
-        key = combo_key(rate, mode, lead, keys_with_lead)
-        if key in by:
-            continue
-        rs = [r for r in rows if r["key"] == key]
-        if rs:
-            p99 = [r["lateness_samples"].get("p99") for r in rs if r["lateness_samples"]]
-            vis = [r["visible_latency_us"].get("p99") for r in rs if r["visible_latency_us"]]
-            ach = [
-                r["client"]["achieved_rate_hz"]
-                for r in rs
-                if isinstance(r.get("client"), dict) and r["client"].get("achieved_rate_hz")
-            ]
-            late = sum(r["status"].get("late_applied", 0) for r in rs)
-            n_cmd = sum(r["commands"] for r in rs)
-            by[key] = {
-                "rate_hz": rate,
-                "mode": mode,
-                "lead_s": rs[0]["lead_s"],
-                "page_samples": rs[0]["page_samples"],
-                "reps": len(rs),
-                # the client waits for each reply (REQ/REP): a slow engine caps its rate
-                "achieved_rate_hz_median": statistics.median(ach) if ach else None,
-                "wall_over_virtual_max": max(float(r["wall_s"]) / virt for r in rs),
-                "lateness_p99_samples_median": statistics.median(p99) if p99 else None,
-                "lateness_max_samples_worst": max((r["lateness_max"] or 0) for r in rs),
-                "visible_latency_p99_us_worst": max(vis) if vis else None,
-                "late_applied_total": late,
-                # applied late / commands in the measured windows, over the repetitions
-                "late_fraction": late / n_cmd if n_cmd else None,
-                "sustainable_reps": sum(1 for r in rs if r["sustainable"]),
-                "commands_total": n_cmd,
-                "commands_per_virtual_s_median": statistics.median(
-                    r["commands_per_virtual_s"] for r in rs
-                ),
-                "engine_bound_reps": sum(1 for r in rs if r["engine_bound"]),
-            }
+    by = paced_by_key(rows, combos, keys_with_lead, virt)
     pages = [int(r["pages"] or 0) for r in rows]
     w, m = float(warm), float(meas)
     return {
@@ -653,6 +856,8 @@ def run_paced(
         "paced_all_reps_sustainable": bool(rows) and all(r["sustainable"] for r in rows),
         "paced_dropped": len(dropped),
         "paced_failed": failed,
+        "paced_backlogged_reps": sum(1 for r in rows if is_backlogged(r)),
+        "backlog_rule": BACKLOG_RULE,
         "protocol_12_3": {
             "warmup_s": w,
             "measure_s": m,
@@ -689,6 +894,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait-quiet-min", type=float, default=0.0, help="wait for an idle host first")
     ap.add_argument("--threads", type=int, default=None, help="numba threads (default: all)")
     ap.add_argument(
+        "--omp-wait-policy",
+        choices=("passive", "active", "env"),
+        default="passive",
+        help="paced part: OMP_WAIT_POLICY for numba's OpenMP layer (env: leave the environment)",
+    )
+    ap.add_argument(
         "--recompute",
         type=Path,
         default=None,
@@ -701,9 +912,14 @@ def main(argv: list[str] | None = None) -> int:
         summ = recompute_lockstep(a.recompute, a.recompute_out)
         print(f"lockstep_check_ok={summ['lockstep_check_ok']}")
         return 0 if summ["lockstep_check_ok"] else 1
+    paced = a.part == "paced"
+    # served paced engine: idle OpenMP workers sleep at once instead of spinning beside the
+    # control and transport threads (before numba is imported; an explicit setting wins)
+    wait_policy = bench.omp_wait_policy(
+        None if a.omp_wait_policy == "env" or not paced else a.omp_wait_policy
+    )
     bench.set_threads(a.threads)
     SCENE_LINKS = int(a.links)
-    paced = a.part == "paced"
     rates = [int(x) for x in a.rates.split(",") if x]
     modes = [m for m in a.modes.split(",") if m]
     leads = [str(Fraction(x) / 1000) for x in a.lead_ms.split(",") if x]
@@ -726,6 +942,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     if paced:
         spec.update(
+            omp_wait_policy=wait_policy,
             plan=a.plan,
             page_target_s=page_target,
             combos=[{"rate_hz": r, "mode": m, "lead_s": ld} for r, m, ld in combos],

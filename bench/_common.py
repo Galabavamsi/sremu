@@ -6,10 +6,12 @@ Every suite writes ONE run directory ``<out>/<UTC>_<suite>[_<tag>]/`` (default
 * ``manifest.json``: the section 3.6 manifest (:class:`sremu.record.manifest.Manifest`):
   git commit and dirty flag (+ ``dirty.patch``), versions, platform, CPU, power plan or
   governor, AWS instance, seed, RNG scheme, threads, SVML state, argv, start/end times and
-  host-load samples. ``scenario_name`` is ``bench-<suite>``; ``scenario_sha256`` is the
-  SHA-256 of the canonical JSON of the suite spec (grid, durations, options), so two runs
-  with the same spec share it. Per-point scenarios are stored as resolved YAML under
-  ``scenarios/`` and their own SHA-256 appears in the point tables.
+  host-load samples, and ``threading`` (numba threading layer, process threads, render driver
+  choices of the suite process; :func:`sremu.sysinfo.threading_info`). ``scenario_name`` is
+  ``bench-<suite>``; ``scenario_sha256`` is the SHA-256 of the canonical JSON of the suite
+  spec (grid, durations, options), so two runs with the same spec share it. Per-point
+  scenarios are stored as resolved YAML under ``scenarios/`` and their own SHA-256 appears in
+  the point tables.
 * ``spec.json``: the suite spec that was hashed.
 * CSV/JSON data files written by the suite.
 * ``meta.json``: data classes, platform label (a Windows paced number is always labelled
@@ -628,6 +630,7 @@ class BenchRun:
         m["assumptions"] = [*m.get("assumptions", []), *self.assumptions]
         m["threads"] = m.get("threads") if m.get("threads") is not None else sysinfo.numba_threads()
         m["numba_disable_svml"] = sysinfo.numba_svml_disabled()
+        m["threading"] = sysinfo.threading_info()  # this process (B2: the orchestrator)
         m["t_end_utc"] = utc_now_iso()
         m["wall_s"] = time.perf_counter() - self._t0
         m["host_load_samples"] = [

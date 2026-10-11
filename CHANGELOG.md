@@ -5,6 +5,43 @@ contract has its own version (`sremu.contracts.CONTRACT_VERSION`).
 
 ## [Unreleased] - 0.1.0.dev0
 
+### Changed (served and paced runs: OpenMP pools, pacer wait, GC, B4 validity; 2026-10-12)
+
+- Paced `numba_cpu` engines render with `render_numba.PACED_PARALLEL_MIN_WORK` (2**18; lockstep
+  keeps `PARALLEL_MIN_WORK` = 2**16): one page per release, so short parallel regions cost
+  more than they save. The drivers are bitwise identical; only timing changes.
+- `render_numba.driver_stats()` (calls per driver, threads that ran the parallel driver) and
+  `sysinfo.threading_info()` (threading layer in use, threads, render drivers); manifests carry
+  the latter as the optional `threading` field, benchmark rows (B2, B3, B4) per point.
+- Benchmark JIT warm-ups (`bench._engine_point.prewarm`, B2 `jit_warmup`) run in a throwaway
+  thread: with numba's OpenMP layer every thread that runs a parallel region keeps its own
+  worker pool, and the main thread's pool next to a served engine thread's pool made libgomp
+  put idle workers to sleep at once (~870 instead of ~200 us of compute per 1 ms B4 page,
+  every B4 paced repetition backlogged).
+- B4 paced and E-B3 (served paced engines) set `OMP_WAIT_POLICY=PASSIVE` before numba starts
+  (`--omp-wait-policy`, default `passive`; an explicit environment setting wins;
+  `bench.omp_wait_policy`): with one pool, its idle workers otherwise spin for milliseconds
+  after each (rare) parallel region beside the control and transport threads. B3 (headless)
+  keeps the runtime default (passive was slower there on WSL2). Manifests and records carry
+  the policy (`threading.omp_wait_policy`). New AWS job `b4classic` (B4 paced, classic plan).
+- `Emulator.run_paced` and `Emulator.start` run `gc.collect(); gc.freeze()` before their loop;
+  the freeze ends with the loop (or `Emulator.close`), `gc.unfreeze()` when no other engine
+  holds one. Objects alive at the freeze that end up in unreachable reference cycles during
+  the run are reclaimed only after the unfreeze. A served paced run stopped before its resume
+  releases its freeze, and a `close()` racing a freeze in progress releases it (a closed engine
+  never freezes).
+- The paced engine keeps the yielding wait (CPU and GIL yielded until 0.1 ms before a
+  release). A same-host A/B on AWS c7i.8xlarge (3 rounds; research note ab_paced_aws.md)
+  showed it removes ~10 ms stall staircases in headless paced runs and cuts late timed
+  commands (2 ms lead, 100 Hz, 0.5 ms pages) from 35-78 % to 0.3 %, at the price of a later
+  wake-up p99 (~0.36 ms) and system time spent yielding.
+- B4 paced: per-repetition `backlogged` flag (page latency p50 above one page or miss rate at
+  5 ms above 1 %); a backlogged repetition reports no visible latency (kept as
+  `visible_minus_recv_us`) and no late/exact fraction. New timed-command metrics:
+  `exact_fraction`, `late_fraction`, `send_to_schedule_rtt_us`, `virtual_margin_us`
+  (`t_req - (t_recv - t0 - D_lag)`) and `apply_delay_us` (`t_visible - (t0 + k1/f + D_lag)`).
+  `bench.summarize` lists B4 paced repetitions with their validity.
+
 ### Changed (transport and served control, 2026-10-11)
 
 - Lockstep RX egress sends up to 8 pages per frame (`RX_BATCH_PAGES`; an explicit

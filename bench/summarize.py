@@ -14,8 +14,14 @@ end-to-end RTF and its diagnostics (``rtf_rx_client_median``, ``rtf_server_media
 client pinning (``client_affinity_mode``, ``client_cpus``, ``client_affinity``), the
 transport settings (``rx_frame_samples``, ``tx_chunk_samples``; absent in runs made before
 they were recorded) and the RTF of the F4 point with the same L, N, RIS count, rate and
-threads (``f4_rtf_median``). Nothing is recomputed or rounded here (CSV numbers are only
-parsed back to numbers).
+threads (``f4_rtf_median``). B4 paced runs get ``paced_reps``: per repetition of
+``paced.json`` its validity (``backlogged`` with ``backlog_reasons``: page latency p50 above
+one page or miss rate at 5 ms above 1 %, see :mod:`bench.b4_control`; judged from the row's
+page statistics for runs made before the flag existed, ``backlog_judged`` says so), the
+visible latency p99 only for repetitions that are not backlogged, and the timed-command
+metrics (late and exact fractions, apply delay, virtual margin, send-to-schedule round
+trip; absent in older runs). Nothing is recomputed or rounded here (CSV numbers are only
+parsed back to numbers; the backlog flag of older rows is the only derived value).
 """
 
 from __future__ import annotations
@@ -100,6 +106,50 @@ def f5_points(run_dir: Path) -> list[dict[str, Any]] | None:
     return out
 
 
+def b4_paced_reps(run_dir: Path) -> list[dict[str, Any]] | None:
+    """The repetitions of a B4 paced run's ``paced.json`` (see the module docstring); None
+    without that file."""
+    from bench.b4_control import backlog_reasons, is_backlogged
+
+    path = run_dir / "paced.json"
+    if not path.exists():
+        return None
+    out = []
+    for r in json.loads(path.read_text(encoding="utf-8")):
+        bad = is_backlogged(r)
+        if "backlog_reasons" in r:
+            reasons = r["backlog_reasons"]
+        else:
+            page_s = r.get("page_s") or int(r.get("page_samples") or 0) / 1e6
+            reasons = backlog_reasons(r.get("page_latency_us"), r.get("miss_rate"), page_s)
+
+        def p(name: str, q: str, row: dict[str, Any] = r) -> Any:
+            return (row.get(name) or {}).get(q)
+
+        out.append(
+            {
+                "key": r.get("key"),
+                "rep": r.get("rep"),
+                "page_samples": r.get("page_samples"),
+                "backlogged": bad,
+                "backlog_reasons": reasons,
+                "backlog_judged": "backlogged" not in r,
+                "page_latency_p50_us": p("page_latency_us", "p50"),
+                "miss_rate_5ms": p("miss_rate", "5ms"),
+                "visible_latency_p99_us": None if bad else p("visible_latency_us", "p99"),
+                "commands": r.get("commands"),
+                "late_fraction": None if bad else r.get("late_fraction"),
+                "exact_fraction": None if bad else r.get("exact_fraction"),
+                "apply_delay_p99_us": p("apply_delay_us", "p99"),
+                "virtual_margin_p50_us": p("virtual_margin_us", "p50"),
+                "send_to_schedule_rtt_p99_us": p("send_to_schedule_rtt_us", "p99"),
+                "sustainable": r.get("sustainable"),
+                "threading_layer": (r.get("threading") or {}).get("layer"),
+            }
+        )
+    return out
+
+
 def latest_runs(root: Path) -> dict[str, list[Path]]:
     """Complete run directories per run name (suite plus tag, e.g. ``b4_lockstep``), newest
     last (directory names start with the UTC stamp; a ``-N`` collision suffix is ignored)."""
@@ -126,6 +176,8 @@ def summarize(root: Path) -> dict[str, Any]:
             extra = {}
             if suite.split("_", 1)[0] == "b2":
                 extra["f5_points"] = f5_points(d)
+            if suite.split("_", 1)[0] == "b4" and (d / "paced.json").exists():
+                extra["paced_reps"] = b4_paced_reps(d)
             entries.append(
                 {
                     **extra,

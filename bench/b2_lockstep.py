@@ -92,6 +92,14 @@ F5 rows also record the transport settings: ``rx_frame_samples`` (the served RX 
 length; lockstep batches ``RX_BATCH_PAGES`` pages per frame) and ``tx_chunk_samples`` (the TX
 client's samples per send).
 
+**OpenMP pools.** With numba's OpenMP threading layer every thread that runs a parallel
+region keeps its own worker pool. The JIT warm-up (:func:`jit_warmup`) therefore runs in a
+throwaway thread, so a worker's F5 point is served by the only pool in its process. In
+sequential mode the F0-F4 points run in the main thread and leave its pool next to that of a
+later F5 point's engine thread; rows record the threading layer, the process's threads and
+the threads that ran the parallel render driver (``threading_layer``, ``os_threads``,
+``render_calls``, ``render_parallel_threads_alive``).
+
 **Background load** (sequential mode): before each point the host is sampled for
 ``--point-quiet-window-s``; with ``--point-quiet-wait-s`` > 0 the suite waits (up to that long)
 until the system busy fraction is at most ``--point-quiet-busy``. Each row records the gate
@@ -451,6 +459,15 @@ def _row(
     if "rtf_rx_client_median" in r:  # F5 (bench._engine_point.measure_zmq)
         row.update({k: r.get(k) for k in F5_ROW_KEYS})
         row["client_cpus"] = r.get("client_cpus_requested")
+    th = r.get("threading") or {}
+    rend = th.get("render") or {}
+    # threading state of the measuring process after the point (cumulative over the points
+    # that process measured): with the OpenMP layer, every live thread that ran the parallel
+    # render driver keeps its own worker pool
+    row["threading_layer"] = th.get("layer")
+    row["os_threads"] = th.get("os_threads")
+    row["render_calls"] = rend.get("calls")
+    row["render_parallel_threads_alive"] = rend.get("parallel_threads_alive")
     return row
 
 
@@ -516,11 +533,14 @@ def measure_point(p: Point, settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def jit_warmup(features: str = "F3") -> None:
-    """Load (or compile) the numba kernels once in this process (not recorded)."""
-    from bench._engine_point import measure_lockstep
+    """Load (or compile) the numba kernels once in this process (not recorded), in a
+    throwaway thread (:func:`bench._engine_point.run_in_thread`): an OpenMP pool left in the
+    main thread would compete with a served (F5) engine thread's pool."""
+    from bench._engine_point import measure_lockstep, run_in_thread
     from bench._scenes import bench_scenario
 
-    measure_lockstep(
+    run_in_thread(
+        measure_lockstep,
         bench_scenario(links=1, n_cells=40, n_ris=1, rate_sps="1e6", features=features),
         features=features,
         reps=1,

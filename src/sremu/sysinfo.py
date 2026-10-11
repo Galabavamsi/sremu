@@ -32,6 +32,7 @@ __all__ = [
     "INFO_DISTRIBUTIONS",
     "LINUX_GOVERNOR_FILE",
     "NOSVML_SUFFIX",
+    "RENDER_MODULE",
     "aws_instance",
     "cpu_model",
     "default_numba_cache_dir",
@@ -46,6 +47,7 @@ __all__ = [
     "power_plan_or_governor",
     "read_governor",
     "run",
+    "threading_info",
 ]
 
 NOSVML_SUFFIX: Final[str] = "-nosvml"
@@ -234,6 +236,47 @@ def numba_threads() -> int | None:
         return int(nb.get_num_threads())
     except Exception:  # numba not fully initialised
         return None
+
+
+RENDER_MODULE: Final[str] = "sremu.channel.render_numba"
+"""Module whose ``driver_stats()`` :func:`threading_info` reports when it is loaded."""
+
+
+def threading_info() -> dict[str, Any]:
+    """numba threading state of this process, for manifests and benchmark records.
+
+    Imports nothing: ``None`` fields mean numba (or the numba renderer) is not loaded.
+    ``layer``: ``numba.threading_layer()``, the layer in use (None before the first parallel
+    region); ``layer_config``: ``NUMBA_THREADING_LAYER``; ``num_threads``: the calling
+    thread's numba thread count; ``omp_wait_policy``: ``$OMP_WAIT_POLICY``; ``os_threads``:
+    threads of the process (Linux ``/proc/self/task``; each OpenMP pool adds
+    ``num_threads - 1``); ``render``: the render driver choices
+    (``render_numba.driver_stats()``: thresholds, calls per driver, threads that ran the
+    parallel driver and those still alive)."""
+    out: dict[str, Any] = {
+        "layer": None,
+        "layer_config": None,
+        "num_threads": None,
+        # OpenMP runtime settings read when the runtime starts (``passive``: idle workers
+        # sleep at once instead of spinning after every parallel region)
+        "omp_wait_policy": os.environ.get("OMP_WAIT_POLICY"),
+    }
+    nb = sys.modules.get("numba")
+    if nb is not None:
+        out["layer_config"] = str(getattr(nb.config, "THREADING_LAYER", "default"))
+        out["num_threads"] = numba_threads()
+        try:
+            out["layer"] = str(nb.threading_layer())
+        except Exception:  # no parallel region has run yet
+            out["layer"] = None
+    try:
+        out["os_threads"] = len(os.listdir("/proc/self/task"))
+    except OSError:
+        out["os_threads"] = None
+    rn = sys.modules.get(RENDER_MODULE)
+    stats = getattr(rn, "driver_stats", None)
+    out["render"] = stats() if callable(stats) else None
+    return out
 
 
 def numba_state(probe_threads: bool = False) -> dict[str, Any]:

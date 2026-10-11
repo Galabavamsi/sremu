@@ -38,7 +38,9 @@ def test_vlab_pipeline_smoke(tmp_path: Path) -> None:
                 "--K",
                 "4",
                 "--jobs",
-                "2",
+                # in-process: a forked worker pool inside an xdist worker that already runs
+                # numba threads died on Linux (BrokenProcessPool, AWS regeneration junit)
+                "1",
                 "--n-sigma-pos",
                 "1",
                 "--n-alt",

@@ -15,7 +15,16 @@ command semantics of :mod:`.commands`, the barriers of :mod:`.barriers` and the 
   with stall detection (``stall_timeout_s`` wall; ``on_stall: wait | zero_fill``).
 * **Paced (4.10).** :meth:`Emulator.run_paced` releases each page at
   ``R_j = t0 + k1/f + D_lag``, zero-fills missing TX data (``UNDERFLOW``,
-  ``underflow_slip_samples``) and counts deadline misses per slack.
+  ``underflow_slip_samples``) and counts deadline misses per slack. A paced ``numba_cpu``
+  engine renders with the paced driver threshold (``render_numba.PACED_PARALLEL_MIN_WORK``).
+* **Heap freeze.** Before a paced loop (:meth:`Emulator.run_paced`) and before the served
+  lockstep loop (:meth:`Emulator.start`) the engine runs ``gc.collect(); gc.freeze()``, so
+  the cyclic collector no longer walks the objects that exist at that point; a served
+  engine's full collections (~55 ms for ~1.6e5 objects) had stalled every thread and made
+  ~150 pages late each (:meth:`Emulator.freeze_heap`). The freeze ends with the loop (or
+  :meth:`Emulator.close`):
+  ``gc.unfreeze()`` when no other engine holds one. Wall-clock only: no computed sample
+  depends on it.
 * **I7.** Wall time is read only for metrics, stall timeouts and pacing (``self.clock``);
   it never enters data-plane arithmetic, so a monkeypatched clock cannot change the output
   (RT-15).
@@ -43,6 +52,8 @@ the CLI can persist them without the engine importing them.
 from __future__ import annotations
 
 import bisect
+import functools
+import gc
 import math
 import threading
 import warnings
@@ -286,14 +297,49 @@ class _RxWaiter:
         self.waiting = False
 
 
-def _render_fn(backend: BackendName) -> Callable[[SegmentJob, NDArray[np.complex128]], None]:
+def _render_fn(
+    backend: BackendName, paced: bool = False
+) -> Callable[[SegmentJob, NDArray[np.complex128]], None]:
+    """The backend's render function; a paced ``numba_cpu`` engine uses the paced driver
+    threshold (``render_numba.PACED_PARALLEL_MIN_WORK``: one page per release, short
+    parallel regions cost more than they save). The threshold picks a driver, never a value."""
     if backend == "numpy_ref":
         from sremu.channel import render_numpy
 
         return render_numpy.render
     from sremu.channel import render_numba
 
+    if paced:
+        return functools.partial(
+            render_numba.render, parallel_min_work=render_numba.PACED_PARALLEL_MIN_WORK
+        )
     return render_numba.render
+
+
+_gc_lock = threading.Lock()
+_gc_holders = 0  # engines whose paced or served run froze the heap and are not closed yet
+
+
+def _gc_freeze() -> None:
+    """``gc.collect(); gc.freeze()``: move every object alive now (the interpreter, numba,
+    the scenario, the engine) out of the cyclic collector's reach, so the collections a long
+    run triggers traverse only what the run allocated (a full collection of a served
+    engine's ~1.6e5-object heap stalls every thread for ~55 ms). Counted per engine; the last
+    :func:`_gc_release` unfreezes. The collection runs outside ``_gc_lock``: finalizers run
+    during it, and one that closes another engine must not wait for that lock."""
+    global _gc_holders
+    gc.collect()
+    with _gc_lock:
+        gc.freeze()
+        _gc_holders += 1
+
+
+def _gc_release() -> None:
+    global _gc_holders
+    with _gc_lock:
+        _gc_holders = max(0, _gc_holders - 1)
+        if _gc_holders == 0:
+            gc.unfreeze()
 
 
 class Emulator:
@@ -424,7 +470,7 @@ class Emulator:
         self._group_of_rx = {r: g for g in self.groups for r in g.rx}
         # ---------------------------------------------------------- scheduler pieces
         self.snaps = SnapshotManager(model, t_u=self.t_u, block_s=block_s)
-        self._render = _render_fn(cfg.backend)
+        self._render = _render_fn(cfg.backend, paced=cfg.mode == "paced")
         self.builder = JobBuilder(
             model,
             self.snaps,
@@ -460,6 +506,8 @@ class Emulator:
         self._metrics_counters = dict(self.counters)
         self._pacer: Pacer | None = None
         self._paced_active = False
+        self._gc_frozen = False
+        self._gc_mutex = threading.Lock()  # _gc_frozen against a concurrent close()
         self._closed = False
 
     # ================================================================== construction
@@ -1309,17 +1357,43 @@ class Emulator:
     _stop_evt: threading.Event | None = None
     _kicks: int = 0
 
+    def freeze_heap(self) -> None:
+        """Collect, then freeze the heap (see :func:`_gc_freeze`) until the served or paced
+        loop ends or the engine is closed (:meth:`_thaw_heap`); idempotent. The loops call it
+        themselves; a driver may call it earlier (the served paced driver does, before
+        ``sim.resume``, so the collection does not delay the run's ``t0`` after the resume).
+        Memory: while the heap is frozen, an object that was alive at the freeze and then
+        becomes part of a reference cycle no longer referenced from outside is not
+        reclaimed (it is after the unfreeze, when no engine holds a freeze any more);
+        objects freed by reference counting and everything allocated during the run are
+        reclaimed as before. A closed engine does not freeze: a :meth:`close` that ran
+        while another thread was collecting here waits for the freeze and releases it."""
+        with self._gc_mutex:
+            if not self._gc_frozen and not self._closed:
+                _gc_freeze()
+                self._gc_frozen = True
+
+    def _thaw_heap(self) -> None:
+        """Release this engine's freeze (idempotent; the heap is unfrozen when no other
+        engine holds one)."""
+        with self._gc_mutex:
+            frozen, self._gc_frozen = self._gc_frozen, False
+        if frozen:
+            _gc_release()
+
     def start(self) -> None:
         """Run the lockstep loop in a background thread (served mode: clients in other
         threads or processes feed TX and read RX; ``read_rx`` then blocks up to its
         timeout). A stall (no progress for ``stall_timeout_s``) writes one deadlock report
         per episode and, with ``on_stall="zero_fill"``, commits the missing TX samples as
-        zeros. Stop with :meth:`stop`."""
+        zeros. The heap is collected and frozen while the loop runs (:meth:`freeze_heap`).
+        Stop with :meth:`stop`."""
         with self._lock:
             if self._thread is not None:
                 raise ConfigurationError("the engine thread is already running")
             if self.cfg.mode != "lockstep":
                 raise ConfigurationError("start() serves lockstep; use run_paced() for paced")
+            self.freeze_heap()
             self._stop_evt = threading.Event()
             self._thread = threading.Thread(
                 target=self._serve_loop, name="sremu-engine", daemon=True
@@ -1346,6 +1420,7 @@ class Emulator:
             self._serve()
         finally:  # end of the run (or a failure): queued RX must not wait for a batch
             self.mark_blocked()
+            self._thaw_heap()
 
     def _serve(self) -> None:
         assert self._stop_evt is not None
@@ -1468,13 +1543,16 @@ class Emulator:
     def run_paced(self, until_s: Fraction | int | str | None = None) -> RunSummary:
         """Paced run (section 4.10): pages released at ``t0 + k1/f + D_lag`` (wall);
         missing TX samples at release are zeros (``UNDERFLOW``), a full RX queue drops the
-        page (``overflow_pages``); deadline misses are counted per slack."""
+        page (``overflow_pages``); deadline misses are counted per slack. The heap is
+        collected before the first release and frozen until the run returns
+        (:meth:`freeze_heap`)."""
         if until_s is not None:
             u = parse_exact(until_s, name="until_s")
             for g in self.groups:
                 g.end = ceil_ticks(u, g.rate)
         if any(g.end is None for g in self.groups):
             raise ConfigurationError("run_paced() needs until_s or a configured duration_s")
+        self.freeze_heap()
         pacer = Pacer(self.clock, d_lag_s=self.cfg.d_lag_s, slacks_s=self.cfg.slacks_s)
         self._pacer = pacer
         pacer.start()
@@ -1544,6 +1622,7 @@ class Emulator:
             self.counters["overflow_pages"] = sum(r.overflow_pages for r in self.rx.values())
         finally:
             self._paced_active = False
+            self._thaw_heap()
         return self.summary()
 
     def reset_metrics(self) -> None:
@@ -1601,9 +1680,11 @@ class Emulator:
         }
 
     def close(self) -> None:
-        """Stop serving; further steps do nothing."""
+        """Stop serving; further steps do nothing. Releases a freeze of the heap this engine
+        still holds (:meth:`_thaw_heap`)."""
         self.stop()
         with self._lock:
             self._closed = True
             self._cond.notify_all()
             self._wake_rx()
+        self._thaw_heap()

@@ -41,9 +41,10 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,9 @@ __all__ = [
     "measure_paced",
     "measure_zmq",
     "prewarm",
+    "run_in_thread",
     "snapshot_facts",
+    "threading_record",
 ]
 
 
@@ -82,14 +85,45 @@ def build_engine(resolved: Any, features: str, **overrides: Any) -> Any:
         return Emulator.from_scenario(resolved, **kw)
 
 
+def run_in_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """``fn(*args, **kwargs)`` in a throwaway thread (joined; its exception re-raised).
+
+    With numba's OpenMP threading layer every thread that runs a parallel region keeps its
+    own worker pool while it lives. JIT warm-ups therefore run here: a pool left in the main
+    thread would compete for the CPUs with the pool of a served engine thread (two pools of
+    ``NUMBA_NUM_THREADS`` on one CPU set; libgomp then lets idle workers sleep at once, so
+    every parallel region of the engine waits for its workers to wake: ~870 us instead of
+    ~200 us of compute per 1 ms page in the B4 scene). The throwaway thread's pool ends with
+    it, so the thread that runs the engine owns the process's only pool."""
+    box: dict[str, Any] = {}
+
+    def body() -> None:
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except BaseException as exc:  # re-raised in the caller
+            box["error"] = exc
+
+    th = threading.Thread(target=body, name="bench-warmup", daemon=True)
+    th.start()
+    th.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 def prewarm(resolved: Any, features: str = "F1", pages: int = 64) -> None:
     """JIT pre-warm: run ``pages`` pages of a throwaway lockstep engine of the same scenario
     (numba compiles or loads its kernels once per process), so compilation cannot leave a
-    backlog in a paced run that follows."""
-    pre = build_engine(resolved, features, mode="lockstep", coupling="barrier")
-    g = pre.groups[0]
-    pre.run(until_s=Fraction(pages * g.page) / g.rate)
-    pre.close()
+    backlog in a paced run that follows. Runs in a throwaway thread (:func:`run_in_thread`):
+    the main thread starts no OpenMP pool."""
+
+    def warm() -> None:
+        pre = build_engine(resolved, features, mode="lockstep", coupling="barrier")
+        g = pre.groups[0]
+        pre.run(until_s=Fraction(pages * g.page) / g.rate)
+        pre.close()
+
+    run_in_thread(warm)
 
 
 def snapshot_facts(eng: Any) -> dict[str, Any]:
@@ -323,7 +357,16 @@ def measure_lockstep(
         "ris_check": chk,
         "facts": facts,
         "decisions": decisions,
+        "threading": threading_record(),
     }
+
+
+def threading_record() -> dict[str, Any]:
+    """:func:`sremu.sysinfo.threading_info` of this process now (numba threading layer, OS
+    threads, render driver calls and the threads that ran the parallel driver)."""
+    from sremu.sysinfo import threading_info
+
+    return threading_info()
 
 
 def _decisions(eng: Any) -> dict[str, Any]:
@@ -884,6 +927,7 @@ def measure_zmq(
         "rtf_source": F5_METRIC,
         "f5_runs": [{"run": "pilot", **pilot}]
         + [{"run": f"rep{i}", **r} for i, r in enumerate(out_reps)],
+        "threading": threading_record(),
     }
 
 
@@ -952,6 +996,7 @@ def measure_paced(
         pacer = eng._pacer
         hist = None if pacer is None else pacer.stats.latency.to_dict()
         decisions = _decisions(eng)
+        threading_rec = threading_record()
     finally:
         eng.close()
     wall = time.perf_counter() - w0
@@ -987,4 +1032,5 @@ def measure_paced(
         "ris_check": chk,
         "facts": facts,
         "decisions": decisions,
+        "threading": threading_rec,
     }

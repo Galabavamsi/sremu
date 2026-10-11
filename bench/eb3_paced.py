@@ -229,7 +229,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tag", default=None)
     ap.add_argument("--wait-quiet-min", type=float, default=0.0, help="wait for an idle host first")
     ap.add_argument("--threads", type=int, default=None, help="numba threads (default: all)")
+    ap.add_argument(
+        "--omp-wait-policy",
+        choices=("passive", "active", "env"),
+        default="passive",
+        help="OMP_WAIT_POLICY for numba's OpenMP layer (env: leave the environment)",
+    )
     a = ap.parse_args(argv)
+    # served paced engine: idle OpenMP workers sleep at once (see bench.omp_wait_policy)
+    wait_policy = bench.omp_wait_policy(None if a.omp_wait_policy == "env" else a.omp_wait_policy)
     bench.set_threads(a.threads)
     if a.quick:
         a.leads, a.reps, a.warmup_s, a.measure_s = "2e-3", 1, "1", "3"
@@ -237,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     warm, meas = Fraction(a.warmup_s), Fraction(a.measure_s)
     spec = {
         "threads": a.threads,
+        "omp_wait_policy": wait_policy,
         "scenario": "scenarios/lab_like_A.yaml (controllers removed; paced + async)",
         "leads_s": leads,
         "reps": a.reps,
