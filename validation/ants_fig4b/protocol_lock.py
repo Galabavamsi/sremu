@@ -63,7 +63,7 @@ __all__ = [
     "protocol_digest",
 ]
 
-PREREGISTERED_SHA256: Final[str] = ""
+PREREGISTERED_SHA256: Final[str] = "d8623254ac6f9785f147b38fd8449b457f87c0c658baaae688eff597b09e0b7c"
 """SHA-256 of the locked protocol (:func:`protocol_digest`). Empty until the lead locks it
 in a separate commit; while it is empty :func:`load_measured` refuses."""
 
