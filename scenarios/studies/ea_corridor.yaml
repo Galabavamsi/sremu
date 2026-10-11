@@ -1,0 +1,49 @@
+# E-A corridor (DESIGN.md sections 10.11 and 11, E-A): the WCL letter's corridor under K1.
+# SIM geometry; this file is the A1 template (1 GHz, h = 2 m, LOS partition 20 dB). The E-A
+# runner (experiments/ea.py) derives every sweep point from it by changing f_c (cell pitch
+# w = k = lambda/4 and N = floor(l/k)), h (panel offset) and the partition loss (A0: no
+# partition). Coordinates: user line on the x axis, x in [0, l]; RIS line parallel at y = h
+# facing -y, u axis +x, cell n centred at x = (n + 1/2) k (D17); everything at z = 0.
+#
+# Documented deviations from the letter (V-WCL, section 10.11):
+#  * the AP is offset d0 = 0.5 m perpendicular to the user line, on the side AWAY from the
+#    RIS (AP at (0, -0.5, 0)), because with the AP on the user line the mean LOS power
+#    diverges as x -> 0 [ENG choice of side];
+#  * A1 "partition on the LOS path": a partition polygon in the plane y = -0.25 m that every
+#    AP-MU LOS segment crosses. sremu applies occluder/partition factors to the LOS path
+#    only (section 5.2, V); RIS hops are not attenuated. In this planar layout a physical
+#    partition crossing every LOS segment would also cross part of the AP->RIS incident
+#    paths, so the regime is "LOS attenuated, RIS hops unattenuated" [ENG], as in the
+#    E-A pilot.
+schema_version: "1.0"
+name: ea_corridor
+seed: 20261010
+description: "E-A blocked-corridor template (A1: 1 GHz, h = 2 m, LOS partition 20 dB); SIM geometry"
+numerics: {backend: numba_cpu}
+environment:
+  occluders:
+    - id: los_partition
+      kind: partition
+      transmission_loss_db: 20.0
+      vertices_m: [[-1.0, -0.25, -1.0], [11.0, -0.25, -1.0], [11.0, -0.25, 1.0], [-1.0, -0.25, 1.0]]
+nodes:
+  - id: ap
+    position_m: [0.0, -0.5, 0.0]
+    antenna: {pattern: isotropic}
+    streams: [{name: tx0, direction: tx, fc_hz: 1.0e9, rate_sps: "1e4", occupied_bw_hz: 1.0e2, full_scale_dbm: 0}]
+  - id: mu
+    trajectory: {model: rwp_1d, p0_m: [0.0, 0.0, 0.0], p1_m: [10.0, 0.0, 0.0], speed_mps: 1.0}
+    antenna: {pattern: isotropic}
+    streams: [{name: rx0, direction: rx, fc_hz: 1.0e9, rate_sps: "1e4", noise_figure_db: 7}]
+ris:
+  - id: ris0
+    pose: {center_m: [4.98404961, 2.0, 0.0], normal: [0, -1, 0], u_axis: [1, 0, 0]}
+    grid: {n_u: 133, n_v: 1, pitch_u_m: 0.0749481145, pitch_v_m: 0.0749481145, cell_model: point}
+    states: {library: on_off}
+    control: {granularity: element}
+    initial: {fill: 0}
+    transition: {model: step}
+controllers: []
+run: {mode: lockstep, coupling: barrier, duration_s: "1000", late_policy: apply_on_arrival}
+record: {iq: false, events: true, metrics: true}
+traffic: [{stream: ap.tx0, generator: tone, params: {freq_hz: 0.0}}]
