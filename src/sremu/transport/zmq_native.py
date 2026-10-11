@@ -31,12 +31,23 @@ in-process semantics (one contiguous run per read, never across an end of burst 
 socket only as far as the current read needs them, so a slow reader leaves the rest queued
 in ZMQ and the lockstep backpressure reaches the engine.
 
+**Arrival wake-ups.** A caller that polls ``read_rx`` with timeout 0 and waits in between
+(``sremu.Device`` does, under its own lock) learns of a new frame only at its next poll.
+:class:`ReadyWatcher` closes that gap without touching any socket: its thread
+``select()``s on the sockets' ``ZMQ_FD`` handles, which libzmq signals when a message
+reaches a socket whose reader last found it empty, and then calls its listeners
+(``Device.notify``). Socket ownership, read semantics and backpressure are unchanged.
+
 ``wall_ns`` (sender monotonic clock) is carried for latency metrics only; it never enters
 data-plane arithmetic (I7).
 """
 
 from __future__ import annotations
 
+import contextlib
+import select
+import socket
+import sys
 import threading
 import time
 from collections import Counter, deque
@@ -69,6 +80,7 @@ from sremu.transport.framing import (
 )
 
 __all__ = [
+    "ReadyWatcher",
     "RxEgress",
     "RxReceiver",
     "TransportCounters",
@@ -78,6 +90,9 @@ __all__ = [
 
 POLL_MS: Final[int] = 20
 """Poll granularity of the transport threads, ms (wall)."""
+WATCH_IDLE_S: Final[float] = 1.0
+"""Select timeout of the :class:`ReadyWatcher` thread (liveness only; every change of its
+handle set wakes it at once)."""
 TX_HARD_PART_LIMIT: Final[int] = 4 * MAX_FRAME_SAMPLES * 8
 """TX ingress parts above 128 MiB are dropped by ZMQ (peer disconnected) without a count."""
 
@@ -430,6 +445,185 @@ class RxEgress:
 # =========================================================================== client
 
 
+class ReadyWatcher:
+    """Calls listeners when a watched client socket may have become readable.
+
+    ``add(fd)`` watches a socket's ``ZMQ_FD`` handle (read with ``getsockopt(zmq.FD)`` by
+    the socket's owner thread) and returns the socket's *arm* function. libzmq makes that
+    handle readable when a command reaches the socket's idle mailbox, and a message that
+    arrives on a pipe the reader last found empty is such a command (``ZMQ_FD`` is
+    edge-triggered; zmq_getsockopt(3)). So whenever a reader polled, found nothing and
+    went to wait, the next arrival fires the handle.
+
+    The thread only waits on the handles (``poll``, or ``select`` on Windows) and never
+    calls into libzmq, so every socket stays owned by its reader thread (ZMQ sockets are
+    not thread safe). A handle that fired is disarmed until its owner calls the arm
+    function after its next socket operation (which also consumes the signal), so a
+    socket nobody reads never makes the thread spin. It stays armed when its owner
+    operated on the socket while the wait ran: that arm call came before the disarm, and
+    disarming would lose the wake-up of a read that has just found the socket empty.
+    Listeners run in the watcher thread, outside its lock; a spurious call (a command
+    without a message, e.g. a connection event) costs the woken caller one retry. A
+    listener that raises is counted (``internal_errors``) and the watcher goes on.
+
+    ``remove(fd)`` and ``stop()`` return only once the thread no longer waits on the
+    handle(s), so the caller may close the socket right after.
+    """
+
+    def __init__(self, counters: TransportCounters | None = None) -> None:
+        self.counters = counters
+        self._cv = threading.Condition()
+        self._armed: dict[int, bool] = {}
+        self._gen: dict[int, int] = {}  # arm calls per handle (socket operations)
+        self._listeners: list[Callable[[], None]] = []
+        self._r, self._w = socket.socketpair()
+        self._r.setblocking(False)
+        self._w.setblocking(False)
+        self._stopping = False
+        self._in_select = False
+        self._iter = 0
+        self.wakeups = 0  # handles that fired (diagnostics)
+        self.thread = threading.Thread(target=self._run, name="sremu-client-wake", daemon=True)
+        self.thread.start()
+
+    # ------------------------------------------------------------------ registration
+    def listen(self, fn: Callable[[], None]) -> None:
+        """Call ``fn()`` whenever a watched handle fires (idempotent per ``fn``)."""
+        with self._cv:
+            if fn not in self._listeners:
+                self._listeners.append(fn)
+
+    def unlisten(self, fn: Callable[[], None]) -> None:
+        """Stop calling ``fn``."""
+        with self._cv:
+            if fn in self._listeners:
+                self._listeners.remove(fn)
+
+    def add(self, fd: int) -> Callable[[], None]:
+        """Watch handle ``fd`` (armed) and return its arm function."""
+        fd = int(fd)
+        with self._cv:
+            self._armed[fd] = True
+            self._gen[fd] = 0
+            self._poke()
+        return lambda: self.arm(fd)
+
+    def arm(self, fd: int) -> None:
+        """The owner just operated on the socket: watch ``fd`` (again)."""
+        with self._cv:
+            if fd not in self._armed:
+                return
+            self._gen[fd] += 1
+            if not self._armed[fd]:
+                self._armed[fd] = True
+                self._poke()
+
+    def remove(self, fd: int) -> None:
+        """Stop watching ``fd``; returns once no ``select`` includes it any more."""
+        with self._cv:
+            self._gen.pop(int(fd), None)
+            if self._armed.pop(int(fd), None) is not None:
+                self._leave_select()
+
+    def stop(self) -> None:
+        """Stop the thread (idempotent); returns once it selects no more."""
+        with self._cv:
+            if self._stopping:
+                return
+            self._stopping = True
+            self._leave_select()
+        # the thread may still be inside a listener (e.g. waiting for a lock our caller
+        # holds); it exits at its next check without touching a handle again
+        for s in (self._r, self._w):
+            with contextlib.suppress(OSError):
+                s.close()
+
+    # ------------------------------------------------------------------ thread
+    def _poke(self) -> None:
+        with contextlib.suppress(OSError):  # BlockingIOError: a poke is pending already
+            self._w.send(b"\0")
+
+    def _leave_select(self) -> None:
+        """(lock held) Wait until a ``select`` begun with the old handle set has returned."""
+        if not self._in_select or threading.current_thread() is self.thread:
+            return
+        it0 = self._iter
+        self._poke()
+        self._cv.wait_for(lambda: self._iter != it0 or not self.thread.is_alive(), 2.0)
+
+    @staticmethod
+    def _wait(fds: list[int], timeout_s: float) -> tuple[list[int], list[int]]:
+        """Readable and invalid handles among ``fds`` (``poll`` on POSIX: no FD_SETSIZE
+        limit on handle values; ``select`` on Windows, where libzmq's handles are
+        sockets)."""
+        if sys.platform != "win32":
+            p = select.poll()
+            for fd in fds:
+                p.register(fd, select.POLLIN)
+            events = p.poll(timeout_s * 1000.0)
+            bad_mask = select.POLLNVAL | select.POLLERR
+            return [fd for fd, ev in events if not ev & bad_mask], [
+                fd for fd, ev in events if ev & bad_mask
+            ]
+        try:
+            ready, _, _ = select.select(fds, [], [], timeout_s)
+            return list(ready), []
+        except (OSError, ValueError):  # a handle closed without remove(): find it
+            bad = []
+            for fd in fds:
+                try:
+                    select.select([fd], [], [], 0)
+                except (OSError, ValueError):
+                    bad.append(fd)
+            if not bad:
+                raise
+            return [], bad
+
+    def _run(self) -> None:
+        r = self._r
+        rfd = r.fileno()
+        while True:
+            with self._cv:
+                if self._stopping:
+                    return
+                gen0 = {fd: self._gen[fd] for fd, on in self._armed.items() if on}
+                fds = list(gen0)
+                self._in_select = True
+            try:
+                ready, bad = self._wait([rfd, *fds], WATCH_IDLE_S)
+            except (OSError, ValueError):  # unexplained failure: stop (callers poll)
+                ready, bad = [], [rfd]
+            fired = [fd for fd in ready if fd != rfd]
+            broken = rfd in bad  # the wake-up pair itself failed: give up (callers poll)
+            bad = [fd for fd in bad if fd != rfd]
+            if rfd in ready:
+                with contextlib.suppress(OSError):
+                    while r.recv(4096):
+                        pass
+            with self._cv:
+                self._in_select = False
+                self._iter += 1
+                for fd in fired:
+                    if fd in self._armed and self._gen[fd] == gen0[fd]:
+                        self._armed[fd] = False  # until the owner's next socket operation
+                for fd in bad:
+                    self._armed.pop(fd, None)
+                    self._gen.pop(fd, None)
+                if broken:
+                    self._stopping = True
+                listeners = list(self._listeners) if fired else []
+                self.wakeups += len(fired)
+                self._cv.notify_all()
+            if (bad or broken) and self.counters is not None:
+                self.counters.add("internal_errors")
+            for fn in listeners:
+                try:
+                    fn()
+                except Exception:  # a listener must not end the wake-ups (I6)
+                    if self.counters is not None:
+                        self.counters.add("internal_errors")
+
+
 class TxSender:
     """Client side of TX ingress: one ``PUSH`` socket for every TX stream of a client.
 
@@ -508,7 +702,10 @@ class _Chunk:
 
 class RxReceiver:
     """Client side of one RX stream's egress: a ``PULL`` socket and the read semantics of
-    the in-process engine (see the module docstring)."""
+    the in-process engine (see the module docstring).
+
+    ``fd``: the socket's ``ZMQ_FD`` handle for a :class:`ReadyWatcher`; ``on_read`` (the
+    watcher's arm function, when watched) is called after every read's socket access."""
 
     def __init__(
         self,
@@ -525,6 +722,8 @@ class RxReceiver:
         self.sock.setsockopt(zmq.RCVHWM, int(rcvhwm))
         self.sock.connect(endpoint)
         self.endpoint = endpoint
+        self.fd = int(self.sock.getsockopt(zmq.FD))  # read here, by the owner thread
+        self.on_read: Callable[[], None] | None = None
         self.counters = counters or TransportCounters()
         self.queue: deque[_Chunk] = deque()
         self.queued = 0  # samples held in ``queue`` (data chunks only)
@@ -576,6 +775,8 @@ class RxReceiver:
         """Up to ``n`` samples of one contiguous run (``TIMEOUT`` when none arrived within
         ``timeout_s`` wall seconds)."""
         self._drain(n, timeout_s)
+        if self.on_read is not None:
+            self.on_read()  # re-arm the wake-up: this read consumed any pending signal
         md = RxMetadata()
         empty = np.zeros(0, dtype=np.complex64)
         rate = self.handle.spec.rate_sps

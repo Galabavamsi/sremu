@@ -23,9 +23,11 @@ saturates, section 3.3). Recordings always hold the complex64 values the engine 
 
 **Blocking.** The Device serializes engine calls with one lock and implements ``timeout``
 (wall seconds) by polling the engine with timeout 0 and waiting on a condition that every
-TX send, idle promise and command of this process signals (and at least every
-``poll_s``); a ``threading.Timer`` ends the wait after ``timeout``, so wake-ups by other
-threads never shorten it (no clock is read here; I7).
+TX send, idle promise and command of this process signals, as does a remote engine when
+data arrives from the server (``Device.connect`` registers ``Device.notify`` with
+``RemoteEngine.add_wake_listener``), and at least every ``poll_s``; a ``threading.Timer``
+ends the wait after ``timeout``, so wake-ups by other threads never shorten it (no clock is
+read here; I7).
 """
 
 from __future__ import annotations

@@ -18,6 +18,15 @@
   ``recv_async``), because the server decides lateness; ``read_rx`` waits up to its
   ``timeout_s`` for frames.
 
+  **Wake-ups.** ``sremu.Device`` polls ``read_rx``/``recv_async`` with timeout 0 under its
+  lock and waits on its condition between polls; nothing in the client process signals
+  that condition when a frame arrives from the server, so without help every blocking
+  ``recv`` that has to wait for the server sleeps a full ``DEFAULT_POLL_S`` (25 ms: the
+  measured ~26 ms two-process round trip). :meth:`RemoteEngine.add_wake_listener`
+  registers a callable (``Device.notify``) that a :class:`ReadyWatcher` thread calls as
+  soon as an RX frame or an unsolicited control message (``stream.async``) may have
+  arrived; the poll stays as the fallback.
+
 :func:`connect_engine` is what ``Device.connect`` calls.
 """
 
@@ -27,7 +36,7 @@ import itertools
 import re
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from fractions import Fraction
 from typing import Any, Final
 
@@ -60,7 +69,7 @@ from sremu.transport.messages import (
     encode_json,
     receipt_from_reply,
 )
-from sremu.transport.zmq_native import RxReceiver, TransportCounters, TxSender
+from sremu.transport.zmq_native import ReadyWatcher, RxReceiver, TransportCounters, TxSender
 
 __all__ = ["ClientSession", "RemoteEngine", "RemoteError", "connect_engine"]
 
@@ -111,6 +120,8 @@ class ClientSession:
         self.sock.setsockopt(zmq.LINGER, 200)  # let a last request leave; never hang on close
         self.sock.setsockopt(zmq.MAXMSGSIZE, int(max_message_bytes))
         self.sock.connect(endpoint)
+        self.fd = int(self.sock.getsockopt(zmq.FD))  # for a ReadyWatcher (owner thread)
+        self.on_read: Callable[[], None] | None = None  # the watcher's arm function
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
         self.events: deque[dict[str, Any]] = deque()
@@ -147,9 +158,13 @@ class ClientSession:
             self.events.append(msg)
 
     def _recv(self, timeout_s: float) -> Any | None:
-        if not self.sock.poll(max(0, round(timeout_s * 1000)), zmq.POLLIN):
-            return None
-        raw = self.sock.recv()
+        try:
+            if not self.sock.poll(max(0, round(timeout_s * 1000)), zmq.POLLIN):
+                return None
+            raw = self.sock.recv()
+        finally:
+            if self.on_read is not None:
+                self.on_read()  # re-arm the wake-up (this access consumed any signal)
         try:
             return decode_json(raw)
         except (UnicodeDecodeError, ValueError):
@@ -254,7 +269,35 @@ class RemoteEngine:
         self._handles: dict[int, StreamHandle] = {}
         self._caps: dict[str, RisCapabilities] | None = None
         self._runners: list[Any] = []
+        self._watcher: ReadyWatcher | None = None
+        self._watch_lock = threading.Lock()
         self.closed = False
+
+    # ------------------------------------------------------------------ wake-ups
+    def add_wake_listener(self, fn: Callable[[], None]) -> None:
+        """Call ``fn()`` (from a background thread) whenever an RX frame of an open RX
+        stream or an unsolicited control message (``stream.async``) may have arrived.
+
+        ``sremu.Device`` registers its ``notify``, so a blocked ``recv`` or
+        ``recv_async_msg`` retries as soon as the server's data is here instead of at its
+        next poll. Calls can be spurious (connection events); ``fn`` must be cheap and must
+        not call back into this engine (it runs in the watcher thread)."""
+        with self._watch_lock:
+            if self.closed:
+                raise StreamError("the engine is closed")
+            if self._watcher is None:
+                w = ReadyWatcher(self.counters)
+                self.session.on_read = w.add(self.session.fd)
+                for rx in self._rx.values():
+                    rx.on_read = w.add(rx.fd)
+                self._watcher = w
+            self._watcher.listen(fn)
+
+    def remove_wake_listener(self, fn: Callable[[], None]) -> None:
+        """Stop calling ``fn`` (the watcher thread keeps running until :meth:`close`)."""
+        with self._watch_lock:
+            if self._watcher is not None:
+                self._watcher.unlisten(fn)
 
     # ------------------------------------------------------------------ streams
     def open_stream(self, spec: StreamSpec) -> StreamHandle:
@@ -274,7 +317,11 @@ class RemoteEngine:
             if self._tx is None:
                 self._tx = TxSender(self.ctx, str(r["endpoint"]))
         else:
-            self._rx[h.id] = RxReceiver(self.ctx, str(r["endpoint"]), h, counters=self.counters)
+            rx = RxReceiver(self.ctx, str(r["endpoint"]), h, counters=self.counters)
+            with self._watch_lock:
+                if self._watcher is not None:
+                    rx.on_read = self._watcher.add(rx.fd)
+                self._rx[h.id] = rx
         return h
 
     def _handle(self, h: StreamHandle, direction: str) -> StreamHandle:
@@ -342,7 +389,10 @@ class RemoteEngine:
                 self.session.pump(0.01)  # keeps async events flowing while waiting
                 waited += 0.01
         self._call("stream.close", stream_id=h.id)
-        rx = self._rx.pop(h.id, None)
+        with self._watch_lock:
+            rx = self._rx.pop(h.id, None)
+            if rx is not None and self._watcher is not None:
+                self._watcher.remove(rx.fd)  # before the socket (and its handle) closes
         if rx is not None:
             rx.close()
         self._handles.pop(h.id, None)
@@ -403,7 +453,10 @@ class RemoteEngine:
         """Stop controller threads and close every socket (idempotent)."""
         if self.closed:
             return
-        self.closed = True
+        with self._watch_lock:
+            self.closed = True
+            if self._watcher is not None:
+                self._watcher.stop()  # selects on no handle once this returns
         for r in self._runners:
             r.stop()
         for rx in self._rx.values():

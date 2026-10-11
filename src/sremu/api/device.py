@@ -92,7 +92,8 @@ __all__ = [
 ]
 
 DEFAULT_POLL_S: Final[float] = 0.025
-"""Wait granularity of blocking calls, wall seconds."""
+"""Wait granularity of blocking calls, wall seconds: the fallback when no other thread and no
+engine wake-up (``RemoteEngine.add_wake_listener``) signals progress earlier."""
 
 _T = TypeVar("_T")
 TimeArg = TimeSpec | Fraction | int | str | float
@@ -405,7 +406,15 @@ class Device:
                     "which is not available yet"
                 ) from exc
             raise
-        return cls(client.connect_engine(endpoint, **kw), owns_engine=True)
+        engine = client.connect_engine(endpoint, **kw)
+        dev = cls(engine, owns_engine=True)
+        # a blocked recv / recv_async_msg retries as soon as the server's data arrives,
+        # not at its next poll (DEFAULT_POLL_S): the poll alone made every remote round
+        # trip that had to wait for the server last a whole poll interval
+        add_listener = getattr(engine, "add_wake_listener", None)
+        if callable(add_listener):
+            add_listener(dev.notify)
+        return dev
 
     # ------------------------------------------------------------------ plumbing
     @property

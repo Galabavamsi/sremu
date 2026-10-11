@@ -312,6 +312,7 @@ class Emulator:
         self._sinks_want_rx = self._sinks_record_rx()
         self._lock = threading.RLock()
         self._cond = threading.Condition(self._lock)
+        self._kicks = 0  # input notifications (see _kick)
         self.configs: dict[StreamId, StreamConfig] = dict(
             streams if streams is not None else stream_configs_from_model(model)
         )
@@ -816,14 +817,22 @@ class Emulator:
         """Remove a registered controller."""
         with self._lock:
             self.barriers.unregister(name)
-            self._cond.notify_all()
+            self._kick()
+
+    def _kick(self) -> None:
+        """(lock held) An input changed (TX, stream command, command, RX consumed): wake
+        the waiters and count it, so a loop that is between a fruitless ``step`` and its
+        wait steps again at once instead of sleeping through the input (lost wake-up).
+        Wall-clock only: what a step computes does not depend on it."""
+        self._kicks += 1
+        self._cond.notify_all()
 
     # ================================================================== commands
     def schedule(self, req: CommandRequest) -> CommandReceipt:
         """Schedule a timed command (sections 4.6, 8.5); never raises on bad input."""
         with self._lock:
             receipt = self._schedule_locked(req)
-            self._cond.notify_all()
+            self._kick()
             return receipt
 
     def _schedule_locked(
@@ -1119,7 +1128,7 @@ class Emulator:
                 k0 = st.data_end - acc
                 for s in self.sinks:
                     s.on_tx(sid, k0, x)
-            self._cond.notify_all()
+            self._kick()
             return acc
 
     def stream_cmd(self, h: StreamHandle, cmd: StreamCmd) -> None:
@@ -1127,7 +1136,7 @@ class Emulator:
         with self._lock:
             sid = self._handle(h, "rx")
             self.rx[sid].stream_cmd(cmd, self._group_of_rx[sid].cursor)
-            self._cond.notify_all()
+            self._kick()
 
     def read_rx(
         self, h: StreamHandle, n: int, timeout_s: float
@@ -1149,7 +1158,7 @@ class Emulator:
                 )
             out = st.read(n)
             if self._thread is not None:
-                self._cond.notify_all()
+                self._kick()  # queue space freed: a backpressured group may advance
             return out
 
     def recv_async(self, h: StreamHandle, timeout_s: float) -> AsyncMetadata | None:
@@ -1201,6 +1210,7 @@ class Emulator:
     # ================================================================== runs
     _thread: threading.Thread | None = None
     _stop_evt: threading.Event | None = None
+    _kicks: int = 0
 
     def start(self) -> None:
         """Run the lockstep loop in a background thread (served mode: clients in other
@@ -1241,6 +1251,7 @@ class Emulator:
         while not stop.is_set():
             if self.groups and self._all_ended():
                 break
+            kicks = self._kicks
             if self.step():
                 last = self.clock.now_ns()
                 stalled = False
@@ -1248,7 +1259,8 @@ class Emulator:
             with self._lock:
                 if stop.is_set():
                     break
-                self._cond.wait(0.005)
+                if self._kicks == kicks:  # else an input arrived after the step began
+                    self._cond.wait(0.005)
             waiting = any(g.waiting_on for g in self.groups)
             overdue = (self.clock.now_ns() - last) * 1e-9 >= self.cfg.stall_timeout_s
             if waiting and not stalled and overdue:
@@ -1322,11 +1334,13 @@ class Emulator:
             self.rtf.start(self.clock.now_ns())
         last = self.clock.now_ns()
         while not self._all_ended():
+            kicks = self._kicks
             if self.step():
                 last = self.clock.now_ns()
                 continue
             with self._lock:
-                self._cond.wait(min(0.01, max(timeout, 0.0)) if self.cfg.external_inputs else 0)
+                if self._kicks == kicks:  # else an input arrived after the step began
+                    self._cond.wait(min(0.01, max(timeout, 0.0)) if self.cfg.external_inputs else 0)
             now = self.clock.now_ns()
             if (now - last) * 1e-9 < timeout and self.cfg.external_inputs:
                 continue

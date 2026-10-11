@@ -17,8 +17,8 @@ Each point runs until both variants have >= 200 bit errors or 2e7 data bits. The
 **API latency.** In-process ``send``/``recv`` call latency of 1000-sample buffers
 (``sremu.api.Device.inproc``), the native-ZMQ two-process round trip (served emulator in a
 second OS process, ``Device.connect``) and the sustained streaming rate (MS/s). The host's
-background load is sampled and recorded; numbers are this laptop's, not a claim about any
-other platform.
+background load is sampled and recorded; numbers describe the recording host (its platform
+is in the run manifest), not a claim about any other platform.
 """
 
 from __future__ import annotations
@@ -466,14 +466,15 @@ def run_latency(out_dir: str | Path) -> dict[str, Any]:
     rows.append({"metric": "zmq_sustained_msps", "mean_us": None, "p50_us": zmq["sustained_msps"]})
     write_csv(out / "latency.csv", rows)
     run.add_assumption(
-        "wall-clock measurements on a shared, loaded Windows laptop (see host_load_samples)"
+        "wall-clock measurements on the recording host (platform in the manifest environment; "
+        "background load in host_load_samples)"
     )
     write_meta(
         out,
         experiment="E-F",
         data_classes=["MEAS"],
         description="E-F API latency: in-process send/recv (1000-sample buffers), native-ZMQ "
-        "two-process round trip, sustained MS/s; this laptop only",
+        "two-process round trip, sustained MS/s; the recording host only",
         assumptions=run.assumptions,
         inputs=run.inputs,
         files={"latency.json": "percentiles and sustained rates", "latency.csv": "flat table"},
