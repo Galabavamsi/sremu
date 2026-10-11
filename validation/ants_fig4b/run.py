@@ -35,6 +35,7 @@ pipeline is exercised before unblinding.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -314,6 +315,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--data", type=Path, default=None, help="measured CSV (default: $SREMU_PRIVATE_DATA)"
     )
+    ap.add_argument(
+        "--columns",
+        default=None,
+        help="explicit JSON column map for the measured CSV, e.g. "
+        '\'{"theta_deg": "theta_deg_center", "r_m": "r_m_center", "y_dbm": "p_dbm", '
+        '"sigma_db": "p_dbm_unc"}\' (plumbing only; recorded in the results)',
+    )
     ap.add_argument("--dry-run-decoy", type=int, default=None, metavar="N")
     ap.add_argument("--n-boot", type=int, default=None)
     ap.add_argument("--allow-tensor-mismatch", action="store_true")
@@ -360,7 +368,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 2
         try:
-            md = protocol_lock.load_measured(args.data)
+            md = protocol_lock.load_measured(
+                args.data, columns=json.loads(args.columns) if args.columns else None
+            )
         except protocol_lock.ProtocolLockError as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 2
