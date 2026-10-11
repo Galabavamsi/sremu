@@ -86,7 +86,7 @@ W6 summary: with references whose own quadrature error is small (left-point 1 ms
 
 Machine-readable acceptance (meta.json): `{"w3_pass":true,"w3_iq_pass":true,"w5_pass":true,"w6_pass_by_grid":{"1ms":true,"1ms_midpoint_oracle":true,"5ms":false,"5ms_midpoint":true,"auto_T_u":false},"w6_doppler_isolated_pass":true,"W1":{"ks_positions_pass":true,"ks_starts_pass":true,"mean_leg_pass":true,"max_jump_pass":true,"teeth_pass":true}}`
 
-## W1: mobility statistics and the legacy kernel teeth
+## W1: mobility statistics (and an internal kernel-ratio teeth test)
 
 333333 positions at 10 Hz over T = 100000/3 s (10000 mean movement periods; 9921 legs). The `legacy_wcl_eq2` per-element power ratio to sremu's K1 cascade equals (pi lambda)^2 (cos_i cos_s)^(2q-1) with q = 0.285 to 1.55e-15 (relative, 2660 element ratios); at broadside and 1 GHz the factor is -0.521 dB per element. This is a statement about two kernels' ratio, not about which is right; it is an internal teeth test and is not featured in the paper (DESIGN D24).
 

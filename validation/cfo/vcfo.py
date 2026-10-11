@@ -1,6 +1,8 @@
-"""V-CFO: CFO before/after (DESIGN.md section 10.10; RQ-35) and the noisy study V-CFO-4.
+"""V-CFO: receiver-LO (CFO) verification (DESIGN.md section 10.10; RQ-35) and the noisy
+study V-CFO-4.
 
-Setup (port of the v1 BPSK pair, section 8.2): a 200-symbol header of 1+1j, 38 BPSK symbols
+Setup (the BPSK test burst of section 10.10; internally a port of the earlier simulator's
+pair, section 8.2): a 200-symbol header of 1+1j, 38 BPSK symbols
 at +-0.1(1+j), 10 samples/symbol, 2389 samples at 5880 S/s (``bpsk_v1_waveform``), through
 the in-process lockstep engine with the WP2 physics model of a static SIM link with a RIS
 (16 x 16 cells, 2.4 GHz - 3050 Hz, the v1 carrier). The RX LO is offset by -f, so the
@@ -641,7 +643,9 @@ def report(run_dir: Path) -> str:
     v4 = meta["numbers"]["vcfo4"]
     crb = meta["numbers"]["crb"]
     s = []
-    s.append("# V-CFO: CFO before/after and the noisy estimator study (DESIGN.md 10.10)\n")
+    s.append(
+        "# V-CFO: receiver-LO (CFO) verification and the noisy estimator study (DESIGN.md 10.10)\n"
+    )
     s.append(
         "Verification of sremu's receiver-LO (CFO) path against exact expectations and the "
         "Cramer-Rao bound. **Paper use (DESIGN D24):** no comparison with earlier simulators "
@@ -752,6 +756,13 @@ def report(run_dir: Path) -> str:
         f"({nf['legacy_samples_per_tick']} samples per 2 ms tick; apparent scale "
         f"{f(nf['legacy_apparent_scale'], 6)} = 11.76/11). DIG points carry +-4.5 Hz.\n"
     )
+    s.append(
+        "Paper use of the columns of `vcfo_sweep_noise_free.csv` (D24): `engine_*` are the "
+        "paper-facing F5a series; `legacy_*` (the internal adapter's name) may appear only as "
+        "the generic design lesson, under a neutral label such as 'integer samples per tick', "
+        "never as an earlier simulator or a before/after; `dig_*` are internal only and are not "
+        "plotted.\n"
+    )
     s.append("## V-CFO-4: RMSE vs the CRB (figure F5b data: `vcfo4_rmse_vs_crb.csv`)\n")
     s.append(
         "CRB of the frequency of a complex tone in complex AWGN with unknown amplitude and "
@@ -822,9 +833,47 @@ def report(run_dir: Path) -> str:
             f"k T0 F f_s (relative SE {f(nc['variance_rel_se'], 4)}); |mean normalised "
             "autocorrelation| at lags 1, 2, 3, 5, 10 = "
             + ", ".join(f(x, 4) for x in nc["abs_mean_rho_lags_1_2_3_5_10"])
-            + f" (SE {f(nc['rho_se'], 4)}). A pooled ratio a little below 1 is read as "
-            "sampling fluctuation with a white, calibrated noise, not as an estimator beating "
-            "the bound.\n"
+            + f" (SE {f(nc['rho_se'], 4)}).\n"
+        )
+        # how unusual the pooled ratios are for an efficient estimator: sum of squared errors
+        # over CRB^2 ~ chi2_n (n = trials per SNR), lower-tail probability
+        from scipy import stats
+
+        tails, p_low, p_two = [], [], []
+        for r in crb:
+            n = int(r["n_trials_total"])
+            ratio = float(r["periodogram_rmse_over_crb_pooled"])
+            z = (ratio - 1.0) / float(r["efficient_pooled_ratio_se"])
+            p = float(stats.chi2.cdf(n * ratio * ratio, n))
+            p_low.append(p)
+            p_two.append(2.0 * min(p, 1.0 - p))
+            tails.append(f"{f(r['snr_db'], 0)} dB {z:+.1f} SE, P_low = {p:.3f}")
+        b_low, b_two = min(1.0, 3 * min(p_low)), min(1.0, 3 * min(p_two))
+        if b_low > 0.05:
+            verdict = (
+                "No pooled ratio is significantly below 1 once the three SNRs are accounted for "
+                f"(Bonferroni 3 min P_low = {b_low:.3f}); with the white, calibrated noise above "
+                "this is read as sampling fluctuation, not as an estimator beating the bound"
+            )
+        elif b_two > 0.05:
+            verdict = (
+                f"Borderline: the lowest ratio is below 1 at Bonferroni 3 min P_low = {b_low:.3f} "
+                f"one-sided but not two-sided (3 min P = {b_two:.3f}); with the white, calibrated "
+                "noise above it is read as sampling fluctuation, which more trials would confirm "
+                "or refute"
+            )
+        else:
+            verdict = (
+                f"At least one pooled ratio differs from 1 significantly (Bonferroni two-sided "
+                f"3 min P = {b_two:.3f}): an estimator cannot beat the bound on average, so the "
+                "noise or SNR calibration needs investigation"
+            )
+        s.append(
+            "Distance of the pooled ratio from 1 and the lower-tail probability of the pooled sum "
+            "of squared errors under an efficient estimator (sum e^2/CRB^2 ~ chi2_n): "
+            + "; ".join(tails)
+            + f". {verdict}. The gate (RMSE <= 1.5 x CRB at every CFO point) does not depend on "
+            "this.\n"
         )
     s.append("## Run times\n")
     t = meta.get("timings_s", {})

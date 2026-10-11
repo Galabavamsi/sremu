@@ -743,8 +743,8 @@ def report(run_dir: Path) -> str:
     ]
     s.append("## E-D: required aperture vs obstruction (figure F12 data: `vfm_ed_map.csv`)\n")
     s.append(
-        "Without obstruction (nu = 0 on the 2 km ridge, i.e. a grazing edge with 6.02 dB "
-        "knife-edge loss on the LOS ray) and with ground on both RIS hops, the focused 56.25 m^2 "
+        "At the grazing ridge (nu = 0 on the 2 km ridge: the edge touches the LOS ray, 6.02 dB "
+        "knife-edge loss on it) and with ground on both RIS hops, the focused 56.25 m^2 "
         "RIS path is weaker than the direct path by (min to max over d2 = 1-2 km, both h_r):\n"
     )
     rows = []
@@ -812,6 +812,23 @@ def report(run_dir: Path) -> str:
         f"A0 = {A0:g} m^2 suffices (A_req <= A0) in these map rows per direct-path model (all "
         "geometries, ground options, d2, h_r and nu in 0 ... 5): " + "; ".join(suff) + ". "
         "A count pooled over the models is not meaningful.\n"
+    )
+    # validity of the coherent-aperture scaling: amplitude ~ area holds while the panel stays
+    # small against d2 and at its centre height (the ground factors use the 34.9 m centre)
+    prim = [r for r in edm if r["baseline"] == "two_ray_knife_edge"]
+    a_ground = (2 * H_RIS) ** 2  # a square panel centred at H_RIS reaches z = 0 at this area
+    n_low = sum(1 for r in prim if float(r["a_req_equal_power_m2"]) > a_ground)
+    side_over_d2 = max(math.sqrt(float(r["a_req_equal_power_m2"])) / float(r["d2_m"]) for r in prim)
+    s.append(
+        "Validity of the A_req scaling (amplitude proportional to the focused area): it needs a "
+        "panel side small against d2 and the added area kept near the 34.9 m centre height, "
+        "where the 56.25 m^2 panel's per-cell ground factors were evaluated (the scaling "
+        "extrapolates them). In the primary (two-ray + KE) rows the "
+        f"largest side/d2 is {f(side_over_d2, 3)}, and {n_low} of {len(prim)} entries exceed "
+        f"(2 x {H_RIS:g} m)^2 = {f(a_ground, 0)} m^2, the area at which a square panel centred "
+        f"at {H_RIS:g} m reaches the ground: those entries are dimensioning figures under the "
+        "scaling assumption (a wider, lower panel would change the ground factors), not "
+        "realisable square panels at that height.\n"
     )
     net = num["net_change_vs_two_ray_db"]
     s.append(

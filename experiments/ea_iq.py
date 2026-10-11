@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 import warnings
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -453,25 +454,117 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
-def aggregate(out_root: str | Path, results_dir: str | Path) -> list[dict[str, Any]]:
-    """VA-1 table from the run directories under ``out_root`` (one row per IQ run)."""
+NOISES = ("off", "on")
+EXPECTED_DURATION_S = 1000
+"""Run length of the VA-1 design (DESIGN.md section 11, E-A); shorter (smoke) runs are not
+VA-1 rows."""
+
+
+class VA1IncompleteError(RuntimeError):
+    """A (controller, tau_SUI, noise) row of the VA-1 design is missing, duplicated or not a
+    full-length run: VA-1 has no verdict (``all_accept`` must not be computed)."""
+
+
+def expected_va1_keys() -> list[tuple[str, str, str]]:
+    """Every (controller, tau_SUI, noise) row of the VA-1 design, in table order."""
+    return [(kind, tau, noise) for kind, tau in POINTS for noise in NOISES]
+
+
+def check_va1_complete(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Raise :class:`VA1IncompleteError` unless ``rows`` holds exactly one row per design key
+    (``controller``, ``tau_sui_s``, ``noise``; compared as strings, so rows read back from
+    ``va1.csv`` work too) and every row is a full-length run."""
+    keys = [(str(r["controller"]), str(r["tau_sui_s"]), str(r["noise"])) for r in rows]
+    want = expected_va1_keys()
+    missing = [k for k in want if k not in keys]
+    extra = sorted({k for k in keys if k not in want})
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    short = [
+        k
+        for k, r in zip(keys, rows, strict=True)
+        if str(r.get("duration_s")) != str(EXPECTED_DURATION_S)
+    ]
+    if missing or extra or dup or short:
+        raise VA1IncompleteError(
+            f"VA-1 incomplete: {len(set(keys) & set(want))}/{len(want)} design rows present; "
+            f"missing {missing}; unexpected {extra}; duplicated {dup}; "
+            f"not {EXPECTED_DURATION_S} s: {short}"
+        )
+
+
+def _sha256_file(p: Path) -> str | None:
+    import hashlib
+
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+
+
+def _run_provenance(run_dir: Path) -> dict[str, Any]:
+    """Host, code and origin of one run directory (its ``manifest.json``, ``meta.json`` and,
+    for runs imported from another host, ``provenance.json``)."""
+    man = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    meta_p = run_dir / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.is_file() else {}
+    code = meta.get("code") or {}
+    prov_p = run_dir / "provenance.json"
+    prov = json.loads(prov_p.read_text(encoding="utf-8")) if prov_p.is_file() else None
+    aws = man.get("aws_instance") or {}
+    return {
+        "source": f"aws:{prov['run_id']}" if prov else "local",
+        "cpu_model": man.get("cpu_model"),
+        "platform": man.get("platform"),
+        "aws_instance_type": aws.get("type"),
+        "python": (man.get("versions") or {}).get("python"),
+        "git_commit": man.get("git_commit"),
+        "git_dirty": man.get("git_dirty"),
+        "dirty_patch_sha256": man.get("dirty_patch_sha256"),
+        "src_sremu_tree_sha256": code.get("src_sremu_tree_sha256"),
+        "ea_iq_py_sha256": (code.get("files") or {}).get("experiments/ea_iq.py"),
+        "manifest_sha256": _sha256_file(run_dir / "manifest.json"),
+        "provenance": prov,
+    }
+
+
+def aggregate(
+    out_root: str | Path, results_dir: str | Path, *, strict: bool = True
+) -> list[dict[str, Any]]:
+    """VA-1 table from the run directories under ``out_root`` (one row per IQ run).
+
+    ``strict`` (default): raise :class:`VA1IncompleteError` before writing anything when any
+    (controller, tau_SUI, noise) row of the design is missing or not a full-length run, so a
+    partial table never reaches the paper. ``strict=False`` writes the rows found and records
+    the missing ones in ``meta.json`` (``complete: false``, ``all_accept: null``).
+    """
     root, out = Path(out_root), Path(results_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    rec = RunRecord(out, ea.SEED, mode="analysis", patch_root=out)
-    rows = []
+    rows: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    runs: list[dict[str, Any]] = []
     for kind, tau in POINTS:
-        bpath = root / f"batch_{kind}_tau{tau}" / "result.json"
-        if not bpath.exists():
-            continue
-        b = json.loads(bpath.read_text(encoding="utf-8"))
-        for noise in ("off", "on"):
-            rp = root / f"{kind}_tau{tau}_noise{noise}" / "result.json"
-            if not rp.exists():
+        bdir = root / f"batch_{kind}_tau{tau}"
+        bpath = bdir / "result.json"
+        b = json.loads(bpath.read_text(encoding="utf-8")) if bpath.exists() else None
+        bprov = _run_provenance(bdir) if b is not None else None
+        for noise in NOISES:
+            rdir = root / f"{kind}_tau{tau}_noise{noise}"
+            rp = rdir / "result.json"
+            r = json.loads(rp.read_text(encoding="utf-8")) if rp.exists() else None
+            why = None
+            if b is None or bprov is None:
+                why = "batch reference missing"
+            elif r is None:
+                why = "IQ result missing"
+            elif int(r["duration_s"]) != EXPECTED_DURATION_S:
+                why = f"IQ run is {r['duration_s']} s, not {EXPECTED_DURATION_S} s"
+            if why is not None or b is None or bprov is None or r is None:
+                missing.append(
+                    {"controller": kind, "tau_sui_s": tau, "noise": noise, "why": str(why)}
+                )
                 continue
-            r = json.loads(rp.read_text(encoding="utf-8"))
+            prov = _run_provenance(rdir)
             lo, hi = r["p_iq_ci_dbm"]
             ref = b["p_vectorized_mid_dbm"]
             diff = r["p_iq_dbm"] - ref
+            cso = str(r.get("controller_stdout", ""))
+            ctl = json.loads(cso) if cso.startswith("{") else {}
             rows.append(
                 {
                     "controller": kind,
@@ -492,10 +585,52 @@ def aggregate(out_root: str | Path, results_dir: str | Path) -> list[dict[str, A
                     "late_records": r["server"]["late_records"],
                     "nondeterministic_inputs": r["server"]["nondeterministic_inputs"],
                     "verify_interp_max_rel": r["server"]["verify_interp_max_rel"],
-                    "barriers_commands": r["controller_stdout"],
+                    "controller_barriers": ctl.get("barriers"),
+                    "controller_commands": ctl.get("commands"),
+                    "server_command_records": r["server"]["n_records"],
+                    "source": prov["source"],
+                    "cpu_model": prov["cpu_model"],
+                    "platform": prov["platform"],
+                    "aws_instance_type": prov["aws_instance_type"],
+                    "git_commit": prov["git_commit"],
+                    "git_dirty": prov["git_dirty"],
+                    "src_sremu_tree_sha256": prov["src_sremu_tree_sha256"],
+                    "ea_iq_py_sha256": prov["ea_iq_py_sha256"],
+                    "batch_source": bprov["source"],
+                    "batch_cpu_model": bprov["cpu_model"],
                 }
             )
+            runs.append({"run_dir": rdir.name, "batch_dir": bdir.name, "iq": prov, "batch": bprov})
+    if missing and strict:
+        raise VA1IncompleteError(
+            f"VA-1 incomplete under {root}: {len(rows)}/{len(expected_va1_keys())} rows; "
+            f"missing {missing}"
+        )
+    complete = not missing
+    if complete:
+        check_va1_complete(rows)
+    out.mkdir(parents=True, exist_ok=True)
+    rec = RunRecord(out, ea.SEED, mode="analysis", patch_root=out)
     write_csv(out / "va1.csv", rows)
+    hosts: dict[str, dict[str, Any]] = {}
+    for x in runs:
+        p = x["iq"]
+        h = hosts.setdefault(
+            p["source"],
+            {
+                "cpu_model": p["cpu_model"],
+                "platform": p["platform"],
+                "aws_instance_type": p["aws_instance_type"],
+                "python": p["python"],
+                "rows": [],
+            },
+        )
+        h["rows"].append(x["run_dir"])
+    cross = {
+        x["batch_dir"]: x["batch"]["provenance"].get("cross_host_check")
+        for x in runs
+        if x["batch"]["provenance"]
+    }
     write_meta(
         out,
         experiment="E-A-IQ",
@@ -504,11 +639,37 @@ def aggregate(out_root: str | Path, results_dir: str | Path) -> list[dict[str, A
         "barrier mode, external RX app, 10 ms windows) vs the batch evaluators over 1000 s",
         assumptions=[
             "acceptance (noise off): |IQ - vectorized midpoint evaluator| <= 0.02 dB",
-            "acceptance (noise on): vectorized value inside the IQ 95 % batch-means interval (20 batches)",
+            "acceptance (noise on): vectorized value inside the IQ 95 % batch-means interval "
+            "(20 batches)",
             "run_batch (left-point rule, 5 ms grid) reported for comparison",
+            "VA-1 verdict only over the complete design: every (controller, tau_SUI, noise) row, "
+            f"{EXPECTED_DURATION_S} s each",
+            "rows may come from several hosts ('hosts'; cpu_model and platform per row): wall "
+            "time and RTF are host-specific, powers are not",
         ],
-        files={"va1.csv": "one row per (controller, tau_SUI, noise)"},
-        extra={"out_root": str(root)},
+        inputs=[
+            {
+                "path": f"{x['run_dir']}/manifest.json",
+                "sha256": str(x["iq"]["manifest_sha256"]),
+                "data_class": "SIM-sremu",
+            }
+            for x in runs
+        ],
+        files={
+            "va1.csv": "one row per (controller, tau_SUI, noise), with host and code provenance"
+        },
+        extra={
+            "out_root": str(root),
+            "expected_rows": len(expected_va1_keys()),
+            "complete": complete,
+            "missing_rows": missing,
+            "all_accept": all(r["accept"] for r in rows) if complete else None,
+            "hosts": hosts,
+            "imported_runs": {
+                x["run_dir"]: x["iq"]["provenance"] for x in runs if x["iq"]["provenance"]
+            },
+            "batch_reference_cross_host_check": cross,
+        },
     )
     rec.finish()
     return rows

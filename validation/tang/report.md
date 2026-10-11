@@ -41,9 +41,11 @@ V-TANG-1: max |engine - published| = 0.0121 dB, mean 0.0080 dB, RMSE 0.0084 dB.
 
 ## Paper wording (DESIGN 10.8 template, filled from this run)
 
-> The kernel reproduces Tang et al.'s published model curves within 0.02 dB. Their digitized chamber measurements lie +0.99 dB (SD 0.38 dB, n = 36) above that published model.
+> The kernel reproduces Tang et al.'s published model curves within 0.02 dB. Their digitized chamber measurements lie +0.98 dB (SD 0.38 dB, n = 36) above that published model.
 
-Filled as: curve = max |engine - published| rounded up to 0.01 dB (a bound); bias and SD = measured - published Eq. 9 curve (the sentence's "above that published model"). With measured - engine instead, the bias is +0.977 dB (SD 0.380 dB). The DESIGN placeholders ({0.02}, {+0.98}, {0.38}) were scratch values; the paper must take these numbers from the pipeline macros, not from this report.
+Filled as: curve = max |engine - published| rounded up to 0.01 dB (a bound); bias and SD = measured - published Eq. 9 curve (the sentence's "above that published model"). The bias is the exact mean over the two-decimal digitized values, 197/200 = 0.9850 dB, a tie at two decimals, rounded half-even (float rounding of the mean, 0.9850000000000007, would give +0.99 dB from representation noise alone). With measured - engine instead, the bias is +0.977 dB (SD 0.380 dB), +0.98 dB at two decimals. The DESIGN placeholders ({0.02}, {+0.98}, {0.38}) agree with these values; the paper must take the numbers from the pipeline macros (with the same exact-decimal rounding of the bias), not from this report.
+
+This run's `meta.json` stores the wording written before the exact-decimal rule: "The kernel reproduces Tang et al.'s published model curves within 0.02 dB. Their digitized chamber measurements lie +0.99 dB (SD 0.38 dB, n = 36) above that published model.". It differs only in the rounding of the bias tie.
 
 ## Files and run time
 

@@ -1,6 +1,6 @@
 """ST-05: CFO estimator vs the Cramer-Rao bound through the engine (DESIGN.md 10.5, 10.10).
 
-Reduced V-CFO-4: the v1 BPSK pair through the in-process lockstep engine with the engine's
+Reduced V-CFO-4: the BPSK test burst through the in-process lockstep engine with the engine's
 physical noise (k T0 F f_s, F = 0 dB), per-sample header SNR 10 and 20 dB set through the
 TX full scale, 2 CFO points x 30 independently keyed trials per SNR (the study runs
 7 x 200). The periodogram + parabolic estimator on the N = 2000 header samples must reach

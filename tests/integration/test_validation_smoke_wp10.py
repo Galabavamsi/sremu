@@ -90,8 +90,21 @@ def test_vtang_smoke(tmp_path: Path) -> None:
     assert num["vtang1_bound_for_wording_db"] >= num["vtang1_max_abs_db"]
     assert num["vtang1_bound_for_wording_db"] - num["vtang1_max_abs_db"] < 0.01
     assert f"within {num['vtang1_bound_for_wording_db']:.2f} dB" in num["wording"]
+    # the wording's bias is the exact mean over the two-decimal digitized values, rounded
+    # half-even (on this data set it is the tie 197/200 dB, so float rounding would decide
+    # it by representation noise)
+    pts = _rows(rd / "vtang_points.csv")
+    exact = sum(
+        (Fraction(r["measured_dbm"]) - Fraction(r["published_eq9_dbm"]) for r in pts),
+        Fraction(0),
+    ) / len(pts)
+    assert num["vtang2_measured_minus_published_bias_exact"] == str(exact)
+    q = round(exact * 100)  # Fraction rounding: exact, ties to even
+    bias_txt = f"{'+' if q >= 0 else '-'}{abs(q) // 100}.{abs(q) % 100:02d}"
+    assert f"lie {bias_txt} dB" in num["wording"]
     text = vt.report(rd)  # report.md renders from meta.json (not written for tmp roots)
     assert "V-TANG-1" in text and "not** presented as sremu accuracy" in text
+    assert f"> {num['wording']}" in text
     assert not (rd.parent / "report.md").exists()
 
 
@@ -123,7 +136,11 @@ def test_vcfo_smoke(tmp_path: Path) -> None:
     assert "internal only" in meta["paper_use"]["dig_*"]
     nc = meta["numbers"]["noise_check"]
     assert abs(nc["variance_over_kT0Ffs"] - 1.0) < 5 * nc["variance_rel_se"] + 0.02
-    assert "V-CFO-4" in vc.report(rd)
+    text = vc.report(rd)
+    assert "V-CFO-4" in text
+    # D24: no before/after framing in the report's title; internal series marked as such
+    assert "before/after" not in text.splitlines()[0].lower()
+    assert "internal only" in text
 
 
 def test_vcfo_lag1_theory_matches_simulation() -> None:
@@ -179,6 +196,7 @@ def test_vwcl_smoke(tmp_path: Path) -> None:
     )
     w1 = meta["numbers"]["W1"]
     assert w1["teeth_pass"] is True and w1["teeth_eq2_ratio_max_rel_dev"] <= 1e-9
+    assert "internal only" in meta["paper_use"]["W1 teeth_eq2_*"]  # D24
     assert w1["max_jump_pass"] is True
     iq = _rows(rd / "w3_iq.csv")
     assert iq and all(r["config_mismatches"] == "0" for r in iq)
@@ -210,6 +228,9 @@ def test_vwcl_smoke(tmp_path: Path) -> None:
     assert meta2["acceptance"] == acc0 and meta2["reaggregated_utc"]
     text = vw.report(rd)
     assert "W5" in text and "documented deviation" in text.lower()
+    # D24: the internal kernel-ratio teeth test is marked internal; no 'legacy' heading
+    assert not any(ln.startswith("#") and "legacy" in ln.lower() for ln in text.splitlines())
+    assert "internal, not for the paper" in text
 
 
 def test_vwcl_resume(tmp_path: Path) -> None:
@@ -249,7 +270,13 @@ def test_vfm_smoke(tmp_path: Path) -> None:
     assert {r["ground_on_ris_hops"] for r in ed} == {"true", "false"}
     assert {float(r["d2_m"]) for r in ed} == {500.0, 1000.0, 2000.0}
     assert {float(r["h_r_m"]) for r in ed} == {1.5, 10.0}
-    assert "not validated" in vf.report(rd)
+    # A_req is the coherent-aperture scaling A0 |h_dir| / |h_RIS(A0)|, row by row
+    for r in ed[:: max(1, len(ed) // 50)]:
+        a_req = vf.A0 * 10 ** ((float(r["pl_ris_a0_db"]) - float(r["pl_direct_db"])) / 20)
+        assert float(r["a_req_equal_power_m2"]) == pytest.approx(a_req, rel=1e-12)
+    text = vf.report(rd)
+    assert "not validated" in text
+    assert "Validity of the A_req scaling" in text
 
 
 def test_vfm_four_ray_geometry_consistent_with_engine_edge() -> None:

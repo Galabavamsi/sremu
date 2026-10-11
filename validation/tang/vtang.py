@@ -12,7 +12,11 @@ measured calibration replaces them: ``P_R = P_T + 24.0 dB - 20 log10(G_0) + 20 l
 * **V-TANG-1**: engine vs the published Eq. (9) curves, max |difference| <= 0.05 dB.
 * **V-TANG-2**: measured - model (engine; and the published curve, for the wording):
   bias, SD, RMSE, n = 36; regression gate |RMSE(measured - engine) - 1.05| <= 0.05 dB.
-* Paper wording template (DESIGN 10.8), filled from the numbers of this run.
+* Paper wording template (DESIGN 10.8), filled from the numbers of this run. The bias of
+  the wording (measured - published curve) is computed exactly on the digitized two-decimal
+  values and rounded half-even (:func:`exact_mean_diff`, :func:`fmt_half_even`): on this data
+  set it is exactly 197/200 = 0.985 dB, a tie at two decimals, which float rounding would
+  resolve by representation noise.
 
 Usage::
 
@@ -53,6 +57,25 @@ WORDING = (
     "digitized chamber measurements lie {bias} dB (SD {sd} dB, n = {n}) above that "
     "published model."
 )
+
+
+def exact_mean_diff(a: Sequence[Any], b: Sequence[Any]) -> Fraction:
+    """Exact mean of ``a - b`` over decimal values (floats are read through their shortest
+    ``repr``, CSV strings as written), so a rounding tie is a real tie, not float noise."""
+    if len(a) != len(b) or not a:
+        raise ValueError("need two non-empty sequences of equal length")
+    tot = sum(
+        (Fraction(repr(x) if isinstance(x, float) else str(x)) for x in a), Fraction(0)
+    ) - sum((Fraction(repr(y) if isinstance(y, float) else str(y)) for y in b), Fraction(0))
+    return tot / len(a)
+
+
+def fmt_half_even(x: Fraction, nd: int = 2) -> str:
+    """Signed decimal string of ``x`` rounded half-even to ``nd`` places (exact)."""
+    q = round(x * 10**nd)  # Fraction.__round__: exact, ties to even
+    s = "+" if q >= 0 else "-"
+    q = abs(q)
+    return f"{s}{q // 10**nd}.{q % 10**nd:0{nd}d}" if nd > 0 else f"{s}{q}"
 
 
 def check_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -212,14 +235,24 @@ def study(root: Path | None = None) -> Path:
     # "within X dB" is a bound, so X is the maximum rounded *up* to 0.01 dB
     curve_bound = math.ceil(curve_max * 100.0 - 1e-9) / 100.0
     numbers["vtang1_bound_for_wording_db"] = curve_bound
+    # the bias of the wording on the exact decimal values (a two-decimal tie is resolved by
+    # the stated rule, not by float representation noise)
+    bias_exact = exact_mean_diff(
+        [r["measured_dbm"] for r in rows], [r["published_eq9_dbm"] for r in rows]
+    )
+    numbers["vtang2_measured_minus_published_bias_exact"] = str(bias_exact)
+    numbers["wording_bias_rounding"] = "exact decimal mean, half-even to 0.01 dB"
     wording = WORDING.format(
-        curve=f"{curve_bound:.2f}", bias=f"{m_pub.bias:+.2f}", sd=f"{m_pub.sd:.2f}", n=m_pub.n
+        curve=f"{curve_bound:.2f}",
+        bias=fmt_half_even(bias_exact, 2),
+        sd=f"{m_pub.sd:.2f}",
+        n=m_pub.n,
     )
     numbers["wording"] = wording
     numbers["wording_note"] = (
         "Template of DESIGN.md 10.8 filled from this run (curve: max |engine - published| "
-        "rounded up to 0.01 dB; bias/SD: measured - published Eq. 9 curve). Not presented as "
-        "sremu accuracy."
+        "rounded up to 0.01 dB; bias/SD: measured - published Eq. 9 curve, bias as the exact "
+        "decimal mean rounded half-even). Not presented as sremu accuracy."
     )
     vs.write_json(run.path("vtang_summary.json"), {"acceptance": acc, **numbers})
     meta = {
@@ -237,6 +270,14 @@ def study(root: Path | None = None) -> Path:
 
 
 # =========================================================================== report
+
+
+def _points(run_dir: Path) -> list[dict[str, str]]:
+    """Rows of a run directory's ``vtang_points.csv`` (values as written: ``repr`` floats)."""
+    import csv
+
+    with (Path(run_dir) / "vtang_points.csv").open(encoding="utf-8", newline="") as fh:
+        return list(csv.DictReader(fh))
 
 
 def report(run_dir: Path) -> str:
@@ -359,17 +400,58 @@ def report(run_dir: Path) -> str:
         )
         + "\n"
     )
+    # the wording is re-filled here from the run's points with the exact-decimal rule, so a
+    # run directory written before that rule renders the same sentence
+    pts = _points(run_dir)
+    bias_exact = exact_mean_diff(
+        [r["measured_dbm"] for r in pts], [r["published_eq9_dbm"] for r in pts]
+    )
+    curve_s = f"{num['vtang1_bound_for_wording_db']:.2f}"
+    bias_s = fmt_half_even(bias_exact, 2)
+    sd_s = f"{mp['sd']:.2f}"
+    wording = WORDING.format(curve=curve_s, bias=bias_s, sd=sd_s, n=mp["n"])
     s.append("## Paper wording (DESIGN 10.8 template, filled from this run)\n")
-    s.append(f"> {num['wording']}\n")
+    s.append(f"> {wording}\n")
+    q2 = bias_exact * 100
+    tie = q2.denominator == 2  # exactly halfway between two 0.01 dB steps
+    design = ("0.02", "+0.98", "0.38")
     s.append(
         "Filled as: curve = max |engine - published| rounded up to 0.01 dB (a bound); "
         "bias and SD = "
         'measured - published Eq. 9 curve (the sentence\'s "above that published model"). '
-        f"With measured - engine instead, the bias is {f(me['bias'], 3, sign=True)} dB (SD "
-        f"{f(me['sd'], 3)} dB). The DESIGN placeholders ({{0.02}}, {{+0.98}}, {{0.38}}) were "
-        "scratch values; the paper must take these numbers from the pipeline macros, not from "
-        "this report.\n"
+        f"The bias is the exact mean over the two-decimal digitized values, {bias_exact} = "
+        f"{float(bias_exact):.4f} dB"
+        + (
+            ", a tie at two decimals, rounded half-even (float rounding of the mean, "
+            f"{f(mp['bias'], 16)}, would give "
+            f"{float(mp['bias']):+.2f} dB from representation noise alone)"
+            if tie
+            else ", rounded half-even"
+        )
+        + f". With measured - engine instead, the bias is {f(me['bias'], 3, sign=True)} dB "
+        f"(SD {f(me['sd'], 3)} dB), {fmt_half_even(Fraction(repr(me['bias'])), 2)} dB at two "
+        "decimals. The DESIGN placeholders ({0.02}, {+0.98}, {0.38}) "
+        + (
+            "agree with these values"
+            if (curve_s, bias_s, sd_s) == design
+            else f"differ from these values ({curve_s}, {bias_s}, {sd_s})"
+        )
+        + "; the paper must take the numbers from the pipeline macros (with the same "
+        "exact-decimal rounding of the bias), not from this report.\n"
     )
+    if num.get("wording") != wording:
+        float_rounded = WORDING.format(
+            curve=curve_s, bias=f"{float(mp['bias']):+.2f}", sd=sd_s, n=mp["n"]
+        )
+        why = (
+            "It differs only in the rounding of the bias tie."
+            if num.get("wording") == float_rounded
+            else "It differs from the sentence above beyond the bias rounding; check the run."
+        )
+        s.append(
+            f"This run's `meta.json` stores the wording written before the exact-decimal rule: "
+            f'"{num.get("wording")}". {why}\n'
+        )
     s.append("## Files and run time\n")
     s.append(
         "`vtang_points.csv` (per point: panel, geometry, published, engine and measured dBm and "

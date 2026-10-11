@@ -1672,6 +1672,12 @@ def study(
         "parts": list(parts),
         "profile": profile,
         "data_classes": ["SIM-sremu", "ANALYTIC", "REPORTED", "ASSUMED"],
+        "paper_use": {
+            "W1 positions/starts/mean leg/max jump, W3, W5, W6": "paper (verification under the "
+            "area-tied kernel; DESIGN 1.6 rule 6 wording)",
+            "W1 teeth_eq2_*": "internal only: kernel-ratio teeth test, not featured in the paper "
+            "(DESIGN D24; nothing about the letter's Eq. 2, DESIGN 1.6 rule 6, H-3)",
+        },
         "seeds": {
             "scenario_seed": SEED,
             "mobility_key": "mobility/mu (scenario seed)",
@@ -1979,7 +1985,7 @@ def report(run_dir: Path) -> str:
     s.append(f"Machine-readable acceptance (meta.json): `{json_compact(acc)}`\n")
     # ---------------- W1
     if w1:
-        s.append("## W1: mobility statistics and the legacy kernel teeth\n")
+        s.append("## W1: mobility statistics (and an internal kernel-ratio teeth test)\n")
         s.append(
             f"{w1.get('n_position_samples')} positions at {w1.get('sample_rate_hz')} Hz over "
             f"T = {w1.get('T_s')} s ({w1.get('n_periods_requested')} mean movement periods; "

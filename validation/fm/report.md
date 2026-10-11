@@ -75,7 +75,7 @@ V-FM-1 geometry (T15 of `pm_checks.py`): PEC ground (Gamma_H = -1), d_TX-RIS = 5
 
 ## E-D: required aperture vs obstruction (figure F12 data: `vfm_ed_map.csv`)
 
-Without obstruction (nu = 0 on the 2 km ridge, i.e. a grazing edge with 6.02 dB knife-edge loss on the LOS ray) and with ground on both RIS hops, the focused 56.25 m^2 RIS path is weaker than the direct path by (min to max over d2 = 1-2 km, both h_r):
+At the grazing ridge (nu = 0 on the 2 km ridge: the edge touches the LOS ray, 6.02 dB knife-edge loss on it) and with ground on both RIS hops, the focused 56.25 m^2 RIS path is weaker than the direct path by (min to max over d2 = 1-2 km, both h_r):
 
 | geometry | direct-path model | direct minus RIS |
 |---|---|---|
@@ -142,6 +142,8 @@ Required aperture A_req (m^2) for RIS path = direct path, lateral geometry, ridg
 | free space + KE (reference) | false | 2000 | 10.0 | 4163.8 | 1687.8 | 924.6 | 622.9 | 374.7 |
 
 A0 = 56.25 m^2 suffices (A_req <= A0) in these map rows per direct-path model (all geometries, ground options, d2, h_r and nu in 0 ... 5): two-ray + KE (primary): 0 of 1224; free space + KE (reference): 0 of 1224; four-ray KE ([ENG] sensitivity): 23 of 1224; P.526 + KE (EXPERIMENTAL): 844 of 1224. A count pooled over the models is not meaningful.
+
+Validity of the A_req scaling (amplitude proportional to the focused area): it needs a panel side small against d2 and the added area kept near the 34.9 m centre height, where the 56.25 m^2 panel's per-cell ground factors were evaluated (the scaling extrapolates them). In the primary (two-ray + KE) rows the largest side/d2 is 0.047, and 62 of 1224 entries exceed (2 x 34.9 m)^2 = 4872 m^2, the area at which a square panel centred at 34.9 m reaches the ground: those entries are dimensioning figures under the scaling assumption (a wider, lower panel would change the ground factors), not realisable square panels at that height.
 
 The ridge also shields the ground ray that nearly cancels the LOS at grazing incidence, so the two-ray + knife-edge direct path can be *stronger* than the unobstructed two-ray (negative net change, dB):
 
