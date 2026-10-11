@@ -73,5 +73,13 @@ def test_cff_licence_is_pending_not_declared(cff: dict) -> None:
     assert (REPO / "LICENSE-PENDING.md").is_file()
 
 
+def test_cff_text_is_neutral_while_the_licence_is_pending(cff: dict) -> None:
+    """Gate H-2 is open: the abstract and message do not call sremu open source yet."""
+    for key in ("abstract", "message"):
+        text = " ".join(cff[key].split()).lower()
+        assert "open-source" not in text and "open source" not in text, key
+    assert cff["abstract"].startswith("sremu is a software-only, IQ-level")
+
+
 def test_cff_keywords_keep_smart_radio_environment(cff: dict) -> None:
     assert "smart radio environment" in cff["keywords"]

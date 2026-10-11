@@ -1,6 +1,6 @@
 """sremu: Smart Radio Environment EMUlator.
 
-An open-source, software-only, IQ-level radio-environment emulator in which RIS
+A software-only, IQ-level radio-environment emulator in which RIS
 configuration is a timestamped runtime command from an external controller, applied at an
 exact, logged sample on every receiver (DESIGN.md section 1.1).
 

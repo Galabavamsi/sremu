@@ -131,6 +131,26 @@ def test_readme_states_independence_d24():
     assert "## Lineage" not in text and "v1-legacy" not in text and "v2-legacy" not in text
 
 
+def test_public_metadata_is_neutral_while_the_licence_is_pending():
+    """Licence gate H-2 is open (LICENSE-PENDING.md), so the package metadata and docstring
+    do not call sremu open source yet; the README says it is *meant* to be released as such."""
+    import sremu
+
+    assert (REPO / "LICENSE-PENDING.md").is_file()
+    description = PYPROJECT["project"]["description"]
+    assert description.startswith("Smart Radio Environment EMUlator: a software-only")
+    for text in (description, sremu.__doc__ or ""):
+        assert "open-source" not in text.lower() and "open source" not in text.lower()
+
+
+def test_security_policy_has_no_lineage_reference_d24():
+    """D24: SECURITY.md keeps its hardening content without naming earlier versions."""
+    text = (REPO / "SECURITY.md").read_text(encoding="utf-8")
+    assert "path-traversal" in text and "cross-site" in text  # the content stays
+    assert re.search(r"\bv[12]\b", text) is None
+    assert "legacy" not in text.lower() and "lineage" not in text.lower()
+
+
 def test_d13_offline_install_documented():
     for doc in ("README.md", "CONTRIBUTING.md"):
         text = (REPO / doc).read_text(encoding="utf-8")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sremu"
 version = "0.1.0.dev0"
-description = "Smart Radio Environment EMUlator: an open-source, software-only, IQ-level radio-environment emulator with timed RIS control"
+description = "Smart Radio Environment EMUlator: a software-only, IQ-level radio-environment emulator with timed RIS control"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "LicenseRef-Pending" }

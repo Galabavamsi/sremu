@@ -404,6 +404,10 @@ class ManifestRecorder:
     ``run_dir`` when dirty), ``scenario.resolved.yaml``, the start time and default per-RX
     page sizes. The engine then reports decisions and counters; :meth:`finish` stamps the
     end time and writes ``manifest.json``.
+
+    ``git``: the git state to record instead of reading it from ``repo_dir`` (a driver that
+    fixed one state for several processes, or a job bundle without ``.git``); no git process
+    is started then.
     """
 
     def __init__(
@@ -415,6 +419,7 @@ class ManifestRecorder:
         repo_dir: str | Path | None = None,
         threads: int | None = None,
         environment: Mapping[str, Any] | None = None,
+        git: GitState | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -422,7 +427,7 @@ class ManifestRecorder:
         self._t0 = time.perf_counter()
         self._sampler = HostLoadSampler()
         env = dict(environment) if environment is not None else environment_info()
-        gs = git_state(repo_dir)
+        gs = git if git is not None else git_state(repo_dir)
         if gs.dirty and gs.patch is not None:
             (self.run_dir / PATCH_NAME).write_bytes(gs.patch)
         (self.run_dir / RESOLVED_SCENARIO_NAME).write_text(

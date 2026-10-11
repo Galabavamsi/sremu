@@ -15,6 +15,14 @@ This module only uses public sremu APIs (scenario loader, manifest recorder, sys
 ``validation/<study>/report.md`` is rendered from a run directory's ``meta.json`` by the
 study script (``--report RUN_DIR``), so every number in it is the measured value.
 
+**Git state.** :func:`study_git_state` chooses the commit and dirty flag every run records,
+with the rules of the WP11 experiments: ``$SREMU_EXP_GIT_JSON`` first (the state a driver
+such as ``experiments/regenerate_paper_data.sh`` fixed once for all its processes; read as
+``experiments/common.py:git_info`` reads it), then the work tree (read-only git), and for a
+job bundle without ``.git`` ``$SREMU_GIT_COMMIT`` / ``$SREMU_GIT_DIRTY`` (set by
+``research/aws/runner.py``; read as ``bench/_common.py:bundle_commit`` reads them).
+``meta.json`` names the source (``git_state_source``).
+
 **Numba environment.** Importing this module from a study script run as ``__main__`` (or its
 spawned sweep workers), before numba is imported, applies the deterministic-mode
 environment of the CLI (D-4, D15): ``NUMBA_DISABLE_INTEL_SVML=1`` and
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import dataclasses
 import hashlib
 import json
 import math
@@ -61,6 +70,8 @@ if "numba" not in sys.modules and _run_as_study_script():  # D-4, D15; see the d
 
 import numpy as np  # noqa: E402
 
+from sremu.record.manifest import GitState, git_state  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 VALIDATION = REPO / "validation"
 DATA_VALIDATION = REPO / "data" / "validation"
@@ -82,10 +93,15 @@ __all__ = [
     "resolve_mapping",
     "run_header",
     "sha256_file",
+    "study_git_state",
     "write_csv",
     "write_json",
     "write_report",
 ]
+
+GIT_JSON_ENV = "SREMU_EXP_GIT_JSON"
+"""Path of a JSON git state ``{commit, dirty, dirty_patch_sha256, dirty_patch_path}`` fixed by
+a driver for all its processes (the variable of ``experiments/common.py``)."""
 
 
 def sha256_file(path: str | Path) -> str:
@@ -188,6 +204,53 @@ def resolve_mapping(d: Mapping[str, Any], base_dir: str | Path | None = None) ->
         return resolve_scenario(parse_scenario(dict(d)), base_dir, warn=False)
 
 
+@dataclasses.dataclass(frozen=True)
+class RecordedGitState(GitState):
+    """A git state taken from a driver's JSON record: keeps the recorded patch SHA-256 when
+    the patch bytes are not at hand (``patch`` None)."""
+
+    recorded_patch_sha256: str | None = None
+
+    @property
+    def patch_sha256(self) -> str | None:
+        return self.recorded_patch_sha256 if self.patch is None else super().patch_sha256
+
+
+def study_git_state(repo_dir: str | Path | None = None) -> tuple[GitState, str]:
+    """The git state a study run records, and where it came from (module docstring).
+
+    1. ``$SREMU_EXP_GIT_JSON`` naming an existing file (otherwise ignored, as in
+       ``experiments/common.py:git_info``). A dirty state's patch bytes are read from its
+       ``dirty_patch_path`` when that file exists and has the recorded SHA-256 (the run
+       directory then gets ``dirty.patch``); otherwise only the recorded SHA-256 is kept.
+    2. The work tree containing ``repo_dir`` (default: this repository; read-only git).
+    3. When that gives no commit (no ``.git``, e.g. an AWS job bundle): ``$SREMU_GIT_COMMIT``
+       and ``$SREMU_GIT_DIRTY`` (``1``/``0``; unset = unknown), as ``bench/_common.py``.
+    """
+    env_path = os.environ.get(GIT_JSON_ENV)
+    if env_path and Path(env_path).is_file():
+        d = json.loads(Path(env_path).read_text(encoding="utf-8"))
+        rec_sha = d.get("dirty_patch_sha256")
+        patch = None
+        pp = d.get("dirty_patch_path")
+        if d.get("dirty") and pp and Path(pp).is_file():
+            b = Path(pp).read_bytes()
+            patch = b if hashlib.sha256(b).hexdigest() == rec_sha else None
+        gs = RecordedGitState(
+            d.get("commit"), d.get("dirty"), patch, d.get("reason"), recorded_patch_sha256=rec_sha
+        )
+        return gs, f"${GIT_JSON_ENV} ({env_path})"
+    gs = git_state(REPO if repo_dir is None else repo_dir)
+    if gs.commit is None:
+        commit = os.environ.get("SREMU_GIT_COMMIT", "").strip() or None
+        if commit is not None:
+            raw = os.environ.get("SREMU_GIT_DIRTY", "").strip()
+            dirty = None if raw == "" else raw not in ("0", "false", "False")
+            note = f"no git work tree ({gs.reason}); $SREMU_GIT_COMMIT/$SREMU_GIT_DIRTY"
+            return GitState(commit, dirty, None, note), "$SREMU_GIT_COMMIT/$SREMU_GIT_DIRTY"
+    return gs, "work tree (read-only git)"
+
+
 class StudyRun:
     """One study run directory with its manifest and ``meta.json``.
 
@@ -230,8 +293,9 @@ class StudyRun:
         else:
             self.run_dir = create_run_dir(base, name)
         self.resolved = resolve_mapping(scenario)
+        gs, self.git_source = study_git_state()
         self.recorder = ManifestRecorder(
-            self.resolved, self.run_dir, argv=list(sys.argv if argv is None else argv)
+            self.resolved, self.run_dir, argv=list(sys.argv if argv is None else argv), git=gs
         )
         self.recorder.sample_host_load()
         self.inputs: list[dict[str, str]] = []
@@ -287,6 +351,7 @@ class StudyRun:
             "sremu_commit": man.git_commit,
             "sremu_dirty": man.git_dirty,
             "dirty_patch_sha256": man.dirty_patch_sha256,
+            "git_state_source": self.git_source,
             "seed": man.seed,
             "platform": man.platform,
             "cpu_model": man.cpu_model,
@@ -394,8 +459,8 @@ def run_header(meta: Mapping[str, Any]) -> str:
         f"* Started {meta.get('t_start_utc')}, ended {meta.get('t_end_utc')}, "
         f"wall time {fnum(meta.get('wall_s'), 1)} s.",
         f"* Host CPU busy fraction (all processes, sampled {ls.get('n', 0)} times): "
-        f"median {fnum(ls.get('median'), 2)}, max {fnum(ls.get('max'), 2)}. Other agents' jobs "
-        "shared the laptop; wall times are indicative, not benchmarks.",
+        f"median {fnum(ls.get('median'), 2)}, max {fnum(ls.get('max'), 2)}. Other jobs shared "
+        "the host; wall times are indicative, not benchmarks.",
     ]
     if meta.get("resumed_from"):
         lines.append(

@@ -3,6 +3,7 @@
     python -m experiments.finalize [--runs runs/wp11]
     python -m experiments.finalize --import-aws-ea-iq <AWS job results dir> [--note TEXT]
     python -m experiments.finalize --runs <job out> --out <job out>/paper_results [--smoke]
+        [--eb-arc <job out>/eb_arc] [--with-latency]
 
 ``--out`` sets the results root (default ``paper/sweeps/results/``); a regeneration run
 (``experiments/regenerate_paper_data.sh``) writes into its own job directory, never into the
@@ -21,8 +22,16 @@ the completeness rule (short smoke runs are not VA-1 rows, so VA-1 has no verdic
   ``tick-based``: tick-based untimed semantics); a point of another geometry fails the run;
 * ``E-C/``: the E-C run directory (Table VIII data) copied as is;
 * ``E-F/ber/``: BER table (:func:`experiments.ef.aggregate_ber`);
-* E-F API latency is **not** collected (a transport latency fix is pending and the latency
-  will be re-measured); a stale ``E-F/latency/`` is removed;
+* E-F API latency is **not** collected by default (a transport latency fix is pending and the
+  latency will be re-measured); a stale ``E-F/latency/`` is removed. ``--with-latency``
+  (WAITING for that fix: use it only for a run of the fixed transport) copies the run
+  directory ``<runs>/ef_latency`` (:func:`experiments.ef.run_latency`) to ``E-F/latency/``
+  and adds its percentiles to ``summary.json`` as MEAS of the recording host only (CPU,
+  platform and instance type next to the numbers; never a claim for another host);
+* ``E-B-arc/`` (``--eb-arc DIR``): an E-B run on the lab arc (``python -m experiments.eb
+  --scenario scenarios/studies/lab_arc.yaml --out DIR``) in the layout
+  ``tools/gen_results.py`` reads (:func:`collect_eb_arc`). Not part of ``summary.json``
+  (the WP11 index), as in the paper tree;
 * D24 check: no ``legacy``/``v1``/``v2`` naming in any paper-facing result file (the RNG
   scheme id ``philox4x32-10/blake2b-v1`` excepted); a violation fails the run;
 * ``summary.json``: the key numbers of every experiment (machine-readable, for the paper
@@ -78,9 +87,68 @@ LABELS = {
     "tick-based": "tick-based untimed semantics (E-B2 baseline: next 2 ms tick after "
     "arrival, one pending slot per panel)"
 }
+LATENCY_DIR = "E-F/latency"
+LATENCY_NOTE = (
+    "E-F API latency: MEAS of the recording host only (CPU, platform and instance type in "
+    "E-F/latency/manifest.json and in summary.json next to the numbers); no claim for another "
+    "host and no cross-host speed-up"
+)
+
+ARC_DIR = "E-B-arc"
+ARC_SCENARIO = "scenarios/studies/lab_arc.yaml"
+ARC_SPECS = ("eb1", "eb2_lab", "eb2_ideal1", "eb2_lab_es15", "eb2_ideal1_es15")
+ARC_TEXT: dict[str, Any] = {
+    # the wording of paper/sweeps/results/E-B-arc/meta.json (compare_regen.py compares it)
+    "description": "E-B (intra-frame RIS reconfiguration: E-B1 mechanism + VA-5, E-B2 timing) "
+    "on scenarios/studies/lab_arc.yaml; aggregated results of one AWS run, copied unchanged from "
+    "the run's results directory",
+    "data_class_notes": {
+        "SIM-sremu": "every result value (EVM, BER, PER, VA-5) comes from sremu runs",
+        "ASSUMED": "an input, not a result: the two lab cell states have |Gamma| = 1 (the "
+        "library has no measured magnitudes)",
+    },
+    "geometry_note": "nominal values (middle of the author-supplied intervals: R 1.95 m, span "
+    "46 deg, centre 22.5 deg, height 1.0 m); not a measured geometry; no measurement is "
+    "compared with these runs",
+    "assumptions": [
+        "lab state amplitudes |Gamma| = 1 ASSUMED (alphabet 'lab'); ideal 1-bit {1, -1} also run",
+        "transition path complex-linear [ENG]",
+        "six tiles act as one RIS: joint exact optimum over every cell; one command per panel at "
+        "the same time",
+        "LOS blocked: one opaque plate across both LOS segments; occluders act on the LOS only, "
+        "so the RIS hops are unattenuated (idealized regime 'LOS removed, RIS hops "
+        "unattenuated') [ENG]",
+        "TX power set for Es/N0 = 25 dB at RX1 under its own optimum; Es/N0 = 15 dB is the "
+        "pre-declared sensitivity of the LOS-present slice (eb_plan.json 'pre_declared')",
+        "free space with LOS plus the RIS; isotropic antennas in the horizontal plane [ENG]",
+    ],
+    "not_in_wp11_index": "this run is not part of sweeps/results/summary.json (the WP11 index); "
+    "tools/gen_results.py reads E-B-arc directly",
+}
+_ARC_SHARED = (
+    "sremu_version",
+    "git_commit",
+    "git_dirty",
+    "dirty_patch_sha256",
+    "contract_version",
+    "versions",
+    "platform",
+    "cpu_model",
+    "logical_cpus",
+    "aws_instance",
+    "rng_scheme",
+    "deterministic",
+    "numba_disable_svml",
+    "seed",
+)
+"""Manifest fields every point of one E-B arc run must share (``run_manifests.json``)."""
 
 _D24_PATTERN = re.compile(r"legacy|\bv[12]\b", re.IGNORECASE)
-_D24_ALLOWED = ("philox4x32-10/blake2b-v1",)  # RNG scheme id (DESIGN.md 6.1), not a product version
+_D24_ALLOWED = (
+    "philox4x32-10/blake2b-v1",  # RNG scheme id (DESIGN.md 6.1), not a product version
+    "Spectre v1",  # lscpu vulnerability names in recorded host files, not a product version
+    "Spectre v2",
+)
 _D24_SUFFIXES = (".csv", ".json", ".yaml", ".yml", ".txt", ".md", ".tex")
 _LAB_LIKE_SCENARIO = "lab_like_A.yaml"
 
@@ -290,6 +358,183 @@ def aggregate_eb_lab_like(runs: Path, results: Path = RESULTS) -> bool:
     return True
 
 
+# =========================================================================== E-B, lab arc
+
+
+def collect_eb_arc(src: str | Path, results: Path = RESULTS, *, smoke: bool = False) -> Path:
+    """Copy an E-B run on the lab arc into ``<results>/E-B-arc/`` in the layout of the paper
+    tree (the one ``tools/gen_results.py`` and ``figures/src/f09_intraframe.py`` read).
+
+    ``src`` is the ``--out`` of ``python -m experiments.eb --scenario
+    scenarios/studies/lab_arc.yaml`` (with ``--smoke``: its smoke files). Copied unchanged:
+    the run's aggregation ``results/E-B1``, ``results/E-B2``, ``eb_plan.json``,
+    ``eb_summary.json``, ``git_state.json`` and ``sweep.json`` / ``index.csv`` of every sweep
+    (under ``sweeps/``). Written: ``run_manifests.json`` (SHA-256 of every point manifest and
+    the fields they share) and ``meta.json`` (provenance: run, host, git state and code hashes
+    of the run; the git state is the one every point manifest records). Raises, writing
+    nothing, when the run has failed points or VA-5 failed, the plan is not the lab-arc plan,
+    or a point manifest disagrees with ``git_state.json``.
+    """
+    src = Path(src).resolve()
+    sfx = "_smoke" if smoke else ""
+    plan_p, summ_p = src / f"eb_plan{sfx}.json", src / f"eb_summary{sfx}.json"
+    gs_p = src / "git_state.json"
+    agg = src / f"results{sfx}"
+    for p in (plan_p, summ_p, gs_p, agg / "E-B1", agg / "E-B2"):
+        if not p.exists():
+            raise FileNotFoundError(f"E-B arc: {p} missing")
+    plan, summ, gs = read_json(plan_p), read_json(summ_p), read_json(gs_p)
+    if plan.get("scenario_path") != ARC_SCENARIO:
+        raise RuntimeError(f"{plan_p}: scenario {plan.get('scenario_path')!r}, not {ARC_SCENARIO}")
+    specs = [s["name"] for s in plan["specs"]]
+    if not smoke and tuple(specs) != ARC_SPECS:
+        raise RuntimeError(f"{plan_p}: sweeps {specs}, expected {list(ARC_SPECS)}")
+    if not (summ.get("ok") and summ.get("n_failed") == 0 and (summ.get("va5") or {}).get("pass")):
+        raise RuntimeError(f"{summ_p}: the run is not ok (failed points or VA-5 failed)")
+    tmp = results / f".{ARC_DIR}.tmp"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    for exp in ("E-B1", "E-B2"):
+        shutil.copytree(agg / exp, tmp / exp, ignore=shutil.ignore_patterns("*.patch", "*.tmp"))
+    for p, name in ((plan_p, "eb_plan.json"), (summ_p, "eb_summary.json"), (gs_p, gs_p.name)):
+        shutil.copyfile(p, tmp / name)
+    points: dict[str, dict[str, str]] = {}
+    shared: dict[str, Any] | None = None
+    jobs = set()
+    for s in specs:
+        (tmp / "sweeps" / s).mkdir(parents=True)
+        for name in ("index.csv", "sweep.json"):
+            shutil.copyfile(src / s / name, tmp / "sweeps" / s / name)
+        jobs.add(read_json(src / s / "sweep.json").get("jobs"))
+        points[s] = {}
+        for d in sorted(p for p in (src / s).iterdir() if p.is_dir() and p.name.startswith("p")):
+            points[s][d.name] = _sha256(d / "manifest.json")
+            m = read_json(d / "manifest.json")
+            cur = {k: m.get(k) for k in _ARC_SHARED}
+            if shared is None:
+                shared = cur
+            elif cur != shared:
+                shutil.rmtree(tmp)
+                diff = sorted(k for k in _ARC_SHARED if cur[k] != shared[k])
+                raise RuntimeError(f"E-B arc {s}/{d.name}: manifest differs in {diff}")
+    if shared is None or (shared["git_commit"], shared["git_dirty"]) != (
+        gs.get("commit"),
+        gs.get("dirty"),
+    ):
+        shutil.rmtree(tmp)
+        raise RuntimeError("E-B arc: the point manifests do not record git_state.json's state")
+    write_json(
+        tmp / "run_manifests.json",
+        {
+            "description": "sha256 of every per-point manifest.json of the run (run directories "
+            "kept in the job output, not copied); 'shared' holds the fields identical in all of "
+            "them",
+            "n_manifests": sum(len(v) for v in points.values()),
+            "shared": shared,
+            "points": points,
+        },
+    )
+    aws = shared.get("aws_instance") or {}
+    code = gs.get("code") or {}
+    scen_sha = (code.get("files") or {}).get(ARC_SCENARIO) or _sha256(REPO / ARC_SCENARIO)
+    prov_p = src.parent / "_regen" / "provenance.json"  # a regenerate_paper_data.sh job
+    run_id = f"regen_{read_json(prov_p)['started_utc']}" if prov_p.is_file() else src.name
+    meta = {
+        "experiment": ARC_DIR,
+        "description": ARC_TEXT["description"],
+        "data_classes": ["SIM-sremu", "ASSUMED"],
+        "data_class_notes": ARC_TEXT["data_class_notes"],
+        "geometry_label": plan["geometry_label"],
+        "geometry_note": ARC_TEXT["geometry_note"],
+        "scenario": {"path": ARC_SCENARIO, "sha256": scen_sha},
+        "assumptions": list(ARC_TEXT["assumptions"]),
+        "run": {
+            "run_id": run_id,
+            "source_dir": str(src),
+            "t_start_utc": summ.get("t_start_utc"),
+            "t_end_utc": summ.get("t_end_utc"),
+            "wall_s": summ.get("wall_s"),
+            "points": {s: summ["specs"][s]["n_points"] for s in specs},
+            "failed_points": summ["n_failed"],
+            "va5_pass": summ["va5"]["pass"],
+            "argv": plan.get("argv"),
+            **({"smoke": True} if smoke else {}),
+        },
+        "host": {
+            "provider": "AWS EC2" if aws.get("type") else None,
+            "instance_type": aws.get("type"),
+            "instance_id": aws.get("id"),
+            "platform": shared["platform"],
+            "cpu_model": shared["cpu_model"],
+            "logical_cpus": shared["logical_cpus"],
+            "versions": shared["versions"],
+            "jobs": sorted(j for j in jobs if j is not None),
+        },
+        "sremu": {
+            "commit": gs.get("commit"),
+            "dirty": gs.get("dirty"),
+            "dirty_patch_sha256": gs.get("dirty_patch_sha256"),
+            "commit_source": "the run's git state, recorded in git_state.json and in every point "
+            "manifest (run_manifests.json 'shared'); in a regeneration job it is the state fixed "
+            "once in _regen/git_state.json (SREMU_GIT_COMMIT/SREMU_GIT_DIRTY of the AWS job "
+            "bundle, or the work tree)",
+            "code_hashes_run": code,
+        },
+        "not_in_wp11_index": ARC_TEXT["not_in_wp11_index"],
+        "files": _tree_hashes(tmp),
+        "written_utc": _utc(),
+    }
+    write_json(tmp / "meta.json", meta)
+    dst = results / ARC_DIR
+    if dst.exists():
+        shutil.rmtree(dst)
+    tmp.rename(dst)
+    return dst
+
+
+# =========================================================================== E-F latency
+
+
+def collect_latency(runs: Path, results: Path = RESULTS) -> Path:
+    """Copy the E-F API latency run directory ``<runs>/ef_latency`` to
+    ``<results>/E-F/latency/`` (MEAS, the recording host only). WAITING for the transport
+    latency fix: call it only for a run of the fixed transport (``--with-latency``)."""
+    src = runs / "ef_latency"
+    for name in ("latency.json", "manifest.json", "meta.json"):
+        if not (src / name).is_file():
+            raise FileNotFoundError(f"E-F latency: {src / name} missing")
+    if read_json(src / "meta.json").get("data_classes") != ["MEAS"]:
+        raise RuntimeError(f"{src / 'meta.json'}: E-F latency must be MEAS only")
+    dst = results / LATENCY_DIR
+    _copy_run(src, dst)
+    return dst
+
+
+def latency_summary(results: Path = RESULTS) -> dict[str, Any]:
+    """Key numbers of ``E-F/latency/`` with the recording host next to them (MEAS)."""
+    d = results / LATENCY_DIR
+    lat, man = read_json(d / "latency.json"), read_json(d / "manifest.json")
+    aws = man.get("aws_instance") or {}
+    inproc, zmq = lat["inproc"], lat["zmq_two_process"]
+    return {
+        "data_class": "MEAS",
+        "host_specific": LATENCY_NOTE,
+        "host": {
+            "cpu_model": man.get("cpu_model"),
+            "logical_cpus": man.get("logical_cpus"),
+            "platform": man.get("platform"),
+            "aws_instance_type": aws.get("type") if isinstance(aws, dict) else None,
+        },
+        "buffer_samples": inproc.get("buffer"),
+        "inproc_send": inproc["send"],
+        "inproc_recv": inproc["recv"],
+        "inproc_sustained_msps": inproc["sustained_msps"],
+        "zmq_round_trip": zmq["round_trip"],
+        "zmq_sustained_msps": zmq["sustained_msps"],
+        "zmq_sustained_buffer_samples": zmq.get("sustained_buffer"),
+    }
+
+
 # =========================================================================== D24 check
 
 
@@ -338,11 +583,14 @@ def _experiment_record(d: Path) -> dict[str, Any]:
     }
 
 
-def summary(results: Path = RESULTS, *, smoke: bool = False) -> dict[str, Any]:
+def summary(
+    results: Path = RESULTS, *, smoke: bool = False, latency: bool = False
+) -> dict[str, Any]:
     """Key numbers from the result files under ``results``. Raises when a required result is
     missing; VA-1 ``all_accept`` exists only over the complete design (else
     ``VA1IncompleteError``). ``smoke``: the VA-1 completeness rule is not applied, VA-1 gets
-    ``complete: false`` and no verdict, and ``meta.smoke`` is true (never paper data)."""
+    ``complete: false`` and no verdict, and ``meta.smoke`` is true (never paper data).
+    ``latency``: ``E-F/latency/`` was collected (:func:`latency_summary`, MEAS)."""
     from experiments import ea_iq
 
     out: dict[str, Any] = {}
@@ -396,13 +644,16 @@ def summary(results: Path = RESULTS, *, smoke: bool = False) -> dict[str, Any]:
         "n_points": len(ber),
         "genie_theory_in_ci95_all": all(r["genie_theory_in_ci95"] == "True" for r in ber),
     }
+    if latency:
+        out["E-F-latency"] = latency_summary(results)
     g = git_info()
+    dirs = (*EXPERIMENT_DIRS, LATENCY_DIR) if latency else EXPERIMENT_DIRS
     out["meta"] = {
         "generated_utc": _utc(),
         "smoke": smoke,
         "sremu_git": {k: g.get(k) for k in ("commit", "dirty", "dirty_patch_sha256")},
-        "experiments": {e: _experiment_record(results / e) for e in EXPERIMENT_DIRS},
-        "excluded": EXCLUDED,
+        "experiments": {e: _experiment_record(results / e) for e in dirs},
+        "excluded": {} if latency else EXCLUDED,
         "labels": LABELS,
         "d24_check": {"checked_by": "experiments.finalize.d24_violations", "violations": 0},
     }
@@ -432,6 +683,20 @@ def main(argv: list[str] | None = None) -> int:
         help="reduced local check of regenerate_paper_data.sh: VA-1 aggregated without the "
         "completeness rule, summary marked smoke; needs a non-default --out",
     )
+    ap.add_argument(
+        "--eb-arc",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="E-B lab-arc run (--out of python -m experiments.eb --scenario "
+        "scenarios/studies/lab_arc.yaml) collected into E-B-arc/",
+    )
+    ap.add_argument(
+        "--with-latency",
+        action="store_true",
+        help="collect <runs>/ef_latency into E-F/latency (MEAS, recording host only). WAITING "
+        "for the transport latency fix: only for a run of the fixed transport",
+    )
     args = ap.parse_args(argv)
     runs = args.runs.resolve()
     res = args.out.resolve()
@@ -452,14 +717,19 @@ def main(argv: list[str] | None = None) -> int:
         from experiments import ef
 
         ef.aggregate_ber(runs / "ef_ber", res / "E-F" / "ber")
-    stale = res / "E-F" / "latency"
-    if stale.exists():
-        shutil.rmtree(stale)
-        print(f"removed {stale} ({EXCLUDED['E-F/latency']})")
+    if args.with_latency:
+        print(f"collected {collect_latency(runs, res)} ({LATENCY_NOTE})")
+    else:
+        stale = res / LATENCY_DIR
+        if stale.exists():
+            shutil.rmtree(stale)
+            print(f"removed {stale} ({EXCLUDED[LATENCY_DIR]})")
+    if args.eb_arc is not None:
+        print(f"collected {collect_eb_arc(args.eb_arc, res, smoke=args.smoke)}")
     bad = d24_violations(res, skip_top=("summary.json", "meta.json", "manifest.json"))
     if bad:
         raise RuntimeError("D24 naming violations in paper-facing results:\n" + "\n".join(bad[:50]))
-    s = summary(res, smoke=args.smoke)
+    s = summary(res, smoke=args.smoke, latency=args.with_latency)
     write_json(res / "summary.json", s)
     rec = RunRecord(res, 20261010, mode="analysis", patch_root=runs)
     classes = sorted(
@@ -479,12 +749,12 @@ def main(argv: list[str] | None = None) -> int:
         "classes, git state and manifest/file SHA-256 per experiment",
         assumptions=[
             *smoke_note,
-            EXCLUDED["E-F/latency"],
+            LATENCY_NOTE if args.with_latency else EXCLUDED[LATENCY_DIR],
             *(f"label {k!r}: {v}" for k, v in LABELS.items()),
         ],
         files={"summary.json": "key numbers and provenance index"},
         extra={
-            "experiments": list(EXPERIMENT_DIRS),
+            "experiments": list(s["meta"]["experiments"]),
             "summary_sha256": _sha256(res / "summary.json"),
             **({"smoke": True} if args.smoke else {}),
         },

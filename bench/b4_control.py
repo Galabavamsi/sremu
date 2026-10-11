@@ -25,7 +25,15 @@ the suite fails otherwise, and also when the zero is vacuous: ``lockstep_check_o
 >= 90 % of the expected commands, all applied, one lateness value per command and RX),
 RTF with and without the loop, and the lockstep wall-clock
 "visible latency" ``t_wall_visible - t_wall_recv`` (how long the engine took to reach the
-switch sample; not a real-time latency).
+switch sample; not a real-time latency). A command whose switch sample lies at or after the
+end of the run stays ``scheduled`` (the run stops before the engine computes that sample; at
+10 kHz the last barrier's command, at ``t_b + L_min + U[0, L_min]`` after the barrier one
+period before the end, always does): it is counted in ``scheduled_after_end`` and is not a
+failure of the check.
+
+``--recompute RUN_DIR`` rebuilds ``summary.json`` of a lockstep run offline from its
+``lockstep.json`` (no measurement) into ``summary_recomputed.json``, keeping the original
+summary's verdict next to the recomputed one.
 
 **Paced part** (Linux job ``b4`` on a quiet c7i.8xlarge; on Windows labelled "Windows, not
 representative"): the engine runs paced with async coupling, served over the control
@@ -190,7 +198,10 @@ def lockstep_point(rate_hz: int, variant: str, duration: Fraction) -> dict[str, 
         out["rtf"] = s.rtf.get("rtf")
         out["rtf_engine_meter"] = s.rtf.get("rtf")
         out["rtf_min"] = s.rtf.get("rtf_min")
-    out.update(_record_stats(list(eng.records), "b4"))
+    recs = list(eng.records)
+    out.update(_record_stats(recs, "b4"))
+    ends = {rx: g.end for g in eng.groups for rx in g.rx}
+    out["scheduled_after_end"] = scheduled_after_end([r for r in recs if r.src == "b4"], ends)
     out["n_controls"] = n_ctl
     out["n_rx"] = len(eng.rx)
     out["expected_commands"] = 0 if variant == "none" else int(rate_hz * duration)
@@ -201,13 +212,42 @@ def lockstep_point(rate_hz: int, variant: str, duration: Fraction) -> dict[str, 
     return out
 
 
+def scheduled_after_end(recs: list[Any], ends: dict[str, int | None]) -> int:
+    """Commands still ``scheduled`` because their switch sample on some RX is at or after
+    that RX's end of run (``ends``: first sample the run does not compute, per RX). The run
+    stopped before the engine reached the switch, so they cannot have been applied."""
+    n = 0
+    for r in recs:
+        if r.status != "scheduled":
+            continue
+        ks = r.k_applied or r.k_req or {}
+        if any(ends.get(rx) is not None and int(k) >= int(ends[rx]) for rx, k in ks.items()):
+            n += 1
+    return n
+
+
+def after_end_bound(rate_hz: float, virtual_s: float | Fraction, l_min: Fraction = L_MIN) -> int:
+    """Upper bound on the commands of a lockstep row whose switch can lie at or after the end
+    of the run, from the controller's latency model alone (rows written before
+    ``scheduled_after_end`` was recorded): barriers at ``t_b = m / rate`` before the end with
+    ``t_b + 2 L_min >= end`` (latency ``L_min + U[0, L_min]``)."""
+    if not rate_hz or not virtual_s:
+        return 0
+    rate = Fraction(rate_hz).limit_denominator(10**6)
+    end = Fraction(virtual_s).limit_denominator(10**9)
+    lo = end - 2 * l_min
+    return sum(1 for m in range(int(end * rate) + 1) if lo <= m / rate < end)
+
+
 def lockstep_problems(r: dict[str, Any]) -> list[str]:
     """Why a lockstep row does not demonstrate zero lateness (empty: it does).
 
     Zero lateness is only evidence when commands were really issued and applied: a
     controller row needs at least 90 % of its expected commands (one per period), every
-    command ``applied``, one lateness value per command and RX, and all of them 0; the
-    reference row (``none``) must have no command at all."""
+    command ``applied`` except those whose switch lies at or after the end of the run (they
+    stay ``scheduled``: ``scheduled_after_end``, or for older rows at most
+    :func:`after_end_bound` of them), one lateness value per command and RX, and all of them
+    0; the reference row (``none``) must have no command at all."""
     out: list[str] = []
     n = int(r.get("commands") or 0)
     if r["variant"] == "none":
@@ -218,6 +258,12 @@ def lockstep_problems(r: dict[str, Any]) -> list[str]:
     if n < max(1, int(0.9 * exp)):
         out.append(f"{n} commands, expected about {exp}")
     other = {k: v for k, v in (r.get("status") or {}).items() if k != "applied"}
+    if "scheduled_after_end" in r:
+        allowed = int(r["scheduled_after_end"] or 0)
+    else:
+        allowed = after_end_bound(r.get("rate_hz") or 0, r.get("virtual_s") or 0)
+    if other.get("scheduled", 0) <= allowed:
+        other.pop("scheduled", None)
     if other:
         out.append(f"statuses other than applied: {other}")
     n_late = int((r.get("lateness_samples") or {}).get("n", 0))
@@ -258,6 +304,11 @@ def run_lockstep(run: BenchRun, quick: bool) -> dict[str, Any]:
         )
     run.write_csv("lockstep.csv", flat)
     run.write_json("lockstep.json", rows)
+    return lockstep_summary(rows, interrupted=bool(run.interrupted))
+
+
+def lockstep_summary(rows: list[dict[str, Any]], interrupted: bool = False) -> dict[str, Any]:
+    """Summary of the lockstep rows (the ``lockstep.json`` records), with the check."""
     bad = [r for r in rows if r["variant"] != "none" and r["lateness_nonzero"]]
     problems = {
         f"{r['variant']}@{r['rate_hz']}Hz": lockstep_problems(r)
@@ -267,11 +318,50 @@ def run_lockstep(run: BenchRun, quick: bool) -> dict[str, Any]:
     return {
         "lockstep_points": len(rows),
         "lockstep_all_lateness_zero": not bad,
-        "lockstep_check_ok": bool(rows) and not problems and not run.interrupted,
+        "lockstep_check_ok": bool(rows) and not problems and not interrupted,
         "lockstep_check_problems": problems,
         "lockstep_commands_total": sum(r["commands"] for r in rows),
+        # rows with commands left 'scheduled': how many, how many lie after the end of the
+        # run (recorded; None for older rows) and the bound the check used for older rows
+        "lockstep_scheduled_at_end": {
+            f"{r['variant']}@{r['rate_hz']}Hz": {
+                "scheduled": (r.get("status") or {}).get("scheduled", 0),
+                "after_end": r.get("scheduled_after_end"),
+                "after_end_bound": after_end_bound(r.get("rate_hz") or 0, r.get("virtual_s") or 0),
+            }
+            for r in rows
+            if (r.get("status") or {}).get("scheduled", 0)
+        },
         "lockstep_rtf": {f"{r['variant']}@{r['rate_hz']}Hz": r["rtf"] for r in rows},
     }
+
+
+def recompute_lockstep(run_dir: Path, out: Path | None = None) -> dict[str, Any]:
+    """Offline: rebuild a lockstep run's summary from its ``lockstep.json`` (no measurement)
+    and write it to ``out`` (default ``run_dir/summary_recomputed.json``). The original
+    summary's check fields are kept under ``original``."""
+    rows = json.loads((run_dir / "lockstep.json").read_text(encoding="utf-8"))
+    orig_path = run_dir / "summary.json"
+    orig = json.loads(orig_path.read_text(encoding="utf-8")) if orig_path.exists() else {}
+    summ = lockstep_summary(rows, interrupted=bool(orig.get("interrupted")))
+    summ.update({"suite": SUITE, "part": "lockstep", "interrupted": orig.get("interrupted")})
+    summ["recomputed"] = {
+        "from": "lockstep.json (unchanged)",
+        "by": "bench.b4_control.lockstep_summary",
+        "rule": (
+            "a command still 'scheduled' at the end of the run is not a failure when its "
+            "switch lies at or after the end of the run (rows without scheduled_after_end: "
+            "at most after_end_bound() such commands, from the L_min + U[0, L_min] latency)"
+        ),
+        "original": {
+            k: orig.get(k)
+            for k in ("lockstep_check_ok", "lockstep_check_problems", "lockstep_all_lateness_zero")
+        },
+    }
+    dst = out or run_dir / "summary_recomputed.json"
+    with dst.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(summ, indent=2) + "\n")
+    return summ
 
 
 # =========================================================================== paced
@@ -505,7 +595,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tag", default=None)
     ap.add_argument("--wait-quiet-min", type=float, default=0.0, help="wait for an idle host first")
     ap.add_argument("--threads", type=int, default=None, help="numba threads (default: all)")
+    ap.add_argument(
+        "--recompute",
+        type=Path,
+        default=None,
+        metavar="RUN_DIR",
+        help="offline: rebuild a lockstep run's summary from its lockstep.json",
+    )
+    ap.add_argument("--recompute-out", type=Path, default=None)
     a = ap.parse_args(argv)
+    if a.recompute is not None:
+        summ = recompute_lockstep(a.recompute, a.recompute_out)
+        print(f"lockstep_check_ok={summ['lockstep_check_ok']}")
+        return 0 if summ["lockstep_check_ok"] else 1
     bench.set_threads(a.threads)
     SCENE_LINKS = int(a.links)
     paced = a.part == "paced"

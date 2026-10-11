@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Regenerate the paper's WP11 results at ONE committed sremu revision (pinned provenance).
+# Regenerate every simulated number of the paper at ONE committed sremu revision (pinned
+# provenance).
 #
-# The paper's E-A, E-B (lab-like), E-C and E-F results were produced from dirty trees on
-# several commits. This script re-runs all of them from one tree, records one git state for
-# every run directory, and collects the results with experiments/finalize.py. It never
-# writes to the paper repository.
+# The paper's E-A, E-B (lab-like and lab arc), E-C, E-F BER, V-TANG, V-CFO and V-FM results
+# were produced on several commits, partly from dirty trees. This script re-runs all of them
+# from one tree, records one git state for every run directory, collects the WP11 results and
+# the lab-arc E-B run with experiments/finalize.py and leaves the validation runs in their
+# own directory. It never writes to the paper or sremu repository
+# (experiments/install_regen.py does that, after compare_regen.py passed).
 #
 #   SREMU_JOB_OUT=/opt/job/out bash experiments/regenerate_paper_data.sh [options]
 #
@@ -18,7 +21,14 @@
 #                     are still uploaded.
 #   --smoke           tiny subsets for a local check of this script (NOT paper data): one
 #                     E-A geometry, 12 E-B1 points, 15 E-B2 points of 40 packets, 4 s VA-1
-#                     runs, 4 E-C failure maps, 6 BER points.
+#                     runs, 4 E-C failure maps, 6 BER points, the E-B arc smoke (one E-B1
+#                     point, one 50-packet E-B2 point), V-CFO --fast (4 trials per point);
+#                     V-TANG and V-FM run in full (under a minute each).
+#   --collect-latency WAITING for the transport latency fix: collect the E-F API latency into
+#                     paper_results/E-F/latency (finalize --with-latency, MEAS of this host
+#                     only) when the latency step succeeded. Without it the latency is
+#                     measured into ef_latency/ but not collected. Either way a failed latency
+#                     step is reported (exit 1) but does not stop finalize.
 #   --plan            run only the checks (specs, git state, provenance) and print the
 #                     steps; no experiment runs. It writes _regen/, so use a fresh
 #                     SREMU_JOB_OUT for the real run.
@@ -29,26 +39,41 @@
 #   SREMU_GIT_COMMIT, SREMU_GIT_DIRTY
 #                     git state of a job bundle without .git (research/aws/runner.py sets
 #                     both). Without them the tree must be a git work tree; the experiment
-#                     code then reads its state (read-only git).
+#                     code then reads its state (read-only git). Either way the state is
+#                     fixed once in _regen/git_state.json, and every process (experiments
+#                     and validation studies) records it through SREMU_EXP_GIT_JSON.
 #   SREMU_SPEC_DIR    directory with the paper sweep specs, or "embedded" (default:
 #                     ../paper/sweeps when it exists, else the copies embedded below). Every
 #                     spec is checked against its pinned content hash (SweepSpec.sha256 of
-#                     the paper runs).
+#                     the paper runs); so are the E-B arc sweeps (experiments.eb.sweep_specs)
+#                     and scenarios/studies/lab_arc.yaml.
 #   SREMU_REGEN_REF   reference results tree for the final comparison (default:
 #                     ../paper/sweeps/results when it exists; the comparison is skipped
 #                     otherwise, e.g. on AWS).
 #   SREMU_REGEN_ALLOW_DIRTY=1
 #                     full run on a dirty tree. The run is then NOT pinned; avoid.
+#   SREMU_REGEN_LATENCY_CAP_S
+#                     time limit of the E-F latency step in s (default 900).
 #
-# Exit status: 0 done; 1 a step failed (finalize is then skipped); 2 usage or an existing
+# Exit status: 0 done; 1 a step failed (finalize is skipped when a WP11 step failed; a failed
+# E-B arc run, validation study, V-LAB check or latency run is reported but does not stop
+# finalize, which then runs without --eb-arc / --with-latency); 2 usage or an existing
 # output root; 3 a setup check failed; 4 (full mode) every step ran but compare_regen.py
-# found differences from the reference tree. A smoke run's comparison always shows
-# differences (reduced designs), so it does not change the exit status.
+# found differences from the reference tree. A
+# smoke run's comparison always shows differences (reduced designs), so it does not change
+# the exit status.
 #
 # What runs (all under $SREMU_JOB_OUT):
-#   1. E-F API latency       ef_latency/            first, on an otherwise idle host; MEAS of
-#                                                   this host only; finalize does not collect
-#                                                   it (a transport latency fix is pending)
+#   1. V-LAB check           _regen/vlab_check.json V-LAB is NOT re-run (the locked,
+#                                                   pre-registered comparison of 7a63287): its
+#                                                   protocol digest must equal
+#                                                   PREREGISTERED_SHA256 and the run's record,
+#                                                   and validation/ants_fig4b/ must be
+#                                                   byte-identical to its files at 7a63287
+#      E-F API latency       ef_latency/            on an otherwise idle host; MEAS of this
+#                                                   host only; capped at 15 min; collected only
+#                                                   with --collect-latency and only when it
+#                                                   succeeded (fix pending)
 #   2. E-A prebuild          _ea_cache/             geometry and decision tables
 #      E-F BER (12 points)   ef_ber/<mod>_<EbN0>dB/ in parallel with the prebuild
 #   3. VA-1 IQ subset        ea_iq/                 4 batch references and 8 served IQ runs
@@ -58,40 +83,58 @@
 #      E-A batch sweep       ea_ref/, ea_tau/       experiments.run_sweeps ea, which also
 #                                                   writes paper_results/E-A/
 #      E-B lab-like          eb1/, eb2_lab/, eb2_ideal1/  (paper specs, default scenario)
-#   4. finalize              paper_results/         experiments.finalize --out
-#   5. compare               compare_report.json    experiments/compare_regen.py, only when a
-#                                                   reference tree is available
+#      E-B lab arc           eb_arc/                python -m experiments.eb --scenario
+#                                                   scenarios/studies/lab_arc.yaml (447 points)
+#      V-TANG, V-FM, V-CFO   validation/<study>/<UTC>_<name>/   validation/<study>/v*.py
+#                                                   --root (after the sweeps, beside VA-1)
+#   4. finalize              paper_results/         experiments.finalize --out ... --eb-arc
+#                                                   eb_arc [--with-latency]
+#   5. compare               compare_report.json    experiments/compare_regen.py (WP11, E-B
+#                                                   arc, validation runs, code check), only
+#                                                   when a reference tree is available
 #   Provenance and logs:     _regen/ (provenance.json, steps.tsv, logs/, specs/)
 #
-# Not covered (the paper quotes them, but this script does not re-run them):
-#   V-TANG, V-CFO, V-FM  validation/<study>/results/20261010T23*: sremu 9dca79f, DIRTY tree.
-#                        Each takes under 4 min on the laptop. Their manifests read git
-#                        directly (they ignore SREMU_GIT_COMMIT), so in a job bundle without
-#                        .git they would record no commit; re-run them from a clean checkout.
-#   E-B-arc              paper/sweeps/results/E-B-arc: AWS run at sremu 5be649a, clean.
-#   V-LAB                validation/ants_fig4b/results/20261011T003044Z_*: 7a63287, clean.
+# Not re-run here (research/analysis/regen_coverage.md has the reasons and the procedure):
+#   V-LAB     validation/ants_fig4b/results/20261011T003044Z_vlab_unblinded, 7a63287, clean:
+#             the locked pre-registered comparison; re-running it with changed code would
+#             break the pre-registration. The paper cites it at 7a63287; step 1 checks that
+#             the pinned tree still carries its protocol and analysis code unchanged.
+#   V-WCL     no paper number or figure reads it.
+#   bench/    B1-B4 and B6 (paper/sweeps/results/bench): MEAS on dedicated hosts
+#             (bench/aws/job.sh; MATLAB on the laptop for B6); running them beside this job
+#             would spoil the timing.
 #
-# Sizing (c7i.48xlarge, 192 vCPU): an estimate, not a measurement on this instance type, of
-# 30-50 min of job time, plus about 5 min of instance setup by the runner. The critical path
-# is the VA-1 batch reference for tau = 0.1 s (one process): 1314 s on an idle c7i.8xlarge
-# with the code behind the paper rows, 2014 s on the laptop with the working tree of
-# 309c633 (another job shared the laptop for part of that time). E-C (one process) took
-# 855 s on the laptop beside the sweeps, the 1000 s IQ runs about 600 s each. The sweeps
-# finish first: on the laptop, 12 workers ran all 372 E-A points in 1172 s and all 297 E-B
-# points in 119 s; on 176 workers that is about 10 min at most. A smaller instance (e.g.
-# 64 vCPU) would therefore take about as long. Memory: of four E-A points
-# measured on the laptop, the largest peak working set was 0.77 GiB (2.4 GHz, bandit,
-# tau 0.01 s), so 176 sweep workers should stay well inside the instance's 384 GiB.
+# Sizing (c7i.48xlarge, 192 vCPU; job time, plus about 5 min of instance setup by the
+# runner): an estimate from recorded run times, not a measurement on this instance type.
+# Critical path: the VA-1 batch reference for tau = 0.1 s (one process) beside everything
+# else: 1317 s and 1298 s (exact, urap) on an idle c7i.8xlarge (AWS run
+# 20261010T232822Z_ea_iq_ef_18ffd1, the same Xeon 8488C), so about 25-35 min on the loaded
+# instance; the 1000 s IQ runs took 588-602 s each there, E-C 855-1035 s on the laptop.
+# The foreground chain is shorter: E-A (372 points; 16 349 CPU-s summed over the laptop
+# points, longest point 232 s) about 5 min on 176 workers; E-B lab-like (297 points) 119 s
+# on 12 laptop workers; E-B arc (447 points: 30 640 CPU-s on the Xeon at 5be649a, before the
+# O(log n) command timeline of 309c633; with the current engine one laptop worker took 1.1 s
+# for an E-B1 point and 7.8-10.8 s for a 2000-packet E-B2 point, about 3 600 CPU-s in all)
+# 2-4 min, bounded by the five sweeps run one after the other; V-CFO 181 s on the laptop
+# with 2 workers (V-TANG 13 s, V-FM 24 s), beside VA-1. Expected job time 30-45 min: use
+# --deadline-min 100 with runner --maxmin 130. Memory: of four E-A points measured on the
+# laptop, the largest peak working set was 0.77 GiB (2.4 GHz, bandit, tau 0.01 s), so 176
+# sweep workers stay well inside the instance's 384 GiB.
 #
-# Thread settings: sweep workers run with one numba and one BLAS thread each; VA-1 and E-C
-# processes with 4 numba threads. Engine output does not depend on the numba thread count
-# (DESIGN I2a); compare_regen.py checks the values against the paper tree.
+# Thread settings: sweep workers (E-A, E-B, E-B arc, V-CFO-4) run with one numba and one
+# BLAS thread each; VA-1 and E-C processes with 4 numba threads; V-TANG and V-FM with one.
+# Engine output does not depend on the numba thread count (DESIGN I2a); compare_regen.py
+# checks the values against the paper tree.
 # SVML: this script always sets NUMBA_DISABLE_INTEL_SVML=1 (DESIGN D15). The earlier runs
 # differ: the local runs behind E-A, E-B, E-C and E-F BER recorded numba_disable_svml false,
-# the AWS VA-1 rows true. On the laptop with SVML disabled (working tree of 309c633), every
-# E-A, E-B, E-C and E-F BER value and 5 of the 12 VA-1 pieces (batch references exact
-# tau 0.1 and 1 s; IQ runs exact tau 1 s noise off and on, urap tau 1 s noise off) were
-# bit-identical to the paper tree. The Linux run checks everything again on one host.
+# the AWS VA-1 rows and the E-B arc run true; the validation studies set it themselves. On
+# the laptop with SVML disabled (working tree of 309c633), every E-A, E-B, E-C and E-F BER
+# value and the 5 VA-1 pieces re-run there (batch references exact tau 0.1 and 1 s; IQ runs
+# exact tau 1 s noise off and on, urap tau 1 s noise off) were bit-identical to the paper
+# tree; the other 7 VA-1 pieces were not re-run locally. The Linux run checks everything
+# again on one host. The 8 VA-1 IQ runs are served over the native ZMQ data plane (the
+# transport whose intermittent stall is being fixed): launch the paper run only from a
+# commit that contains that fix, with or without --collect-latency.
 set -uo pipefail
 
 usage() { awk 'NR > 1 && /^set -uo pipefail/ { exit } NR > 1 { print }' "$0"; }
@@ -100,6 +143,7 @@ JOBS=""
 DEADLINE_MIN=0
 MODE=full
 PLAN=0
+COLLECT_LATENCY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --jobs) JOBS="${2:?--jobs needs a value}"; shift 2 ;;
@@ -107,6 +151,7 @@ while [ $# -gt 0 ]; do
     --deadline-min) DEADLINE_MIN="${2:?--deadline-min needs a value}"; shift 2 ;;
     --deadline-min=*) DEADLINE_MIN="${1#*=}"; shift ;;
     --smoke) MODE=smoke; shift ;;
+    --collect-latency) COLLECT_LATENCY=1; shift ;;
     --plan) PLAN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -134,13 +179,14 @@ case "$DEADLINE_MIN" in ''|*[!0-9]*) echo "--deadline-min must be an integer" >&
 if [ "$JOBS" -gt 32 ]; then RESERVE=16; else RESERVE=$(( JOBS / 4 )); fi
 SWEEP_JOBS=$(( JOBS - RESERVE ))
 [ "$SWEEP_JOBS" -ge 1 ] || SWEEP_JOBS=1
+VCFO_JOBS=$(( SWEEP_JOBS < 21 ? SWEEP_JOBS : 21 ))  # V-CFO-4 has 21 points
 T_START=$(date +%s)
 DEADLINE_EPOCH=$(( T_START + DEADLINE_MIN * 60 ))
 
 log() { printf '[regen %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 for d in ea_ref ea_tau ea_iq eb1 eb2_lab eb2_ideal1 ec ef_ber ef_latency _ea_cache \
-         paper_results _regen; do
+         eb_arc validation paper_results _regen; do
   if [ -e "$OUT/$d" ]; then
     echo "refusing: $OUT/$d exists (use a fresh SREMU_JOB_OUT)" >&2
     exit 2
@@ -161,25 +207,32 @@ else
 fi
 
 # ----------------------------------------------------------------------------- steps
-FAILED=()
+FAILED=()      # WP11 steps: any failure skips finalize
+FAILED_AUX=()  # E-B arc, validation studies, V-LAB check, latency: reported only
 NO_DEADLINE=0  # 1 for the short closing steps (checks, finalize, compare)
+STEP_CAP_S=0   # > 0: a further time limit (s) for the steps started while it is set
 BG_NAMES=()
 BG_PIDS=()
+BG_AUX=()
 
 run_step() {  # run_step NAME CMD... : log to _regen/logs/NAME.log, record in steps.tsv
-  local name="$1" logf="$LOGS/$1.log" t0 t1 rc lim
+  local name="$1" logf="$LOGS/$1.log" t0 t1 rc lim=0
   shift
   t0=$(date +%s)
   log "start $name"
   if [ "$DEADLINE_MIN" -gt 0 ] && [ "$NO_DEADLINE" != 1 ]; then
     lim=$(( DEADLINE_EPOCH - t0 ))
-    if [ "$lim" -le 0 ]; then
-      echo "deadline reached before the step started" > "$logf"
-      rc=124
-    else
-      timeout --kill-after=30 "${lim}s" "$@" > "$logf" 2>&1
-      rc=$?
-    fi
+    [ "$lim" -gt 0 ] || lim=-1
+  fi
+  if [ "$STEP_CAP_S" -gt 0 ] && { [ "$lim" -eq 0 ] || [ "$lim" -gt "$STEP_CAP_S" ]; }; then
+    lim="$STEP_CAP_S"
+  fi
+  if [ "$lim" -lt 0 ]; then
+    echo "deadline reached before the step started" > "$logf"
+    rc=124
+  elif [ "$lim" -gt 0 ]; then
+    timeout --kill-after=30 "${lim}s" "$@" > "$logf" 2>&1
+    rc=$?
   else
     "$@" > "$logf" 2>&1
     rc=$?
@@ -196,20 +249,33 @@ run_step() {  # run_step NAME CMD... : log to _regen/logs/NAME.log, record in st
 }
 
 fg_step() { run_step "$@" || FAILED+=("$1"); }
+fg_aux() { run_step "$@" || FAILED_AUX+=("$1"); }
 
 bg_step() {
   run_step "$@" &
   BG_NAMES+=("$1")
   BG_PIDS+=("$!")
+  BG_AUX+=(0)
+}
+
+bg_aux() {
+  run_step "$@" &
+  BG_NAMES+=("$1")
+  BG_PIDS+=("$!")
+  BG_AUX+=(1)
 }
 
 wait_bg() {
   local i
   for i in "${!BG_PIDS[@]}"; do
-    wait "${BG_PIDS[$i]}" || FAILED+=("${BG_NAMES[$i]}")
+    if ! wait "${BG_PIDS[$i]}"; then
+      if [ "${BG_AUX[$i]}" = 1 ]; then FAILED_AUX+=("${BG_NAMES[$i]}"); else
+        FAILED+=("${BG_NAMES[$i]}"); fi
+    fi
   done
   BG_NAMES=()
   BG_PIDS=()
+  BG_AUX=()
 }
 
 # ----------------------------------------------------------------------------- sweep specs
@@ -337,7 +403,7 @@ SCRIPT_SHA="$(sha256sum "$HERE/regenerate_paper_data.sh" | cut -d' ' -f1)"
 log "mode $MODE, jobs $JOBS (sweep pools $SWEEP_JOBS, reserved $RESERVE), out $OUT"
 REGEN_OUT="$OUT" REGEN_MODE="$MODE" REGEN_SPEC_SRC="$SPEC_SRC" REGEN_JOBS="$JOBS" \
 REGEN_SWEEP_JOBS="$SWEEP_JOBS" REGEN_SCRIPT_SHA="$SCRIPT_SHA" \
-REGEN_DEADLINE_MIN="$DEADLINE_MIN" \
+REGEN_DEADLINE_MIN="$DEADLINE_MIN" REGEN_COLLECT_LATENCY="$COLLECT_LATENCY" \
 "$PY" - > "$LOGS/setup.log" 2>&1 <<'PYEOF'
 import datetime as dt
 import json
@@ -363,6 +429,18 @@ EXPECTED = {
     "eb1": "f78c111cf70660d5f66adb303be1fcfdf4c8a5dd20cbe4695c3ce34025933de7",
     "eb2_lab": "061468462f5462017e07dc17b9c1475594f900fe612b49a00c175e43a4703755",
     "eb2_ideal1": "c2c9c4e39d16aa569223a3516885a0cafae17b98fc1d6afbee56058565f83532",
+}
+# E-B on the lab arc: SweepSpec.sha256 of experiments.eb.sweep_specs(lab_arc) and SHA-256 of
+# the scenario file, equal to paper/sweeps/results/E-B-arc/eb_plan.json and git_state.json
+# (AWS run 20261011T060442Z_eb_arc_d41a75)
+ARC_SCENARIO = "scenarios/studies/lab_arc.yaml"
+ARC_SCENARIO_SHA256 = "f78c4c8615746d899eabd4b5f1cbdefbd82a2e70993f6643a28c23ea5beb060a"
+EXPECTED_ARC = {
+    "eb1": "c2bc8c151704f099995c2c609e803423b5262197118601c313b3f545d84953b5",
+    "eb2_lab": "853504438d587444f457efcabce59152a2a1ec993accc03b0042f9cea9a5c54d",
+    "eb2_ideal1": "035d142d37b59fb38c4150ab352864bfa6811857883bb12c25b12c032b0d15a0",
+    "eb2_lab_es15": "c4447bae9b4e0255f8ee5f8d1acaa2f4de69c05a772e1824454daacd85c68140",
+    "eb2_ideal1_es15": "baa6bd9576f0d5b389cb83eab0bbb3be88e8842acb8198f7502665c7f77eda18",
 }
 # smoke subsets: E-A geometry A1 (1 GHz, h 2 m, 20 dB), the one H-A1 and the VA-1/E-C
 # corridor use; E-B small grids; E-B2 with 40 packets (so E-B2 cannot match the paper)
@@ -444,6 +522,21 @@ if mode == "smoke":
         (spec_dir / f"{name}.yaml").write_text(json.dumps(d, indent=1) + "\n", encoding="utf-8")
         smoke_rec[name] = {"spec_sha256": sp.sha256, "n_points": len(sp.points()), "subset": s}
 
+# ---- E-B on the lab arc: the code-defined design and the scenario must be the paper's
+from experiments import eb  # noqa: E402
+from experiments.compare_regen import validation_code_hashes  # noqa: E402
+
+arc_sha = sha_file(REPO / ARC_SCENARIO)
+if arc_sha != ARC_SCENARIO_SHA256:
+    fail(f"{ARC_SCENARIO}: sha256 {arc_sha}, pinned {ARC_SCENARIO_SHA256}")
+arc_rec = {}
+for s in eb.sweep_specs(eb.scenario_ref(ARC_SCENARIO)):
+    if s.sha256 != EXPECTED_ARC.get(s.name):
+        fail(f"E-B arc sweep {s.name}: spec hash {s.sha256}, pinned {EXPECTED_ARC.get(s.name)}")
+    arc_rec[s.name] = {"spec_sha256": s.sha256, "n_points": len(s.points())}
+if set(arc_rec) != set(EXPECTED_ARC):
+    fail(f"E-B arc sweeps {sorted(arc_rec)}, pinned {sorted(EXPECTED_ARC)}")
+
 # ---- git state, fixed once for every later process (experiments.common.git_info reads it)
 gs_path = reg / "git_state.json"
 commit = os.environ.get("SREMU_GIT_COMMIT", "").strip()
@@ -504,15 +597,20 @@ prov = {
         "allow_dirty": allow_dirty,
     },
     "code": info["code"],
+    "validation_code": validation_code_hashes(REPO),
     "specs": spec_rec,
     "smoke_specs": smoke_rec,
+    "arc": {"scenario": ARC_SCENARIO, "scenario_sha256": arc_sha, "specs": arc_rec},
     "spec_dir_used": str(spec_dir),
     "jobs": int(os.environ["REGEN_JOBS"]),
     "sweep_jobs": int(os.environ["REGEN_SWEEP_JOBS"]),
     "deadline_min": int(os.environ["REGEN_DEADLINE_MIN"]),
+    "collect_latency": os.environ["REGEN_COLLECT_LATENCY"] == "1",
     "thread_settings": {
         "sweep_workers": {"NUMBA_NUM_THREADS": 1, "SREMU_EB_NUMBA_THREADS": 1},
+        "eb_arc_workers": {"NUMBA_NUM_THREADS": 1, "threads_per_job": 1},
         "va1_and_ec_processes": {"NUMBA_NUM_THREADS": 4},
+        "validation_studies": {"NUMBA_NUM_THREADS": 1},
         "latency": "numba default",
     },
     "env": {k: os.environ.get(k) for k in env_keys},
@@ -537,7 +635,8 @@ if command -v lscpu > /dev/null 2>&1; then lscpu > "$REG/lscpu.txt" 2>&1; fi
 if [ "$PLAN" = 1 ]; then
   cat <<PLAN
 plan ($MODE; checks passed; provenance in $REG/provenance.json):
-  1  ef_latency     experiments.ef.run_latency -> $OUT/ef_latency (alone; numba default threads)
+  1  vlab_check     experiments.vlab_check -> $REG/vlab_check.json (V-LAB is not re-run)
+     ef_latency     experiments.ef.run_latency -> $OUT/ef_latency (alone; numba default threads; capped at ${SREMU_REGEN_LATENCY_CAP_S:-900} s; $( [ "$COLLECT_LATENCY" = 1 ] && echo "collected if it succeeds" || echo "not collected" ))
   2  ef_ber_*       experiments.ef.run_ber_point x $( [ "$MODE" = smoke ] && echo 6 || echo 12 ) -> $OUT/ef_ber (parallel)
      ea_prebuild    experiments.run_sweeps._prebuild_ea -> $OUT/_ea_cache ($JOBS processes max)
   3  va1_*          experiments.ea_iq.batch_reference x 4, run_point x 8 -> $OUT/ea_iq (background)
@@ -545,18 +644,28 @@ plan ($MODE; checks passed; provenance in $REG/provenance.json):
      ea_sweeps      experiments.run_sweeps ea --jobs $SWEEP_JOBS --spec-dir $SPEC_DIR --results $OUT/paper_results
      eb1_sweep      experiments.run_sweeps eb1 --jobs $SWEEP_JOBS --no-aggregate
      eb2_sweeps     experiments.run_sweeps eb2 --jobs $SWEEP_JOBS --no-aggregate
-  4  check_runs, finalize --runs $OUT --out $OUT/paper_results$( [ "$MODE" = smoke ] && echo " --smoke" )
+     eb_arc         experiments.eb --scenario scenarios/studies/lab_arc.yaml --out $OUT/eb_arc --jobs $SWEEP_JOBS$( [ "$MODE" = smoke ] && echo " --smoke" )
+     v_tang, v_fm   validation/{tang/vtang,fm/vfm}.py --root $OUT/validation/<study> (background)
+     v_cfo          validation/cfo/vcfo.py --jobs $VCFO_JOBS$( [ "$MODE" = smoke ] && echo " --fast" ) --root $OUT/validation/cfo (background)
+  4  check_runs, check_aux, finalize --runs $OUT --out $OUT/paper_results --eb-arc $OUT/eb_arc$( [ "$MODE" = smoke ] && echo " --smoke" )$( [ "$COLLECT_LATENCY" = 1 ] && echo " --with-latency (if ef_latency succeeded)" )
   5  compare (when a reference tree exists), provenance
 PLAN
   exit 0
 fi
 
 # ----------------------------------------------------------------------------- phase 1
-# E-F API latency, alone on the host (numba default threads)
-fg_step ef_latency env -u NUMBA_NUM_THREADS -u OMP_NUM_THREADS -u OPENBLAS_NUM_THREADS \
+# V-LAB integrity (no re-run; reads files only), then the E-F API latency alone on the host
+# (numba default threads). The latency run is capped at 15 min (a stalled transport must not
+# hold the job); its failure is reported but never stops finalize of the WP11 results (with
+# --collect-latency, finalize then runs without --with-latency).
+fg_aux vlab_check "$PY" -m experiments.vlab_check --out "$REG/vlab_check.json"
+STEP_CAP_S="${SREMU_REGEN_LATENCY_CAP_S:-900}"
+case "$STEP_CAP_S" in ''|*[!0-9]*) STEP_CAP_S=900 ;; esac
+fg_aux ef_latency env -u NUMBA_NUM_THREADS -u OMP_NUM_THREADS -u OPENBLAS_NUM_THREADS \
   -u MKL_NUM_THREADS "$PY" -c \
   "import sys; from experiments.ef import run_latency; run_latency(sys.argv[1])" \
   "$OUT/ef_latency"
+STEP_CAP_S=0
 
 # ----------------------------------------------------------------------------- phase 2
 # E-F BER points in parallel with the E-A prebuild
@@ -612,7 +721,19 @@ fg_step eb1_sweep "${SWEEP_ENV[@]}" "$PY" -m experiments.run_sweeps eb1 --jobs "
   --out "$OUT" --spec-dir "$SPEC_DIR" --results "$OUT/paper_results" --no-aggregate
 fg_step eb2_sweeps "${SWEEP_ENV[@]}" "$PY" -m experiments.run_sweeps eb2 --jobs "$SWEEP_JOBS" \
   --out "$OUT" --spec-dir "$SPEC_DIR" --results "$OUT/paper_results" --no-aggregate
-log "sweeps done; waiting for VA-1 and E-C"
+# E-B on the lab arc (code-defined design, hash-checked in setup; aggregated by eb.py itself)
+if [ "$MODE" = smoke ]; then ARC_SMOKE=(--smoke); else ARC_SMOKE=(); fi
+fg_aux eb_arc "${SWEEP_ENV[@]}" "$PY" -m experiments.eb --scenario scenarios/studies/lab_arc.yaml \
+  --out "$OUT/eb_arc" --jobs "$SWEEP_JOBS" --threads-per-job 1 "${ARC_SMOKE[@]}"
+# validation studies the paper quotes, beside VA-1 and E-C (each a run directory under
+# validation/<study>/; they record the job's git state through SREMU_EXP_GIT_JSON)
+mkdir -p "$OUT/validation"
+bg_aux v_tang env NUMBA_NUM_THREADS=1 "$PY" validation/tang/vtang.py --root "$OUT/validation/tang"
+bg_aux v_fm env NUMBA_NUM_THREADS=1 "$PY" validation/fm/vfm.py --root "$OUT/validation/fm"
+if [ "$MODE" = smoke ]; then VCFO_FAST=(--fast); else VCFO_FAST=(); fi
+bg_aux v_cfo env NUMBA_NUM_THREADS=1 "$PY" validation/cfo/vcfo.py --jobs "$VCFO_JOBS" \
+  --root "$OUT/validation/cfo" "${VCFO_FAST[@]}"
+log "sweeps done; waiting for VA-1, E-C and the validation studies"
 wait_bg
 
 # ----------------------------------------------------------------------------- checks
@@ -671,11 +792,86 @@ print(json.dumps(rep, indent=1))
 sys.exit(1 if bad else 0)
 PYEOF
 
+# E-B arc and validation runs: complete, ok, and on the job's git state (reported; a failure
+# here does not stop finalize of the WP11 results)
+fg_aux check_aux "$PY" - "$OUT" "$MODE" <<'PYEOF'
+import csv
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+out, mode = Path(sys.argv[1]), sys.argv[2]
+gs = json.loads((out / "_regen" / "git_state.json").read_text(encoding="utf-8"))
+state = (gs.get("commit"), gs.get("dirty"))
+bad = []
+sfx = "_smoke" if mode == "smoke" else ""
+arc = out / "eb_arc"
+summ = arc / f"eb_summary{sfx}.json"
+arc_rep = None
+if not summ.is_file():
+    bad.append(f"eb_arc: {summ.name} missing")
+else:
+    s = json.loads(summ.read_text(encoding="utf-8"))
+    arc_rep = {
+        "ok": s.get("ok"),
+        "n_failed": s.get("n_failed"),
+        "va5_pass": (s.get("va5") or {}).get("pass"),
+        "points": {k: v.get("n_ok") for k, v in (s.get("specs") or {}).items()},
+    }
+    if not (s.get("ok") and s.get("n_failed") == 0 and arc_rep["va5_pass"]):
+        bad.append(f"eb_arc: not ok {arc_rep}")
+    want = 2 if mode == "smoke" else 447
+    if sum(arc_rep["points"].values()) != want:
+        bad.append(f"eb_arc: {sum(arc_rep['points'].values())} points ok, expected {want}")
+    ags = json.loads((arc / "git_state.json").read_text(encoding="utf-8"))
+    if (ags.get("commit"), ags.get("dirty")) != state:
+        bad.append("eb_arc: git_state.json differs from _regen/git_state.json")
+val = {}
+for study, sub, name in (("V-TANG", "tang", "vtang"), ("V-FM", "fm", "vfm"), ("V-CFO", "cfo", "vcfo")):
+    runs = sorted(p for p in (out / "validation" / sub).glob(f"*_{name}*") if p.is_dir())
+    if len(runs) != 1 or not (runs[0] / "meta.json").is_file():
+        bad.append(f"{study}: {len(runs)} run directories with meta.json under validation/{sub}")
+        continue
+    meta = json.loads((runs[0] / "meta.json").read_text(encoding="utf-8"))
+    acc = meta.get("acceptance") or {}
+    val[study] = {
+        "run_dir": runs[0].name,
+        "sremu_commit": meta.get("sremu_commit"),
+        "sremu_dirty": meta.get("sremu_dirty"),
+        "git_state_source": meta.get("git_state_source"),
+        "acceptance": acc,
+    }
+    if (meta.get("sremu_commit"), meta.get("sremu_dirty")) != state:
+        bad.append(f"{study}: meta.json git state differs from _regen/git_state.json")
+    if study == "V-CFO":
+        idx = runs[0] / "vcfo4" / "index.csv"
+        with idx.open(encoding="utf-8", newline="") as fh:
+            st = Counter(r["status"] for r in csv.DictReader(fh))
+        val[study]["vcfo4_status"] = dict(st)
+        if set(st) != {"ok"}:
+            bad.append(f"V-CFO: vcfo4 points {dict(st)}")
+rep = {"eb_arc": arc_rep, "validation": val, "problems": bad}
+(out / "_regen" / "check_aux.json").write_text(json.dumps(rep, indent=1) + "\n", encoding="utf-8")
+print(json.dumps(rep, indent=1))
+sys.exit(1 if bad else 0)
+PYEOF
+
 # ----------------------------------------------------------------------------- finalize
 if [ "${#FAILED[@]}" -eq 0 ]; then
-  if [ "$MODE" = smoke ]; then FIN_SMOKE=(--smoke); else FIN_SMOKE=(); fi
+  if [ "$MODE" = smoke ]; then FIN_ARGS=(--smoke); else FIN_ARGS=(); fi
+  case " ${FAILED_AUX[*]:-} " in
+    *" eb_arc "*) log "E-B arc failed: finalize runs without --eb-arc" ;;
+    *) FIN_ARGS+=(--eb-arc "$OUT/eb_arc") ;;
+  esac
+  if [ "$COLLECT_LATENCY" = 1 ]; then
+    case " ${FAILED_AUX[*]:-} " in
+      *" ef_latency "*) log "E-F latency failed: finalize runs without --with-latency" ;;
+      *) FIN_ARGS+=(--with-latency) ;;
+    esac
+  fi
   fg_step finalize "$PY" -m experiments.finalize --runs "$OUT" --out "$OUT/paper_results" \
-    "${FIN_SMOKE[@]}"
+    "${FIN_ARGS[@]}"
 else
   log "finalize skipped: failed steps: ${FAILED[*]}"
 fi
@@ -691,7 +887,7 @@ COMPARE_RC=""
 if [ -n "$REF" ] && [ -f "$OUT/paper_results/summary.json" ]; then
   if [ "$MODE" = smoke ]; then CMP_SMOKE=(--smoke); else CMP_SMOKE=(); fi
   run_step compare "$PY" experiments/compare_regen.py "$OUT/paper_results" --ref "$REF" \
-    --json "$OUT/compare_report.json" "${CMP_SMOKE[@]}"
+    --validation-new "$OUT/validation" --json "$OUT/compare_report.json" "${CMP_SMOKE[@]}"
   COMPARE_RC=$?
   tail -n 8 "$LOGS/compare.log" | sed 's/^/    /'
   if [ "$COMPARE_RC" -eq 0 ]; then log "compare: PASS"; else
@@ -704,7 +900,7 @@ fi
 # ----------------------------------------------------------------------------- provenance
 T_END=$(date +%s)
 "$PY" - "$OUT" "$T_START" "$T_END" "${COMPARE_RC:-none}" "${FAILED[*]:-}" \
-  > "$LOGS/provenance_finish.log" 2>&1 <<'PYEOF'
+  "${FAILED_AUX[*]:-}" > "$LOGS/provenance_finish.log" 2>&1 <<'PYEOF'
 import csv
 import datetime as dt
 import hashlib
@@ -715,6 +911,7 @@ from pathlib import Path
 out = Path(sys.argv[1])
 reg = out / "_regen"
 t0, t1, cmp_rc, failed = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5].split()
+failed_aux = sys.argv[6].split()
 prov = json.loads((reg / "provenance.json").read_text(encoding="utf-8"))
 with (reg / "steps.tsv").open(encoding="utf-8", newline="") as fh:
     steps = list(csv.DictReader(fh, delimiter="\t"))
@@ -726,26 +923,40 @@ for p in sorted((out / "_ea_cache").glob("*")):
             for blk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(blk)
         cache[p.name] = {"bytes": p.stat().st_size, "sha256": h.hexdigest()}
-check = reg / "check_runs.json"
+
+
+def rec(name: str):
+    p = reg / name
+    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+
+
 prov.update(
     {
         "ended_utc": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "wall_s": t1 - t0,
         "steps": steps,
         "failed_steps": failed,
+        "failed_aux_steps": failed_aux,
         "finalized": (out / "paper_results" / "summary.json").is_file() and not failed,
+        "eb_arc_collected": (out / "paper_results" / "E-B-arc" / "meta.json").is_file(),
+        "latency_collected": (out / "paper_results" / "E-F" / "latency").is_dir(),
         "compare_exit": None if cmp_rc == "none" else int(cmp_rc),
-        "check_runs": json.loads(check.read_text(encoding="utf-8")) if check.is_file() else None,
+        "check_runs": rec("check_runs.json"),
+        "check_aux": rec("check_aux.json"),
+        "vlab_check": rec("vlab_check.json"),
         "ea_cache_files": cache,
     }
 )
-(reg / "provenance.json").write_text(json.dumps(prov, indent=1) + "\n", encoding="utf-8")
-print(json.dumps({k: prov[k] for k in ("wall_s", "failed_steps", "finalized", "compare_exit")}))
+with (reg / "provenance.json").open("w", encoding="utf-8", newline="\n") as fh:
+    fh.write(json.dumps(prov, indent=1) + "\n")
+keys = ("wall_s", "failed_steps", "failed_aux_steps", "finalized", "eb_arc_collected",
+        "compare_exit")
+print(json.dumps({k: prov[k] for k in keys}))
 PYEOF
 cat "$LOGS/provenance_finish.log"
 
-if [ "${#FAILED[@]}" -gt 0 ]; then
-  log "FAILED steps: ${FAILED[*]} (total $(( T_END - T_START )) s)"
+if [ "${#FAILED[@]}" -gt 0 ] || [ "${#FAILED_AUX[@]}" -gt 0 ]; then
+  log "FAILED steps: ${FAILED[*]:-} ${FAILED_AUX[*]:-} (total $(( T_END - T_START )) s)"
   exit 1
 fi
 log "done in $(( T_END - T_START )) s; results in $OUT/paper_results (mode $MODE)"

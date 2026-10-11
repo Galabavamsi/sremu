@@ -14,8 +14,8 @@ host.
 
 ## Hardening by construction
 
-- No web server and no browser-facing endpoint (the v2 path-traversal and cross-site
-  WebSocket bug classes are removed by design).
+- No web server and no browser-facing endpoint, so path-traversal and cross-site
+  WebSocket bug classes have no entry point by design.
 - Control messages never carry filesystem paths.
 - Every control message is schema-validated before dispatch; messages are capped at
   1 MiB and 65,536 elements per command, and the per-client command rate is limited
