@@ -2,6 +2,14 @@
 
     python -m experiments.finalize [--runs runs/wp11]
     python -m experiments.finalize --import-aws-ea-iq <AWS job results dir> [--note TEXT]
+    python -m experiments.finalize --runs <job out> --out <job out>/paper_results [--smoke]
+
+``--out`` sets the results root (default ``paper/sweeps/results/``); a regeneration run
+(``experiments/regenerate_paper_data.sh``) writes into its own job directory, never into the
+paper repository. Every path below is relative to that root. ``--smoke`` is for the reduced
+local check of that script only: it needs a non-default ``--out``, aggregates VA-1 without
+the completeness rule (short smoke runs are not VA-1 rows, so VA-1 has no verdict) and marks
+``summary.json`` as ``smoke: true``. Smoke output is never paper data.
 
 * ``E-A/``: written by ``experiments.run_sweeps`` (``ea.aggregate``); read here, not rewritten;
 * ``E-A-IQ/``: VA-1 table from ``<runs>/ea_iq`` (:func:`experiments.ea_iq.aggregate`, strict:
@@ -242,10 +250,11 @@ def import_aws_ea_iq(
 # =========================================================================== E-B, original lab-like
 
 
-def aggregate_eb_lab_like(runs: Path) -> bool:
-    """Re-aggregate the original lab-like E-B sweeps into ``E-B1/`` and ``E-B2/`` (D24 labels
-    from :mod:`experiments.eb_aggregate`). Returns False (results left as they are) when the
-    sweep directories are absent; raises when a point is of another geometry."""
+def aggregate_eb_lab_like(runs: Path, results: Path = RESULTS) -> bool:
+    """Re-aggregate the original lab-like E-B sweeps into ``<results>/E-B1/`` and
+    ``<results>/E-B2/`` (D24 labels from :mod:`experiments.eb_aggregate`). Returns False
+    (results left as they are) when the sweep directories are absent; raises when a point is
+    of another geometry."""
     from experiments import eb_aggregate
 
     eb1 = runs / "eb1"
@@ -253,7 +262,7 @@ def aggregate_eb_lab_like(runs: Path) -> bool:
     if not (eb1 / "index.json").exists() or not all((r / "index.json").exists() for r in eb2):
         return False
     for name in ("E-B1", "E-B2"):
-        tmp = RESULTS / f".{name}.tmp"
+        tmp = results / f".{name}.tmp"
         if tmp.exists():
             shutil.rmtree(tmp)
         # strict by default: a failed point raises
@@ -274,7 +283,7 @@ def aggregate_eb_lab_like(runs: Path) -> bool:
             raise RuntimeError(
                 f"{name}: points of another geometry {other} in the original lab-like sweeps"
             )
-        dst = RESULTS / name
+        dst = results / name
         if dst.exists():
             shutil.rmtree(dst)
         tmp.rename(dst)
@@ -329,55 +338,59 @@ def _experiment_record(d: Path) -> dict[str, Any]:
     }
 
 
-def summary() -> dict[str, Any]:
-    """Key numbers from the result files. Raises when a required result is missing; VA-1
-    ``all_accept`` exists only over the complete design (else ``VA1IncompleteError``)."""
+def summary(results: Path = RESULTS, *, smoke: bool = False) -> dict[str, Any]:
+    """Key numbers from the result files under ``results``. Raises when a required result is
+    missing; VA-1 ``all_accept`` exists only over the complete design (else
+    ``VA1IncompleteError``). ``smoke``: the VA-1 completeness rule is not applied, VA-1 gets
+    ``complete: false`` and no verdict, and ``meta.smoke`` is true (never paper data)."""
     from experiments import ea_iq
 
     out: dict[str, Any] = {}
-    hyp = RESULTS / "E-A" / "hypotheses.json"
+    hyp = results / "E-A" / "hypotheses.json"
     if not hyp.exists():
         raise FileNotFoundError(f"{hyp} missing (run experiments.run_sweeps ea first)")
     h = read_json(hyp)
     out["E-A"] = {
         "hypotheses": {k: v for k, v in h.items() if not k.startswith("H-A3_report")},
         "H-A3_reports": {k: v["decision"] for k, v in h.items() if k.startswith("H-A3_report")},
-        "tau_half": _rows(RESULTS / "E-A" / "tau_half.csv"),
+        "tau_half": _rows(results / "E-A" / "tau_half.csv"),
     }
-    va1 = _rows(RESULTS / "E-A-IQ" / "va1.csv")
-    ea_iq.check_va1_complete(va1)  # fails loudly on any missing (controller, tau, noise) row
-    va1_meta = read_json(RESULTS / "E-A-IQ" / "meta.json")
+    va1 = _rows(results / "E-A-IQ" / "va1.csv")
+    if not smoke:
+        ea_iq.check_va1_complete(va1)  # fails loudly on any missing (controller, tau, noise) row
+    va1_meta = read_json(results / "E-A-IQ" / "meta.json")
+    off = [abs(float(r["diff_iq_minus_vectorized_mid_db"])) for r in va1 if r["noise"] == "off"]
     out["VA-1"] = {
         "rows": va1,
         "n_rows": len(va1),
-        "complete": True,
-        "all_accept": all(r["accept"] == "True" for r in va1),
-        "max_abs_diff_noise_off_db": max(
-            abs(float(r["diff_iq_minus_vectorized_mid_db"])) for r in va1 if r["noise"] == "off"
-        ),
+        "complete": not smoke,
+        "all_accept": None if smoke else all(r["accept"] == "True" for r in va1),
+        "max_abs_diff_noise_off_db": max(off) if off else None,
         "hosts": va1_meta.get("hosts"),
         "batch_reference_cross_host_check": va1_meta.get("batch_reference_cross_host_check"),
     }
-    va5 = RESULTS / "E-B1" / "va5.json"
+    if smoke:
+        out["VA-1"]["missing_rows"] = va1_meta.get("missing_rows")
+    va5 = results / "E-B1" / "va5.json"
     if not va5.exists():
         raise FileNotFoundError(f"{va5} missing")
     out["VA-5"] = read_json(va5)
-    eb2 = _rows(RESULTS / "E-B2" / "eb2_per.csv")
+    eb2 = _rows(results / "E-B2" / "eb2_per.csv")
     if not eb2:
-        raise FileNotFoundError(RESULTS / "E-B2" / "eb2_per.csv")
+        raise FileNotFoundError(results / "E-B2" / "eb2_per.csv")
     out["E-B2"] = {
         "n_points": len(eb2),
         "semantics": sorted({r["semantics"] for r in eb2}),
         "labels": LABELS,
         "f9b_rows_guard_0p5ms": [r for r in eb2 if r["guard_s"] == "1/2000"],
     }
-    t8 = _rows(RESULTS / "E-C" / "table8.csv")
+    t8 = _rows(results / "E-C" / "table8.csv")
     if not t8:
-        raise FileNotFoundError(RESULTS / "E-C" / "table8.csv")
+        raise FileNotFoundError(results / "E-C" / "table8.csv")
     out["E-C"] = {"table8": t8}
-    ber = _rows(RESULTS / "E-F" / "ber" / "ber.csv")
+    ber = _rows(results / "E-F" / "ber" / "ber.csv")
     if not ber:
-        raise FileNotFoundError(RESULTS / "E-F" / "ber" / "ber.csv")
+        raise FileNotFoundError(results / "E-F" / "ber" / "ber.csv")
     out["E-F"] = {
         "ber": ber,
         "n_points": len(ber),
@@ -386,8 +399,9 @@ def summary() -> dict[str, Any]:
     g = git_info()
     out["meta"] = {
         "generated_utc": _utc(),
+        "smoke": smoke,
         "sremu_git": {k: g.get(k) for k in ("commit", "dirty", "dirty_patch_sha256")},
-        "experiments": {e: _experiment_record(RESULTS / e) for e in EXPERIMENT_DIRS},
+        "experiments": {e: _experiment_record(results / e) for e in EXPERIMENT_DIRS},
         "excluded": EXCLUDED,
         "labels": LABELS,
         "d24_check": {"checked_by": "experiments.finalize.d24_violations", "violations": 0},
@@ -406,51 +420,77 @@ def main(argv: list[str] | None = None) -> int:
         help="fetched AWS job directory whose out/ea_iq run dirs are imported first",
     )
     ap.add_argument("--note", default=None, help="provenance note stored with the import")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=RESULTS,
+        help="results root (default: the paper repo's sweeps/results)",
+    )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="reduced local check of regenerate_paper_data.sh: VA-1 aggregated without the "
+        "completeness rule, summary marked smoke; needs a non-default --out",
+    )
     args = ap.parse_args(argv)
     runs = args.runs.resolve()
+    res = args.out.resolve()
+    if args.smoke and res == RESULTS.resolve():
+        ap.error("--smoke needs a non-default --out (smoke output is never paper data)")
     if args.import_aws_ea_iq is not None:
         job = import_aws_ea_iq(args.import_aws_ea_iq, runs / "ea_iq", note=args.note)
         print(json.dumps({"imported": job["imported"]}, default=str))
     export_git_info(runs)  # git state read once; a dirty patch goes to runs/, not the paper repo
     from experiments import ea_iq
 
-    ea_iq.aggregate(runs / "ea_iq", RESULTS / "E-A-IQ")  # strict: raises on a missing row
-    if not aggregate_eb_lab_like(runs):
+    # strict (default): raises on a missing row
+    ea_iq.aggregate(runs / "ea_iq", res / "E-A-IQ", strict=not args.smoke)
+    if not aggregate_eb_lab_like(runs, res):
         print("E-B: original lab-like sweep directories absent; E-B1/E-B2 results left as they are")
-    _copy_run(runs / "ec", RESULTS / "E-C")
+    _copy_run(runs / "ec", res / "E-C")
     if (runs / "ef_ber").exists():
         from experiments import ef
 
-        ef.aggregate_ber(runs / "ef_ber", RESULTS / "E-F" / "ber")
-    stale = RESULTS / "E-F" / "latency"
+        ef.aggregate_ber(runs / "ef_ber", res / "E-F" / "ber")
+    stale = res / "E-F" / "latency"
     if stale.exists():
         shutil.rmtree(stale)
         print(f"removed {stale} ({EXCLUDED['E-F/latency']})")
-    bad = d24_violations(RESULTS, skip_top=("summary.json", "meta.json", "manifest.json"))
+    bad = d24_violations(res, skip_top=("summary.json", "meta.json", "manifest.json"))
     if bad:
         raise RuntimeError("D24 naming violations in paper-facing results:\n" + "\n".join(bad[:50]))
-    s = summary()
-    write_json(RESULTS / "summary.json", s)
-    rec = RunRecord(RESULTS, 20261010, mode="analysis", patch_root=runs)
+    s = summary(res, smoke=args.smoke)
+    write_json(res / "summary.json", s)
+    rec = RunRecord(res, 20261010, mode="analysis", patch_root=runs)
     classes = sorted(
         {c for e in s["meta"]["experiments"].values() for c in (e["data_classes"] or [])}
     )
+    smoke_note = (
+        ["SMOKE: reduced subsets from regenerate_paper_data.sh --smoke; not paper data"]
+        if args.smoke
+        else []
+    )
     write_meta(
-        RESULTS,
+        res,
         experiment="WP11-results",
         data_classes=classes,
         description="Index of the WP11 paper results: summary.json holds the key numbers of E-A, "
         "VA-1 (E-A-IQ), E-B1/VA-5, E-B2, E-C and E-F BER, copied from the result files, with data "
         "classes, git state and manifest/file SHA-256 per experiment",
-        assumptions=[EXCLUDED["E-F/latency"], *(f"label {k!r}: {v}" for k, v in LABELS.items())],
+        assumptions=[
+            *smoke_note,
+            EXCLUDED["E-F/latency"],
+            *(f"label {k!r}: {v}" for k, v in LABELS.items()),
+        ],
         files={"summary.json": "key numbers and provenance index"},
         extra={
             "experiments": list(EXPERIMENT_DIRS),
-            "summary_sha256": _sha256(RESULTS / "summary.json"),
+            "summary_sha256": _sha256(res / "summary.json"),
+            **({"smoke": True} if args.smoke else {}),
         },
     )
     rec.finish()
-    bad = d24_violations(RESULTS)
+    bad = d24_violations(res)
     if bad:
         raise RuntimeError("D24 naming violations in paper-facing results:\n" + "\n".join(bad[:50]))
     print(

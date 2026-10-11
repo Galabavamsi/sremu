@@ -37,6 +37,17 @@ def test_ph12_regression_values(key: str, hr: float):
     assert branch == "interpolated"
 
 
+@pytest.mark.parametrize(("hr", "want_db"), [(1.5, 37.14), (10.0, 20.28)])
+def test_ph12_implementation_matches_the_pinned_oracle_literals(hr: float, want_db: float):
+    """Implementation test of PH-12 with the spec's oracle values written out (DESIGN 10.2):
+    sremu.physics.experimental.p526 at 52 km, h1 = 200 m, 100 MHz must give 37.14 dB
+    (h2 = 1.5 m) and 20.28 dB (h2 = 10 m) within 0.01 dB. The literals also catch a silent
+    edit of the oracle table that ``test_ph12_regression_values`` reads."""
+    exc, branch = p526.p526_smooth(52.0, 200.0, hr, 100.0)
+    assert abs(exc - want_db) <= 0.01
+    assert branch == "interpolated"
+
+
 def test_ph12_full_scratch_table():
     """All six T15 rows (48/52/56 km x 1.5/10 m): excess loss within 0.01 dB of the scratch
     values (rounded there to 0.01 dB) and the same branch."""

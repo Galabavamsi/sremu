@@ -123,10 +123,12 @@ def test_gitattributes_lf_for_csv_and_json_section_2_2():
         assert order[pinned] > max(order["*.csv"], order["*.json"]), pinned
 
 
-def test_readme_states_lineage_section_2_1():
+def test_readme_states_independence_d24():
+    """D24 (fresh-attempt framing) replaces the lineage statement of section 2.1."""
     text = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "v1-legacy" in text and "03697a6" in text
-    assert "v2-legacy" in text and "8abd671" in text
+    assert "sremu is an independent new implementation" in text
+    assert "third generation" not in text.lower()
+    assert "## Lineage" not in text and "v1-legacy" not in text and "v2-legacy" not in text
 
 
 def test_d13_offline_install_documented():
