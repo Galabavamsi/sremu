@@ -62,7 +62,7 @@ def test_cff_authors_in_order(cff: dict) -> None:
     for a in cff["authors"]:
         assert set(a) <= PERSON_KEYS
         assert a["affiliation"] == AFFILIATION
-    assert cff["authors"][0]["email"] == "galabavamsi@iitbhilai.ac.in"
+    assert cff["authors"][0]["email"] == "galabav@iitbhilai.ac.in"
 
 
 def test_cff_licence_is_pending_not_declared(cff: dict) -> None:
