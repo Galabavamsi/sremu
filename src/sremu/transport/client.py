@@ -317,7 +317,15 @@ class RemoteEngine:
             if self._tx is None:
                 self._tx = TxSender(self.ctx, str(r["endpoint"]))
         else:
-            rx = RxReceiver(self.ctx, str(r["endpoint"]), h, counters=self.counters)
+            # the server's RX frame length sizes the receive high-water mark (in frames)
+            fs = r.get("frame_samples")
+            rx = RxReceiver(
+                self.ctx,
+                str(r["endpoint"]),
+                h,
+                counters=self.counters,
+                frame_samples=int(fs) if fs else None,
+            )
             with self._watch_lock:
                 if self._watcher is not None:
                     rx.on_read = self._watcher.add(rx.fd)

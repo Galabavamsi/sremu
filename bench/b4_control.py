@@ -38,11 +38,23 @@ summary's verdict next to the recomputed one.
 **Paced part** (Linux job ``b4`` on a quiet c7i.8xlarge; on Windows labelled "Windows, not
 representative"): the engine runs paced with async coupling, served over the control
 socket; an external process (:mod:`bench._ctl_client` ``async``) sends one
-``ris.set_config`` every 1/r wall seconds, timed (lead 2 ms) or ``asap``. Per repetition:
-``--warmup-s`` warm-up, then ``--measure-s`` measured (commands issued during the warm-up
-are excluded). Reported: lateness distribution (samples) per RX, command visible latency
-``t_wall_visible - t_wall_recv`` percentiles, statuses, client round-trip percentiles,
-deadline misses and page latency of the paced run.
+``ris.set_config`` every 1/r wall seconds, timed (``at`` = its estimate of virtual time now
+plus a lead) or ``asap``. Per repetition: ``--warmup-s`` warm-up, then ``--measure-s``
+measured (commands issued during the warm-up are excluded). Reported: lateness distribution
+(samples) per RX, command visible latency ``t_wall_visible - t_wall_recv`` percentiles,
+statuses, client round-trip percentiles, deadline misses and page latency of the paced run.
+Paced plans (``--plan``):
+
+* ``classic`` (default; the first B4 run): 0.5 ms pages (512 samples), ``--rates`` x
+  ``--modes``, timed with lead ``--lead-ms`` (default 2 ms).
+* ``served-1ms`` (the AWS job ``b4``): 1 ms pages (1024 samples) and a lead sweep. A timed
+  command lands on time only if its lead exceeds the command's latency (send to schedule,
+  p99 4.6-5.2 ms in the first B4 run) plus the client's error in estimating virtual time and
+  the page that holds the switch, so the first run's 2 ms lead made late commands expected.
+  Instead of one hand-picked lead, the plan measures the late fraction per lead: timed at
+  2, 4, 6, 8 and 12 ms and asap at 100 and 10 commands/s, then timed (8 ms) and asap at
+  1000 commands/s (where the engine is command-bound). Summary keys name the lead
+  (``timed_lead8ms@100Hz``) and give ``late_fraction``.
 """
 
 from __future__ import annotations
@@ -65,10 +77,31 @@ SUITE = "b4"
 L_MIN = Fraction(1, 10_000)
 RATES = (10, 100, 1000, 10_000)
 SCENE_LINKS = 2
+CLASSIC_PAGE_S = "5e-4"
+CLASSIC_LEAD_S = "2e-3"
+PACED_PLANS: dict[str, dict[str, Any]] = {
+    "served-1ms": {
+        "page_target_s": "1e-3",
+        # (rate Hz, mode, lead s), in priority order (a budget cut drops the tail)
+        "combos": [
+            *[
+                (r, m, ld)
+                for r in (100, 10)
+                for m, ld in [("timed", f"{x}e-3") for x in (2, 4, 6, 8, 12)] + [("asap", None)]
+            ],
+            (1000, "timed", "8e-3"),
+            (1000, "asap", None),
+        ],
+    },
+}
+"""Named paced plans besides ``classic`` (see the module docstring)."""
 
 
 def _scene(
-    duration_s: Fraction, mode: str = "lockstep", coupling: str = "barrier"
+    duration_s: Fraction,
+    mode: str = "lockstep",
+    coupling: str = "barrier",
+    page_target_s: str = CLASSIC_PAGE_S,
 ) -> dict[str, Any]:
     from bench._scenes import bench_scenario
 
@@ -79,10 +112,19 @@ def _scene(
         rate_sps="1e6",
         features="F1",
         duration_s=str(duration_s),
+        page_target_s=page_target_s,
         mode=mode,
         coupling=coupling,
         name="b4_control",
     )
+
+
+def combo_key(rate_hz: int, mode: str, lead_s: str | None, with_lead: bool) -> str:
+    """Summary key of a paced combination: ``asap@100Hz``, ``timed@100Hz`` (classic, one
+    lead) or ``timed_lead8ms@100Hz``."""
+    if mode != "timed" or not with_lead or lead_s is None:
+        return f"{mode}@{rate_hz}Hz"
+    return f"timed_lead{float(Fraction(lead_s)) * 1e3:g}ms@{rate_hz}Hz"
 
 
 def _record_stats(recs: list[Any], src: str, t_from: Fraction | None = None) -> dict[str, Any]:
@@ -368,15 +410,23 @@ def recompute_lockstep(run_dir: Path, out: Path | None = None) -> dict[str, Any]
 
 
 def paced_point(
-    rate_hz: int, mode: str, warmup_s: Fraction, measure_s: Fraction, rep: int
+    rate_hz: int,
+    mode: str,
+    warmup_s: Fraction,
+    measure_s: Fraction,
+    rep: int,
+    *,
+    lead_s: str = CLASSIC_LEAD_S,
+    page_target_s: str = CLASSIC_PAGE_S,
 ) -> dict[str, Any]:
-    """One paced + async repetition with an external command process."""
+    """One paced + async repetition with an external command process (``lead_s``: lead of
+    timed commands; ``page_target_s``: the scene's page target)."""
     from bench._engine_point import _resolve, _restart_paced_stats, build_engine, prewarm
     from bench._scenes import ris_path_check
     from sremu.transport.control_server import ControlServer, ServerConfig
 
     total = warmup_s + measure_s
-    res = _resolve(_scene(total, mode="paced", coupling="async"))
+    res = _resolve(_scene(total, mode="paced", coupling="async", page_target_s=page_target_s))
     prewarm(res, "F1")
     eng = build_engine(res, "F1")
     chk = ris_path_check(eng.model)
@@ -410,7 +460,7 @@ def paced_point(
             "--mode",
             mode,
             "--lead-s",
-            "2e-3",
+            str(lead_s),
             "--n-controls",
             str(n_ctl),
             "--seed",
@@ -453,6 +503,9 @@ def paced_point(
     return {
         "rate_hz": rate_hz,
         "mode": mode,
+        "lead_s": float(Fraction(lead_s)) if mode == "timed" else None,
+        "page_samples": int(g.page),
+        "page_target_s": page_target_s,
         "rep": rep,
         "warmup_s": float(warmup_s),
         "measure_s": float(measure_s),
@@ -477,14 +530,32 @@ def paced_point(
     }
 
 
+def paced_combos(
+    plan: str, rates: list[int], modes: list[str], leads_s: list[str]
+) -> tuple[list[tuple[int, str, str | None]], str]:
+    """``(combos, page_target_s)`` of a paced plan: ``classic`` crosses ``rates`` with
+    ``modes`` (timed once per lead), a named plan is fixed (:data:`PACED_PLANS`)."""
+    if plan != "classic":
+        p = PACED_PLANS[plan]
+        return list(p["combos"]), str(p["page_target_s"])
+    combos: list[tuple[int, str, str | None]] = []
+    for rate in rates:
+        for mode in modes:
+            for lead in leads_s if mode == "timed" else [None]:
+                combos.append((rate, mode, lead))
+    return combos, CLASSIC_PAGE_S
+
+
 def run_paced(
     run: BenchRun,
-    rates: list[int],
+    combos: list[tuple[int, str, str | None]],
     reps: int,
     warm: Fraction,
     meas: Fraction,
-    modes: list[str],
     budget_s: float,
+    *,
+    page_target_s: str = CLASSIC_PAGE_S,
+    keys_with_lead: bool = False,
 ) -> dict[str, Any]:
     rows = []
     dropped = []
@@ -494,37 +565,42 @@ def run_paced(
     slow = 1.2  # wall / virtual of a repetition; raised to what the runs show (a lagging
     # engine stretches a paced run far beyond its virtual length)
     with run.interruptible():
-        for rate in rates:
-            for mode in modes:
-                for rep in range(reps):
-                    if time.perf_counter() - t_start + virt * slow > budget_s:
-                        dropped.append(
-                            {"rate_hz": rate, "mode": mode, "rep": rep, "reason": "budget"}
-                        )
-                        continue
-                    try:
-                        r = paced_point(rate, mode, warm, meas, rep)
-                    except Exception as exc:  # recorded; the suite goes on
-                        traceback.print_exc()
-                        failed.append(
-                            {
-                                "rate_hz": rate,
-                                "mode": mode,
-                                "rep": rep,
-                                "error": f"{type(exc).__name__}: {exc}",
-                            }
-                        )
-                        continue
-                    slow = max(slow, 1.1 * float(r["wall_s"]) / virt)
-                    rows.append(r)
-                    print(
-                        f"paced {mode:5s} {rate:6d} Hz rep {rep}: commands={r['commands']} "
-                        f"late p99={r['lateness_samples'].get('p99')} max={r['lateness_max']} "
-                        f"vis p99={r['visible_latency_us'].get('p99')} us miss={r['miss_rate']} "
-                        f"sustainable={r['sustainable']}",
-                        flush=True,
+        for rate, mode, lead in combos:
+            lead_s = lead or CLASSIC_LEAD_S  # asap ignores it
+            key = combo_key(rate, mode, lead, keys_with_lead)
+            for rep in range(reps):
+                if time.perf_counter() - t_start + virt * slow > budget_s:
+                    dropped.append(
+                        {"key": key, "rate_hz": rate, "mode": mode, "rep": rep, "reason": "budget"}
                     )
-                    run.write_json("paced.json", rows)
+                    continue
+                try:
+                    r = paced_point(
+                        rate, mode, warm, meas, rep, lead_s=lead_s, page_target_s=page_target_s
+                    )
+                except Exception as exc:  # recorded; the suite goes on
+                    traceback.print_exc()
+                    failed.append(
+                        {
+                            "key": key,
+                            "rate_hz": rate,
+                            "mode": mode,
+                            "rep": rep,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    continue
+                r["key"] = key
+                slow = max(slow, 1.1 * float(r["wall_s"]) / virt)
+                rows.append(r)
+                print(
+                    f"paced {key} rep {rep}: commands={r['commands']} "
+                    f"late p99={r['lateness_samples'].get('p99')} max={r['lateness_max']} "
+                    f"vis p99={r['visible_latency_us'].get('p99')} us miss={r['miss_rate']} "
+                    f"sustainable={r['sustainable']}",
+                    flush=True,
+                )
+                run.write_json("paced.json", rows)
     flat = [{k: (json.dumps(v) if isinstance(v, dict) else v) for k, v in r.items()} for r in rows]
     run.write_csv("paced.csv", flat)
     if dropped:
@@ -532,11 +608,12 @@ def run_paced(
     if failed:
         run.write_csv("paced_failed.csv", failed)
     by: dict[str, Any] = {}
-    for rate in rates:
-        for mode in modes:
-            rs = [r for r in rows if r["rate_hz"] == rate and r["mode"] == mode]
-            if not rs:
-                continue
+    for rate, mode, lead in combos:
+        key = combo_key(rate, mode, lead, keys_with_lead)
+        if key in by:
+            continue
+        rs = [r for r in rows if r["key"] == key]
+        if rs:
             p99 = [r["lateness_samples"].get("p99") for r in rs if r["lateness_samples"]]
             vis = [r["visible_latency_us"].get("p99") for r in rs if r["visible_latency_us"]]
             ach = [
@@ -544,7 +621,13 @@ def run_paced(
                 for r in rs
                 if isinstance(r.get("client"), dict) and r["client"].get("achieved_rate_hz")
             ]
-            by[f"{mode}@{rate}Hz"] = {
+            late = sum(r["status"].get("late_applied", 0) for r in rs)
+            n_cmd = sum(r["commands"] for r in rs)
+            by[key] = {
+                "rate_hz": rate,
+                "mode": mode,
+                "lead_s": rs[0]["lead_s"],
+                "page_samples": rs[0]["page_samples"],
                 "reps": len(rs),
                 # the client waits for each reply (REQ/REP): a slow engine caps its rate
                 "achieved_rate_hz_median": statistics.median(ach) if ach else None,
@@ -552,9 +635,11 @@ def run_paced(
                 "lateness_p99_samples_median": statistics.median(p99) if p99 else None,
                 "lateness_max_samples_worst": max((r["lateness_max"] or 0) for r in rs),
                 "visible_latency_p99_us_worst": max(vis) if vis else None,
-                "late_applied_total": sum(r["status"].get("late_applied", 0) for r in rs),
+                "late_applied_total": late,
+                # applied late / commands in the measured windows, over the repetitions
+                "late_fraction": late / n_cmd if n_cmd else None,
                 "sustainable_reps": sum(1 for r in rs if r["sustainable"]),
-                "commands_total": sum(r["commands"] for r in rs),
+                "commands_total": n_cmd,
                 "commands_per_virtual_s_median": statistics.median(
                     r["commands_per_virtual_s"] for r in rs
                 ),
@@ -564,6 +649,7 @@ def run_paced(
     w, m = float(warm), float(meas)
     return {
         "paced": by,
+        "page_target_s": page_target_s,
         "paced_all_reps_sustainable": bool(rows) and all(r["sustainable"] for r in rows),
         "paced_dropped": len(dropped),
         "paced_failed": failed,
@@ -587,6 +673,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--rates", default=",".join(str(r) for r in RATES))
     ap.add_argument("--modes", default="timed,asap")
+    ap.add_argument(
+        "--plan",
+        choices=("classic", *PACED_PLANS),
+        default="classic",
+        help="paced plan; a named plan fixes pages, rates, modes and leads",
+    )
+    ap.add_argument("--lead-ms", default="2", help="classic plan: timed leads, ms (list)")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--warmup-s", default="5")
     ap.add_argument("--measure-s", default="60")
@@ -613,6 +706,9 @@ def main(argv: list[str] | None = None) -> int:
     paced = a.part == "paced"
     rates = [int(x) for x in a.rates.split(",") if x]
     modes = [m for m in a.modes.split(",") if m]
+    leads = [str(Fraction(x) / 1000) for x in a.lead_ms.split(",") if x]
+    combos, page_target = paced_combos(a.plan, rates, modes, leads)
+    keys_with_lead = a.plan != "classic" or len(leads) > 1
     spec = {
         "threads": a.threads,
         "part": a.part,
@@ -620,12 +716,20 @@ def main(argv: list[str] | None = None) -> int:
         "scene": f"B2 base, L={a.links}, N=240, 1 panel, 1 MS/s, F1",
         "links": a.links,
         "controller": "Urap(p=0.5), L_min=1e-4 s, latency L_min+U[0,L_min] (lockstep)",
-        "rates_hz": rates if paced else list((10, 1000) if a.quick else RATES),
-        "modes": modes if paced else ["none", "inproc", "remote"],
+        "rates_hz": sorted({c[0] for c in combos})
+        if paced
+        else list((10, 1000) if a.quick else RATES),
+        "modes": sorted({c[1] for c in combos}) if paced else ["none", "inproc", "remote"],
         "reps": a.reps if paced else 1,
         "warmup_s": a.warmup_s if paced else None,
         "measure_s": a.measure_s if paced else None,
     }
+    if paced:
+        spec.update(
+            plan=a.plan,
+            page_target_s=page_target,
+            combos=[{"rate_hz": r, "mode": m, "lead_s": ld} for r, m, ld in combos],
+        )
     caveats = [
         "Lockstep 'visible latency' is wall time until the engine computed the switch "
         "sample; it is not a real-time latency.",
@@ -647,13 +751,15 @@ def main(argv: list[str] | None = None) -> int:
     if paced:
         summary = run_paced(
             run,
-            rates,
+            combos,
             a.reps,
             Fraction(a.warmup_s),
             Fraction(a.measure_s),
-            modes,
             a.budget_min * 60.0,
+            page_target_s=page_target,
+            keys_with_lead=keys_with_lead,
         )
+        summary["plan"] = a.plan
     else:
         summary = run_lockstep(run, a.quick)
     summary["suite"] = SUITE

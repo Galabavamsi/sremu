@@ -5,7 +5,7 @@
 | B1 | `python -m bench.b1_kernels` | laptop; Linux job `b1` (one pinned 16-vCPU slot) | kernel timings (K1 snapshot, GEMV, render with T_FD ∈ {0, 8, 16, 32}, noise) per backend; exponents vs O(L·N) and O(L·T·S); NNLS fit of the §7.4 page-cost model from engine runs |
 | B2 | `python -m bench.b2_lockstep` | laptop (plan `slices`); Linux job `b2` (plan `server`, c7i.48xlarge) | lockstep RTF and RTF_min (100 ms windows) over L × N × RIS count × f_s × F0..F5, pruned by a plan and by series pruning; non-zero RIS path asserted per scene; `dropped.csv` gives the reason for every product point not run |
 | B3 | `python -m bench.b3_paced` | **Linux job `b3`** (quiet c7i.8xlarge); laptop only as "Windows, not representative" | paced sustainable L per series (f_s, page target, N, R, F), miss rate at 0/1/5 ms slack, page-latency histograms (CCDF); `protocol_12_3` in the summary |
-| B4 | `python -m bench.b4_control --part lockstep` / `--part paced` | laptop / **Linux job `b4`** | command lateness (lockstep must be 0) and visible latency, 10 Hz–10 kHz, in-process, remote barrier and paced async, on the base scene with `--links` L (default 2). The lockstep pass needs real evidence (`lockstep_check_ok`: ≥ 90 % of the expected commands, all `applied`, one lateness value per command and RX, all 0). Every paced repetition states whether it was sustainable, the rate the client really achieved (REQ/REP: a slow engine caps it) and the command rate inside the measured virtual window (`engine_bound` when it is below half the requested rate) |
+| B4 | `python -m bench.b4_control --part lockstep` / `--part paced` | laptop / **Linux job `b4`** | command lateness (lockstep must be 0) and visible latency, 10 Hz–10 kHz, in-process, remote barrier and paced async, on the base scene with `--links` L (default 2). The lockstep pass needs real evidence (`lockstep_check_ok`: ≥ 90 % of the expected commands, all `applied`, one lateness value per command and RX, all 0). Every paced repetition states whether it was sustainable, the rate the client really achieved (REQ/REP: a slow engine caps it) and the command rate inside the measured virtual window (`engine_bound` when it is below half the requested rate). Paced plans: `--plan classic` (0.5 ms pages, timed lead `--lead-ms`, default 2) and `--plan served-1ms` (1 ms pages; timed leads 2, 4, 6, 8, 12 ms and asap at 100 and 10 Hz, timed 8 ms and asap at 1000 Hz; `late_fraction` per lead), the AWS job's plan |
 | B6 | `python -m bench.b6_crosstool` | laptop | time per RIS channel evaluation: sremu (numba, NumPy) vs MATLAB R2026a (per-element loop script, vectorized, toolbox path, `phased.RISReflector`); `context_table.csv` with a scope note per row and REPORTED literature numbers |
 | E-B3 | `python -m bench.eb3_paced` | Linux | external TDMA controller over ZMQ, paced + async: lateness and switch-inside-packet rate (not a PER) |
 
@@ -78,8 +78,8 @@ approval). The bundle is a `git archive` without `.git`, so the command passes t
 $c = git -C D:\projects\ris\sremu rev-parse HEAD
 python runner.py launch b1b2 --type c7i.48xlarge --maxmin 240 --disk 60 --run "SREMU_GIT_COMMIT=$c SREMU_GIT_DIRTY=0 bash bench/aws/job.sh b1b2 --deadline-min 210"
 python runner.py launch b3 --type c7i.8xlarge --maxmin 210 --disk 40 --run "SREMU_GIT_COMMIT=$c SREMU_GIT_DIRTY=0 bash bench/aws/job.sh b3 --deadline-min 180"
-# B4 on its own quiet host, best after the per-command engine cost is fixed:
-python runner.py launch b4 --type c7i.8xlarge --maxmin 120 --disk 40 --run "SREMU_GIT_COMMIT=$c SREMU_GIT_DIRTY=0 bash bench/aws/job.sh b4 --deadline-min 95"
+# B4 on its own quiet host (paced plan served-1ms, about 65 min):
+python runner.py launch b4 --type c7i.8xlarge --maxmin 130 --disk 40 --run "SREMU_GIT_COMMIT=$c SREMU_GIT_DIRTY=0 bash bench/aws/job.sh b4 --deadline-min 110"
 # or B3 then B4 on one host:
 python runner.py launch b3b4 --type c7i.8xlarge --maxmin 270 --disk 40 --run "SREMU_GIT_COMMIT=$c SREMU_GIT_DIRTY=0 bash bench/aws/job.sh b3b4 --deadline-min 240"
 ```
@@ -88,8 +88,9 @@ While they are uncommitted, add `--extra bench src/sremu/commands/bench.py` and 
 `SREMU_GIT_DIRTY=1` (the runner never overrides files that are in `HEAD`, so an older
 committed `bench/` would win over the extras). Estimates: B2 server plan about 1 h of
 parallel sweep; B3 about 2.5 h, capped by its budget (the lowest-priority series are dropped
-first, `dropped.csv`); B4 about 1 h (lockstep about 5 min; paced repetitions at >= 100
-commands/s run about 2.4x their virtual length while a configuration command costs
-milliseconds of engine time, and the client's achieved rate is reported). A suite still
+first, `dropped.csv`); B4 about 70 min (lockstep about 5 min; paced plan `served-1ms`: 42
+repetitions of 65 s virtual, those at 1000 commands/s about 2.4x their virtual length while
+a configuration command costs milliseconds of engine time, and the client's achieved rate
+is reported). A suite still
 running at `--deadline-min` gets SIGINT and writes its partial run directory; the runner
 powers the instance off when the job ends, so `--maxmin` only caps a hang.

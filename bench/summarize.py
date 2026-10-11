@@ -9,12 +9,19 @@ the most recent complete run directory under ``--root`` (with ``manifest.json``)
 its ``summary.json``, the manifest's git commit/dirty flag, platform and the
 background-load summary of ``meta.json`` are copied into one JSON file, with the run
 directory path, so the paper pipeline (WP12) and the lead can map every quoted number to
-its data. Nothing is recomputed or rounded here.
+its data. B2 runs also get ``f5_points``: per served (F5) point of ``points.csv`` the
+end-to-end RTF and its diagnostics (``rtf_rx_client_median``, ``rtf_server_median``), the
+client pinning (``client_affinity_mode``, ``client_cpus``, ``client_affinity``), the
+transport settings (``rx_frame_samples``, ``tx_chunk_samples``; absent in runs made before
+they were recorded) and the RTF of the F4 point with the same L, N, RIS count, rate and
+threads (``f4_rtf_median``). Nothing is recomputed or rounded here (CSV numbers are only
+parsed back to numbers).
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -24,6 +31,73 @@ from typing import Any
 from bench._common import RUNS_ROOT
 
 SUITES = ("b1", "b2", "b3", "b4", "b6", "eb3")
+F5_POINT_KEYS = (
+    "point_id",
+    "status",
+    "L",
+    "N",
+    "n_ris",
+    "f_s",
+    "threads",
+    "rtf_median",
+    "rtf_reps",
+    "rtf_rx_client_median",
+    "rtf_server_median",
+    "reps",
+    "reps_truncated",
+    "clock_shared",
+    "bad_packets",
+    "seq_errors",
+    "client_affinity_mode",
+    "client_cpus",
+    "client_affinity",
+    "rx_frame_samples",
+    "tx_chunk_samples",
+)
+"""Columns of a B2 F5 row copied into ``f5_points`` (missing columns are left out)."""
+
+
+def _value(s: str | None) -> Any:
+    """A CSV cell parsed back to a number, a bool, None or a JSON value; else the string."""
+    if s is None or s == "":
+        return None
+    for conv in (int, float):
+        try:
+            return conv(s)
+        except ValueError:
+            pass
+    if s in ("True", "False"):
+        return s == "True"
+    if s[:1] in "[{":
+        try:
+            return json.loads(s)
+        except ValueError:
+            return s
+    return s
+
+
+def f5_points(run_dir: Path) -> list[dict[str, Any]] | None:
+    """The F5 rows of a B2 run's ``points.csv`` (see the module docstring); None without
+    that file."""
+    path = run_dir / "points.csv"
+    if not path.exists():
+        return None
+    with path.open(encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    def key(r: dict[str, str]) -> tuple[str | None, ...]:
+        return (r.get("L"), r.get("N"), r.get("n_ris"), r.get("f_s"), r.get("threads"))
+
+    f4 = {key(r): r for r in rows if r.get("features") == "F4" and r.get("status") == "ok"}
+    out = []
+    for r in rows:
+        if r.get("features") != "F5":
+            continue
+        d = {k: _value(r[k]) for k in F5_POINT_KEYS if k in r}
+        twin = f4.get(key(r))
+        d["f4_rtf_median"] = None if twin is None else _value(twin.get("rtf_median"))
+        out.append(d)
+    return out
 
 
 def latest_runs(root: Path) -> dict[str, list[Path]]:
@@ -49,8 +123,12 @@ def summarize(root: Path) -> dict[str, Any]:
         for d in dirs:
             man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            extra = {}
+            if suite.split("_", 1)[0] == "b2":
+                extra["f5_points"] = f5_points(d)
             entries.append(
                 {
+                    **extra,
                     "run_dir": str(d),
                     "git_commit": man.get("git_commit"),
                     "git_dirty": man.get("git_dirty"),

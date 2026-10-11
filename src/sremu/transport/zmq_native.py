@@ -23,6 +23,19 @@ port that ``stream.open`` returns; clients ``PULL``. Every message is a two-part
   fills and the engine stops: backpressure). In paced mode the send is ``NOBLOCK``; on
   ``EAGAIN`` the frame is dropped, counted (``rx_egress_dropped_samples``) and the next frame
   carries ``OVERFLOW_BEFORE``.
+  **Batching (lockstep).** With frames longer than a page, the pump sleeps in the engine's
+  ``wait_rx`` until a full frame is queued and sends it as one message: one wake-up and
+  one send per frame instead of per page, which is most of the served cost in one
+  interpreter (each wake-up is a GIL hand-off with the engine thread). It sends a shorter
+  frame at once when the engine cannot progress (no TX data, a barrier, a pause, the end of
+  the run), so a client that times its TX from its RX never waits on a half-filled frame,
+  and after ``flush_s`` wall seconds otherwise. Frames carry the same samples, indices and
+  flags in the same order; an end of burst or a gap still ends a frame. Paced mode keeps
+  one frame per page (a batch would add its length to the delivery latency).
+  **High-water marks** count messages: both ends size theirs in frames so that about the
+  same number of samples is in flight whatever the frame length (:func:`hwm_frames`), and
+  the lockstep run-ahead of the engine over a slow reader stays bounded as with page-sized
+  frames.
 
 **Client side.** :class:`TxSender` turns ``submit_tx`` calls into frames (splitting at
 ``2**22`` samples); :class:`RxReceiver` turns frames back into ``read_rx`` results with the
@@ -38,8 +51,9 @@ in ZMQ and the lockstep backpressure reaches the engine.
 reaches a socket whose reader last found it empty, and then calls its listeners
 (``Device.notify``). Socket ownership, read semantics and backpressure are unchanged.
 
-``wall_ns`` (sender monotonic clock) is carried for latency metrics only; it never enters
-data-plane arithmetic (I7).
+``wall_ns`` (the sender's ``time.perf_counter_ns``: monotonic and system-wide, the clock of
+the engine's latency stamps; ``time.monotonic`` ticks at 15.6 ms on Windows) is carried for
+latency metrics only; it never enters data-plane arithmetic (I7).
 """
 
 from __future__ import annotations
@@ -80,21 +94,35 @@ from sremu.transport.framing import (
 )
 
 __all__ = [
+    "RX_FLUSH_S",
+    "RX_HWM_PAGES",
     "ReadyWatcher",
     "RxEgress",
     "RxReceiver",
     "TransportCounters",
     "TxIngress",
     "TxSender",
+    "hwm_frames",
 ]
 
 POLL_MS: Final[int] = 20
 """Poll granularity of the transport threads, ms (wall)."""
+RX_HWM_PAGES: Final[int] = 64
+"""Default RX high-water mark of each end (server egress, client receiver), in pages."""
+RX_FLUSH_S: Final[float] = 0.01
+"""Default wall time a batching egress pump waits for a full frame before it sends what is
+queued (the engine-blocked flush normally comes first)."""
 WATCH_IDLE_S: Final[float] = 1.0
 """Select timeout of the :class:`ReadyWatcher` thread (liveness only; every change of its
 handle set wakes it at once)."""
 TX_HARD_PART_LIMIT: Final[int] = 4 * MAX_FRAME_SAMPLES * 8
 """TX ingress parts above 128 MiB are dropped by ZMQ (peer disconnected) without a count."""
+
+
+def hwm_frames(hwm_pages: int, page: int, frame_samples: int) -> int:
+    """High-water mark in messages that holds about ``hwm_pages`` pages of ``page`` samples
+    in frames of ``frame_samples`` (at least 1)."""
+    return max(1, -(-int(hwm_pages) * int(page) // max(1, int(frame_samples))))
 
 
 class TransportCounters:
@@ -141,7 +169,7 @@ class TransportCounters:
 
 
 def _now_ns() -> int:
-    return time.monotonic_ns()
+    return time.perf_counter_ns()
 
 
 def tx_metadata(h: FrameHeader, rate: Any) -> TxMetadata:
@@ -295,10 +323,12 @@ class TxIngress:
 class RxEgress:
     """One RX stream's egress ``PUSH`` socket and pump thread (see the module docstring).
 
-    ``frame_samples``: samples per frame (at most). ``paced``: NOBLOCK sends. ``is_done()``:
-    whether the run has ended (then an empty read ends the stream). ``frontier()``: the
-    stream's first uncomputed sample (for ``LATE`` frames). ``publish(topic, body)``:
-    telemetry.
+    ``frame_samples``: samples per frame (at most). ``paced``: NOBLOCK sends, no batching.
+    ``sndhwm``: the socket's high-water mark in messages. ``is_done()``: whether the run has
+    ended (then an empty read ends the stream). ``frontier()``: the stream's first
+    uncomputed sample (for ``LATE`` frames). ``publish(topic, body)``: telemetry.
+    ``flush_s``: longest wait for a full frame when batching (lockstep, frames longer than a
+    page, an engine with ``wait_rx``).
     """
 
     def __init__(
@@ -311,11 +341,12 @@ class RxEgress:
         *,
         frame_samples: int,
         paced: bool = False,
-        sndhwm: int = 64,
+        sndhwm: int = RX_HWM_PAGES,
         is_done: Callable[[], bool] | None = None,
         frontier: Callable[[], int] | None = None,
         publish: Callable[[str, dict[str, Any]], None] | None = None,
         read_timeout_s: float = 0.05,
+        flush_s: float = RX_FLUSH_S,
     ) -> None:
         self.engine = engine
         self.handle = handle
@@ -326,10 +357,17 @@ class RxEgress:
         self.frontier = frontier or (lambda: 0)
         self.publish = publish
         self.read_timeout_s = float(read_timeout_s)
+        self.flush_s = float(flush_s)
+        wait_rx = getattr(engine, "wait_rx", None)
+        batch = not paced and self.frame_samples > handle.page_size and callable(wait_rx)
+        self._wait_rx: Callable[[StreamHandle, int, float], bool | None] | None = (
+            wait_rx if batch else None
+        )
         self.error: BaseException | None = None
+        self.sndhwm = int(sndhwm)
         self.sock = ctx.socket(zmq.PUSH)
         self.sock.setsockopt(zmq.LINGER, 0)
-        self.sock.setsockopt(zmq.SNDHWM, int(sndhwm))
+        self.sock.setsockopt(zmq.SNDHWM, self.sndhwm)
         self.sock.bind(bind)
         self.endpoint: str = self.sock.getsockopt_string(zmq.LAST_ENDPOINT)
         self.seq = 0
@@ -352,8 +390,13 @@ class RxEgress:
             self.thread.join(5.0)
         self.sock.close(0)
 
+    @property
+    def batching(self) -> bool:
+        """Whether the pump waits for full frames (see the module docstring)."""
+        return self._wait_rx is not None
+
     def _send(self, parts: list[bytes], give_up_s: float | None = None) -> bool:
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         while not self._stop.is_set():
             try:
                 self.sock.send_multipart(parts, zmq.NOBLOCK, copy=False)
@@ -361,7 +404,7 @@ class RxEgress:
             except zmq.Again:
                 if self.paced:
                     return False
-                if give_up_s is not None and time.monotonic() - t0 >= give_up_s:
+                if give_up_s is not None and time.perf_counter() - t0 >= give_up_s:
                     return False
                 self.sock.poll(POLL_MS, zmq.POLLOUT)
             except zmq.ZMQError:  # pragma: no cover - socket closed under us
@@ -395,12 +438,26 @@ class RxEgress:
 
     def _pump(self) -> None:
         h = self.handle
+        wait_rx = self._wait_rx
         while not self._stop.is_set():
             done = self.is_done()
-            t0 = time.monotonic()
-            y, md = self.engine.read_rx(h, self.frame_samples, self.read_timeout_s)
+            t0 = time.perf_counter()
+            if wait_rx is not None and not done:  # batching: one wake-up per full frame
+                # in slices of at most read_timeout_s, so that stop() or the end of the run
+                # ends a long flush_s wait (neither wakes the engine's waiter; after the end
+                # no batch can fill, and END_OF_STREAM must not wait for the flush timer)
+                t_flush = t0 + self.flush_s
+                while True:
+                    left = min(self.read_timeout_s, t_flush - time.perf_counter())
+                    if wait_rx(h, self.frame_samples, left) is not False:
+                        break  # a full frame, or a read that cannot wait for more
+                    if self._stop.is_set() or time.perf_counter() >= t_flush or self.is_done():
+                        break
+            # batching reads at once (also after the end of the run: nothing more comes)
+            timeout_s = 0.0 if wait_rx is not None else self.read_timeout_s
+            y, md = self.engine.read_rx(h, self.frame_samples, timeout_s)
             code = md.error_code
-            if not y.size and code == ErrorCode.TIMEOUT and time.monotonic() - t0 < 0.002:
+            if not y.size and code == ErrorCode.TIMEOUT and time.perf_counter() - t0 < 0.002:
                 # the engine did not wait (e.g. the stream is not streaming): do not spin
                 self._stop.wait(min(0.01, self.read_timeout_s))
             if code == ErrorCode.OVERFLOW:
@@ -705,7 +762,9 @@ class RxReceiver:
     the in-process engine (see the module docstring).
 
     ``fd``: the socket's ``ZMQ_FD`` handle for a :class:`ReadyWatcher`; ``on_read`` (the
-    watcher's arm function, when watched) is called after every read's socket access."""
+    watcher's arm function, when watched) is called after every read's socket access.
+    ``frame_samples``: the server's RX frame length (``stream.open``); the default
+    ``rcvhwm`` holds :data:`RX_HWM_PAGES` pages in frames of that length."""
 
     def __init__(
         self,
@@ -713,13 +772,20 @@ class RxReceiver:
         endpoint: str,
         handle: StreamHandle,
         *,
-        rcvhwm: int = 64,
+        rcvhwm: int | None = None,
         counters: TransportCounters | None = None,
+        frame_samples: int | None = None,
     ) -> None:
         self.handle = handle
+        self.frame_samples = int(frame_samples or handle.page_size)
+        self.rcvhwm = int(
+            rcvhwm
+            if rcvhwm is not None
+            else hwm_frames(RX_HWM_PAGES, handle.page_size, self.frame_samples)
+        )
         self.sock = ctx.socket(zmq.PULL)
         self.sock.setsockopt(zmq.LINGER, 0)
-        self.sock.setsockopt(zmq.RCVHWM, int(rcvhwm))
+        self.sock.setsockopt(zmq.RCVHWM, self.rcvhwm)
         self.sock.connect(endpoint)
         self.endpoint = endpoint
         self.fd = int(self.sock.getsockopt(zmq.FD))  # read here, by the owner thread

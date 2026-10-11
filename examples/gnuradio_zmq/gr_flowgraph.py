@@ -9,11 +9,12 @@ into a stock **ZMQ REP Sink** bound at ``--tx`` (the emulator's REQ pulls the sa
 ``--rx`` (the emulator's REP answers its ``uint32`` item-count requests) into a file sink
 of ``--n`` complex64 samples.
 
-Status: written against the GNU Radio 3.10 Python API (``zeromq.rep_sink(itemsize, vlen,
-address, timeout, pass_tags, hwm, bind)``, ``zeromq.req_source(...)``) but **not run in this
-repository** (no GNU Radio on the development host). The block behaviour the emulator relies
-on is pinned from GNU Radio's source and tested against stub peers (IO-08); E2 itself runs
-on WSL2 Ubuntu or AWS (DESIGN.md 11 E-E2).
+Status: a minimal peer for the GNU Radio 3.10 Python API (``zeromq.rep_sink(itemsize, vlen,
+address, timeout, pass_tags, hwm, bind)``, ``zeromq.req_source(...)``). It imports
+``sremu.rng`` for the keyed symbols, so GNU Radio's interpreter must be able to import sremu.
+The link-quality demonstration uses ``gr_dqpsk_modem.py`` instead, which imports nothing from
+sremu and is tested against GNU Radio 3.10.9.2 (``tests/integration/test_gnuradio_raw.py``;
+README.md). Linux / WSL2 only.
 """
 
 from __future__ import annotations

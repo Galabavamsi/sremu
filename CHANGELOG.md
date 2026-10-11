@@ -5,6 +5,22 @@ contract has its own version (`sremu.contracts.CONTRACT_VERSION`).
 
 ## [Unreleased] - 0.1.0.dev0
 
+### Changed (transport and served control, 2026-10-11)
+
+- Lockstep RX egress sends up to 8 pages per frame (`RX_BATCH_PAGES`; an explicit
+  `rx_frame_samples` wins) and flushes at once when the engine is about to wait, on pause,
+  at the end of the run, or after `ServerConfig.rx_flush_s` (10 ms). Paced mode sends one page
+  per frame. Sample values, indices and flags do not depend on the framing. HWMs are counted
+  in frames; `stream.open` returns `frame_samples`.
+- Latency stamps (control-server receipt, frame `wall_ns`, ingress/egress timing) use the
+  engine clock (`perf_counter_ns`).
+- The paced engine's wait yields the CPU and the GIL until 0.1 ms before a page release.
+- `RtfMeter.report().aggregate_sps` counts only the samples of the measured span.
+- Raw REQ/REP peers: `RawPeer.stop()` waits (bounded) for the peer to read the RX samples
+  queued at the end of the run; the default `gnuradio_count` request size is at least 8 pages.
+- `examples/gnuradio_zmq/`: DQPSK link through stock GNU Radio 3.10 against the raw mode, with
+  RIS configurations, a scheduled in-run switch and an analysis script (Linux/WSL).
+
 ### Changed (WP0 maintenance: lead decisions v1.2, **CONTRACT_VERSION 1.1**)
 
 Full list in `docs/contracts_changelog.md`.

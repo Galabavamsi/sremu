@@ -113,12 +113,20 @@ from sremu.transport.messages import (
     parse_request,
     receipt_reply,
 )
-from sremu.transport.zmq_native import RxEgress, TransportCounters, TxIngress
+from sremu.transport.zmq_native import (
+    RX_FLUSH_S,
+    RX_HWM_PAGES,
+    RxEgress,
+    TransportCounters,
+    TxIngress,
+    hwm_frames,
+)
 
 __all__ = [
     "COMMAND_OPS",
     "HARD_MESSAGE_LIMIT",
     "OPS",
+    "RX_BATCH_PAGES",
     "ControlServer",
     "RemoteProxy",
     "ServerConfig",
@@ -159,6 +167,13 @@ COMMAND_OPS: Final[frozenset[str]] = frozenset(
 _LOOPBACK_NAMES: Final = frozenset({"localhost"})
 HARD_MESSAGE_LIMIT: Final[int] = 16 << 20
 """Messages above 16 MiB are dropped by ZMQ (connection closed) without a reply."""
+RX_BATCH_PAGES: Final[int] = 8
+"""Default RX frame length in lockstep, in pages (paced: one page, since a batch would add
+its length to the delivery latency). One frame per page made the egress pump wake, take the
+engine lock and send once per page, each a GIL hand-off with the engine thread; 8 pages per
+frame cut the frames 8x (served B2 base point, end-to-end RTF x1.28 on a Windows laptop and
+x1.40 under WSL2, paired runs) while frames stay small (32 KiB at 1 MS/s, 512 KiB at
+23.04 MS/s with 8192-sample pages)."""
 
 
 # =========================================================================== endpoints
@@ -211,8 +226,13 @@ class ServerConfig:
     ``pub_endpoint`` None disables telemetry. Ports ``0`` or ``*`` bind ephemeral ports
     (read them from :attr:`ControlServer.endpoints`). ``tx_window_samples``: how far an
     open TX stream may run ahead of its receivers before TX ingress pauses (lockstep
-    backpressure). ``rx_frame_samples``: samples per RX frame (default: the stream's page
-    size). ``ack_timeout_s``: None waits for remote barrier acks indefinitely (publishing
+    backpressure). ``rx_frame_samples``: samples per RX frame at most; default (None) the
+    stream's page size in paced mode and :data:`RX_BATCH_PAGES` pages in lockstep, where
+    the egress pump batches pages into one frame (:mod:`sremu.transport.zmq_native`:
+    flushed early when the engine blocks, after ``rx_flush_s`` otherwise; the same samples
+    and flags). ``rx_sndhwm``: RX egress high-water mark in pages (converted to frames, so
+    about the same samples are in flight for any frame length). ``ack_timeout_s``: None
+    waits for remote barrier acks indefinitely (publishing
     ``sim.stall``); a number ends the wait with an engine error. ``exit_when_done``: stop
     the server once the run has ended and every RX egress has sent ``END_OF_STREAM``; once
     a consumer has attached (RX stream, raw peer, remote controller) the run goes on to its
@@ -230,7 +250,8 @@ class ServerConfig:
     ack_timeout_s: float | None = None
     tx_window_samples: int = 1 << 21
     rx_frame_samples: int | None = None
-    rx_sndhwm: int = 64
+    rx_flush_s: float = RX_FLUSH_S
+    rx_sndhwm: int = RX_HWM_PAGES
     tx_rcvhwm: int = 64
     exit_when_done: bool = False
     raw_peers: tuple[Any, ...] = ()
@@ -520,6 +541,12 @@ class ControlServer:
             cfg = ServerConfig(**{**cfg.__dict__, **overrides})
         self.config = cfg
         self.engine = engine
+        # t_wall_recv_ns is compared with the engine's t_wall_computed/visible_ns, so it is
+        # read from the engine's own wall clock (SystemClock: perf_counter_ns; a test's
+        # FakeClock). time.monotonic_ns is a different clock: GetTickCount64 on Windows,
+        # 15.6 ms ticks and an offset of tens of ms from perf_counter.
+        now_ns = getattr(getattr(engine, "clock", None), "now_ns", None)
+        self._now_ns: Callable[[], int] = now_ns if callable(now_ns) else time.perf_counter_ns
         self.scenario = scenario if scenario is not None else getattr(engine, "scenario", None)
         self.builtin_factory = builtin_factory
         self.counters = TransportCounters()
@@ -737,9 +764,12 @@ class ControlServer:
             self._driver.start()
             return
         orig = eng.step
+        mark_blocked = getattr(eng, "mark_blocked", None)
 
         def step(*, zero_fill: bool = False) -> bool:
             if self._paused.is_set():
+                if callable(mark_blocked):
+                    mark_blocked()  # batching RX egress sends what is queued now
                 ok = self._wait_resume()
                 return ok and self.engine_error is None  # 'progress': restart stall timers
             if self.stopping or self.engine_error is not None:
@@ -1012,7 +1042,7 @@ class ControlServer:
             s = _Session(ident, delimited)
             self._sessions[ident] = s
         s.delimited = delimited
-        t_recv = time.monotonic_ns()
+        t_recv = self._now_ns()  # the engine's clock (see __init__)
         try:
             msg = parse_request(payload, max_bytes=self.config.max_message_bytes)
         except ProtocolError as exc:
@@ -1243,6 +1273,16 @@ class ControlServer:
         with self._handles_lock:
             return self._handles.get(int(sid))
 
+    def rx_frame_for(self, page_size: int) -> int:
+        """Samples per RX frame (at most) of a stream with ``page_size``: the configured
+        ``rx_frame_samples``, else one page in paced mode and :data:`RX_BATCH_PAGES` pages
+        in lockstep."""
+        if self.config.rx_frame_samples:
+            return min(int(self.config.rx_frame_samples), MAX_FRAME_SAMPLES)
+        if getattr(getattr(self.engine, "cfg", None), "mode", "lockstep") == "paced":
+            return int(page_size)
+        return min(RX_BATCH_PAGES * int(page_size), MAX_FRAME_SAMPLES)
+
     def _op_stream_open(self, s: _Session, msg: dict[str, Any]) -> dict[str, Any]:
         rate = exact_from_json(msg["rate_sps"], "rate_sps")
         spec = StreamSpec(
@@ -1258,28 +1298,33 @@ class ControlServer:
             self._handles[h.id] = h
             self._owner[h.id] = s.ident
         s.streams.add(h.id)
+        extra: dict[str, Any] = {}
         if spec.direction == "tx":
             endpoint = self.endpoints["tx"]
         else:
             assert self.ctx is not None
             cfg = getattr(self.engine, "cfg", None)
+            paced = getattr(cfg, "mode", "lockstep") == "paced"
+            fs = self.rx_frame_for(h.page_size)
             eg = RxEgress(
                 self.ctx,
                 f"tcp://{self._rx_host}:*",
                 self.engine,
                 h,
                 self.counters,
-                frame_samples=self.config.rx_frame_samples or h.page_size,
-                paced=getattr(cfg, "mode", "lockstep") == "paced",
-                sndhwm=self.config.rx_sndhwm,
+                frame_samples=fs,
+                paced=paced,
+                sndhwm=hwm_frames(self.config.rx_sndhwm, h.page_size, fs),
                 is_done=self.is_done,
                 frontier=functools.partial(self._frontier_of, h),
                 publish=self.publish,
+                flush_s=self.config.rx_flush_s,
             )
             self._egress[h.id] = eg
             self._consumer_attached = True
             eg.start()
             endpoint = eg.endpoint
+            extra["frame_samples"] = eg.frame_samples  # sizes the client's RCVHWM
         return self._ok(
             msg,
             stream_id=h.id,
@@ -1289,6 +1334,7 @@ class ControlServer:
             rate_sps=fraction_to_str(spec.rate_sps),
             fc_hz=spec.fc_hz,
             endpoint=endpoint,
+            **extra,
         )
 
     def _owned(self, s: _Session, sid: int) -> StreamHandle:

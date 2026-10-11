@@ -15,7 +15,8 @@ header is little-endian, ``struct "<IHHIIqIHHQQ"`` (48 bytes)::
     uint32 nsamps       <= 2**22
     uint16 nchan        == 1
     uint16 dtype        1 cf32_le, 2 sc16_le
-    uint64 wall_ns      sender monotonic clock; metrics only, never the data plane
+    uint64 wall_ns      sender clock (time.perf_counter_ns, monotonic); metrics only,
+                        never the data plane
     uint64 reserved     0
 
 **Validation** (:func:`parse_frame`). Version 1 is strict: a bad magic, version, dtype,

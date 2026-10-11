@@ -38,7 +38,13 @@ NOT_IMPLEMENTED = 3
 PYTEST_NO_TESTS = 5  # pytest exit code when nothing is collected
 CI_MARKERS = "unit or physics or runtime or io or golden"
 NIGHTLY_MARKERS = "statistical or integration or validation_smoke"  # DESIGN.md 2.6
+# Record checks of regenerated results that the paper quotes carry the validation_smoke marker
+# (tests/validation, e.g. test_va1_record.py: VA-1 read from the paper repository at
+# $SREMU_PAPER_DIR or ../paper, skipped when the record is absent), so the paper's junit
+# carries their spec ids. validation_smoke is part of NIGHTLY_MARKERS and so of PAPER_MARKERS.
+PAPER_RECORD_MARKERS = "validation_smoke"
 PAPER_MARKERS = f"({CI_MARKERS}) or ({NIGHTLY_MARKERS})"  # D21: what the paper's junit pins
+assert PAPER_RECORD_MARKERS in NIGHTLY_MARKERS  # the VA-1 record check stays in the paper junit
 BUDGET_S = {"ci": 8 * 60, "nightly": 30 * 60}
 XDIST_WORKERS = 8  # D21
 # pytest's built-in faulthandler_timeout: a test running longer than this dumps the stack of

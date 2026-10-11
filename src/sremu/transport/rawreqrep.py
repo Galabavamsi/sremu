@@ -9,7 +9,29 @@ GNU Radio broker of the srsRAN ZMQ tutorials:
 
 There is no header: timing is implicit in sample counts (the peer's TX stream and RX stream
 both start at absolute sample 0 and are contiguous), so the mode is **lockstep only**.
-Wording until E2 passes: "srsRAN-style REQ/REP raw-IQ mode", never "wire-compatible".
+Wording: "srsRAN-style REQ/REP raw-IQ mode", never "wire-compatible".
+
+**Tested peers.** Stub peers of both formats (IO-08) and, for ``gnuradio_count``, stock GNU
+Radio 3.10.9.2 (Ubuntu 24.04 package; gr-zeromq REP Sink / REQ Source with a gr-digital
+DQPSK modem, ``examples/gnuradio_zmq``, ``tests/integration/test_gnuradio_raw.py``; Linux
+only). No srsRAN binary has been run. srsRAN 4G pads its TX stream only up to the end of the
+RX block it is about to read, while lockstep computes RX samples only once the reaching TX is
+committed one fractional-delay look-ahead further, so an srsRAN pair would stall at its
+first subframe without a per-peer TX delay of at least that look-ahead and partial RX
+replies (not implemented).
+
+**Ending a run.** ``exit_when_done`` (``sremu serve --exit-when-done``) needs every raw peer
+to read its RX stream to the end of the run: the engine cannot finish while a raw consumer
+stops reading (RX backpressure), so the server would never exit. When the run has ended,
+:meth:`RawPeer.stop` first lets the peer read what the engine already computed for it (the
+engine may end up to ``rx_queue_pages`` pages ahead of a slow peer); it gives up once the
+peer has sent no request for ``DRAIN_IDLE_S`` or after ``DRAIN_MAX_S``.
+
+**TX request size.** A ``gnuradio_count`` TX request asks for ``request_items`` samples
+(default :func:`default_request_items`: 8 pages, at least 4096 and at most 65,536). The REP
+Sink answers ``min(available, count)``, so a larger request never waits for more samples; it
+only saves round trips: with one page per request a free-running GNU Radio transmitter
+halved the served lockstep throughput at 1 MS/s (one cross-thread hand-off per 0.5 ms page).
 
 **Request formats, pinned from upstream source** (``request_format`` per peer):
 
@@ -33,7 +55,8 @@ The emulator's REP is strict: in ``srsran_dummy`` mode a request must be the sin
 packet (reason ``raw_request``) and answered with an empty reply (the REQ/REP state
 machine needs a reply). Replies carry exactly the requested count (``gnuradio_count``) or
 ``reply_items`` samples (``srsran_dummy``; at most 3,072,000), blocking until the engine has
-computed them, so the peer receives every RX sample exactly once and in order. TX replies
+computed them (fewer only at the end of the run), so the peer receives every RX sample
+exactly once and in order. TX replies
 must be whole samples (else ``raw_size`` bad packet, dropped); every TX sample received is
 placed contiguously from index 0.
 
@@ -42,14 +65,15 @@ rf_zmq_imp_trx.h; identical to the copies in ``research/scratch/src_refs/``; rf_
 ``rx_opts.socket_type = ZMQ_REQ``, ``tx_opts.socket_type = ZMQ_REP`` by default, device args
 ``base_srate``, ``tx_port``, ``rx_port``, ``tx_freq``, ``rx_freq``, ``tx_format``,
 ``rx_format``) and GNU Radio ``maint-3.10`` and ``main`` (req_source_impl.cc,
-rep_sink_impl.cc). No srsRAN or GNU Radio binary was run: IO-08 tests stub peers that
-implement exactly these behaviours; E2/E3 (real GNU Radio / srsRAN) are separate.
+rep_sink_impl.cc). IO-08 tests stub peers that implement exactly these behaviours; the GNU
+Radio format was confirmed against GNU Radio 3.10.9.2 itself (see "Tested peers").
 """
 
 from __future__ import annotations
 
 import struct
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -68,7 +92,12 @@ if TYPE_CHECKING:
     from sremu.transport.control_server import ControlServer
 
 __all__ = [
+    "DRAIN_IDLE_S",
+    "DRAIN_MAX_S",
     "GNURADIO_COUNT",
+    "GNURADIO_REQUEST_MAX_ITEMS",
+    "GNURADIO_REQUEST_MIN_ITEMS",
+    "GNURADIO_REQUEST_PAGES",
     "REQUEST_FORMATS",
     "SRSRAN_DUMMY",
     "SRSRAN_DUMMY_REQUEST",
@@ -76,6 +105,7 @@ __all__ = [
     "RawPeer",
     "RawPeerConfig",
     "RawProtocolError",
+    "default_request_items",
     "encode_request",
     "parse_request",
 ]
@@ -88,7 +118,30 @@ SRSRAN_DUMMY_REQUEST: Final[bytes] = b"\xff"
 """srsRAN 4G RX request: one byte 0xFF (rf_zmq_imp_rx.c)."""
 SRSRAN_MAX_REPLY_SAMPLES: Final[int] = 3_072_000
 """srsRAN 4G ZMQ_MAX_BUFFER_SIZE in samples (rf_zmq_imp_trx.h: 10 subframes at 20 MHz)."""
+GNURADIO_REQUEST_PAGES: Final[int] = 8
+"""Default ``gnuradio_count`` TX request: this many pages of the TX stream ..."""
+GNURADIO_REQUEST_MIN_ITEMS: Final[int] = 4096
+"""... but at least this many samples ..."""
+GNURADIO_REQUEST_MAX_ITEMS: Final[int] = 65_536
+"""... and at most this many (the largest request measured, 8 pages at 23.04 MS/s)."""
+DRAIN_IDLE_S: Final[float] = 1.0
+"""At the end of a run, stop waiting for a raw peer that sent no RX request for this long."""
+DRAIN_MAX_S: Final[float] = 30.0
+"""At the end of a run, stop waiting for a raw peer after this long in any case."""
 _U32: Final = struct.Struct("<I")
+
+
+def default_request_items(fmt: str, page_size: int) -> int:
+    """Default items per TX request: for ``gnuradio_count`` :data:`GNURADIO_REQUEST_PAGES`
+    pages, clipped to [:data:`GNURADIO_REQUEST_MIN_ITEMS`,
+    :data:`GNURADIO_REQUEST_MAX_ITEMS`]; for ``srsran_dummy`` (the peer ignores the request's
+    content) the page size."""
+    if fmt == GNURADIO_COUNT:
+        return min(
+            GNURADIO_REQUEST_MAX_ITEMS,
+            max(GNURADIO_REQUEST_MIN_ITEMS, GNURADIO_REQUEST_PAGES * int(page_size)),
+        )
+    return int(page_size)
 
 
 class RawProtocolError(ValueError):
@@ -149,9 +202,10 @@ class RawPeerConfig:
     peer's RX REQ connects to. ``tx_stream`` / ``rx_stream``: the scenario streams fed by /
     delivered to the peer. ``sample_format``: ``fc32`` or ``sc16`` (full scale 32767).
     ``base_srate``: optional exact rate that must equal the streams' rate (no resampling).
-    ``request_items``: items asked per TX request in ``gnuradio_count`` mode (default: the
-    stream's page size). ``reply_items``: samples per RX reply in ``srsran_dummy`` mode
-    (default: the page size; at most 3,072,000).
+    ``request_items``: items asked per TX request in ``gnuradio_count`` mode (default:
+    :func:`default_request_items`, 8 pages of the TX stream within [4096, 65536]).
+    ``reply_items``: samples per RX reply in ``srsran_dummy`` mode (default: the page size;
+    at most 3,072,000).
     """
 
     name: str
@@ -237,6 +291,9 @@ class RawPeer:
         self.tx_handle: StreamHandle | None = None
         self.rx_handle: StreamHandle | None = None
         self.rx_endpoint: str | None = None
+        self.request_items: int | None = None
+        self._rx_busy = False  # between an RX request and its reply
+        self._rx_last_request = time.monotonic()
 
     # ------------------------------------------------------------------ setup
     def _spec(self, stream: str, direction: str) -> StreamSpec:
@@ -274,6 +331,9 @@ class RawPeer:
             )
         if c.tx_port is not None and c.tx_stream is not None:
             self.tx_handle = self.engine.open_stream(self._spec(c.tx_stream, "tx"))
+            self.request_items = int(
+                c.request_items or default_request_items(c.request_format, self.tx_handle.page_size)
+            )
             req = ctx.socket(zmq.REQ)
             self._sockets.append(req)
             req.setsockopt(zmq.LINGER, 0)
@@ -290,7 +350,11 @@ class RawPeer:
             th.start()
 
     def stop(self) -> None:
-        """Stop both threads and close the sockets (also when the threads never ran)."""
+        """Stop both threads and close the sockets (also when the threads never ran).
+        When the run has ended, the peer may first read the RX samples the engine already
+        computed for it (module docstring, "Ending a run")."""
+        if any(th.is_alive() for th in self._threads) and self._run_ended():
+            self._drain()
         self._stop.set()
         for th in self._threads:
             if th.is_alive():
@@ -298,8 +362,37 @@ class RawPeer:
         for sock in self._sockets:
             sock.close(0)
 
+    def _run_ended(self) -> bool:
+        """Every rate group reached its end and the engine did not fail."""
+        groups = getattr(self.engine, "groups", None)
+        if not groups or getattr(self.server, "engine_error", None) is not None:
+            return False
+        return all(g.end is not None and g.cursor >= g.end for g in groups)
+
+    def _rx_queued(self) -> int:
+        """RX samples computed for the peer and not yet read (0 when unknown)."""
+        h = self.rx_handle
+        rx = getattr(self.engine, "rx", None)
+        if h is None or not isinstance(rx, Mapping):
+            return 0
+        return int(getattr(rx.get(h.spec.stream), "queued", 0) or 0)
+
+    def _drain(self) -> None:
+        """Wait until the peer has read every computed RX sample, has been idle for
+        :data:`DRAIN_IDLE_S`, or :data:`DRAIN_MAX_S` passed."""
+        if self.rx_handle is None:
+            return
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < DRAIN_MAX_S:
+            if not self._rx_busy:
+                if self._rx_queued() == 0:
+                    return
+                if time.monotonic() - self._rx_last_request > DRAIN_IDLE_S:
+                    return
+            time.sleep(0.002)
+
     def stats(self) -> dict[str, Any]:
-        """Counts of this peer."""
+        """Counts of this peer (``request_items``: the TX request size in use)."""
         return {
             "tx_samples": self.tx_samples,
             "rx_samples": self.rx_samples,
@@ -307,6 +400,7 @@ class RawPeer:
             "rx_requests": self.rx_requests,
             "bad": self.bad,
             "rx_endpoint": self.rx_endpoint,
+            "request_items": self.request_items,
         }
 
     def _bad(self, reason: str) -> None:
@@ -328,7 +422,7 @@ class RawPeer:
         c = self.config
         h = self.tx_handle
         assert h is not None
-        n_ask = int(c.request_items or h.page_size)
+        n_ask = int(self.request_items or default_request_items(c.request_format, h.page_size))
         first = True
         try:
             while not self._stop.is_set():
@@ -392,16 +486,20 @@ class RawPeer:
                 if not rep.poll(50, zmq.POLLIN):
                     continue
                 msg = rep.recv()
+                self._rx_busy = True
+                self._rx_last_request = time.monotonic()
                 self.rx_requests += 1
                 try:
                     want = parse_request(c.request_format, msg)
                 except RawProtocolError as exc:
                     self._bad(exc.reason)
                     rep.send(b"")
+                    self._rx_busy = False
                     continue
                 n = default if want is None else min(int(want), SRSRAN_MAX_REPLY_SAMPLES)
                 y = self._collect(n) if n > 0 else np.zeros(0, np.complex64)
                 self.rx_samples += int(y.shape[0])
                 rep.send(encode_payload(y, c.dtype))
+                self._rx_busy = False
         finally:
             rep.close(0)

@@ -19,6 +19,14 @@ command semantics of :mod:`.commands`, the barriers of :mod:`.barriers` and the 
 * **I7.** Wall time is read only for metrics, stall timeouts and pacing (``self.clock``);
   it never enters data-plane arithmetic, so a monkeypatched clock cannot change the output
   (RT-15).
+* **Served RX batching (lockstep).** :meth:`Emulator.wait_rx` lets a served egress pump
+  sleep until ``n`` samples are queued instead of waking on every page. The engine thread
+  wakes it then, or earlier when a read cannot wait for more: the stream stopped or failed,
+  the engine stopped, or the engine thread is about to wait for an outside input with
+  samples queued (:meth:`Emulator.mark_blocked`: no TX data, a remote barrier ack, a pause,
+  the end of the run), or the stream's own rate group waits for TX while another group
+  keeps the engine busy, so a client that waits for its RX before it sends more TX never
+  deadlocks against a half-filled batch. Wall-clock only: no computed sample depends on it.
 * **Geometry events** (``node.set_position``/``node.set_trajectory``) are applied to the
   model before any sample of the snapshot interval they split is computed (on a grid:
   up to the end of the grid interval holding the furthest page end), so on-time events are
@@ -267,6 +275,17 @@ class RunSummary:
 # =========================================================================== emulator
 
 
+class _RxWaiter:
+    """The egress pump of one RX stream waiting in :meth:`Emulator.wait_rx`."""
+
+    __slots__ = ("evt", "n", "waiting")
+
+    def __init__(self) -> None:
+        self.n = 1
+        self.evt = threading.Event()
+        self.waiting = False
+
+
 def _render_fn(backend: BackendName) -> Callable[[SegmentJob, NDArray[np.complex128]], None]:
     if backend == "numpy_ref":
         from sremu.channel import render_numpy
@@ -313,6 +332,10 @@ class Emulator:
         self._lock = threading.RLock()
         self._cond = threading.Condition(self._lock)
         self._kicks = 0  # input notifications (see _kick)
+        # served lockstep: the engine thread waits for an outside input (mark_blocked);
+        # cleared at the start of every step. RX egress pumps waiting in wait_rx, by stream
+        self._blocked = False
+        self._rx_waiters: dict[StreamId, _RxWaiter] = {}
         self.configs: dict[StreamId, StreamConfig] = dict(
             streams if streams is not None else stream_configs_from_model(model)
         )
@@ -563,6 +586,9 @@ class Emulator:
         for s in self.sinks:
             s.on_rx(rx, k0, d)
         self._produced[rx] += int(d.shape[0])
+        w = self._rx_waiters.get(rx)
+        if w is not None and w.waiting and self._rx_ready(st, w.n):
+            w.evt.set()  # a full batch (or the end of the stream) for the egress pump
         for fn in self._on_page:
             fn(rx, k0, k0 + int(d.shape[0]))
 
@@ -622,6 +648,7 @@ class Emulator:
         with self._lock:
             if self._closed:
                 return False
+            self._blocked = False  # set again by the served loop if this step is fruitless
             self._apply_events()
             progress = False
             for g in self.groups:
@@ -641,6 +668,10 @@ class Emulator:
                     self.counters.add("stall_zero_samples", sum(st.zero_filled.values()))
                     self._flag_nondeterministic("stall zero_fill")
                 progress |= st.progress
+                if not st.progress and st.reason == "tx" and self._rx_waiters:
+                    # this group waits for TX while another may keep the engine busy (no
+                    # fruitless step, no mark_blocked): its batching pumps send now
+                    self._wake_held(g)
             if self.barriers.slots and self.groups:
                 s = self.barriers.due([(g.rate, g.cursor, g.end) for g in self.groups])
                 if s is not None and s.t_next < self._t_end():
@@ -778,6 +809,9 @@ class Emulator:
             # isinstance costs tens of microseconds per barrier)
             proxy = cast(RemoteControllerProxy, s.ctrl)
             proxy.send_barrier(obs)
+            # the controller may wait for RX up to the barrier before it acks
+            self._blocked = True
+            self._wake_rx()
             # release the (re-entrant) lock completely so the remote side can schedule
             # its commands from another thread, as Condition.wait does
             saved = self._lock._release_save()  # type: ignore[attr-defined]
@@ -1137,6 +1171,7 @@ class Emulator:
             sid = self._handle(h, "rx")
             self.rx[sid].stream_cmd(cmd, self._group_of_rx[sid].cursor)
             self._kick()
+            self._wake_rx(sid)  # stopped, or LATE_COMMAND pending: the pump reads now
 
     def read_rx(
         self, h: StreamHandle, n: int, timeout_s: float
@@ -1160,6 +1195,68 @@ class Emulator:
             if self._thread is not None:
                 self._kick()  # queue space freed: a backpressured group may advance
             return out
+
+    def wait_rx(self, h: StreamHandle, n: int, timeout_s: float) -> bool:
+        """Served lockstep RX egress (batching, see the module docstring): block until
+        ``n`` samples of ``h`` are queued or a read cannot wait for more (the stream is not
+        streaming, an error is pending, the engine stopped, or the engine thread waits for
+        an outside input while samples are queued), at most ``timeout_s`` wall seconds.
+        Unlike ``read_rx``'s wait on the engine condition, which wakes after every page, the
+        engine thread wakes this waiter only then. Reads nothing: call ``read_rx`` next.
+        Returns False when the timeout passed first (a caller may wait again)."""
+        with self._lock:
+            sid = self._handle(h, "rx")
+            st = self.rx[sid]
+            if self._rx_ready(st, n):
+                return True
+            w = self._rx_waiters.get(sid)
+            if w is None:
+                w = self._rx_waiters[sid] = _RxWaiter()
+            w.n = max(1, int(n))
+            w.evt.clear()
+            w.waiting = True
+        try:
+            return w.evt.wait(max(0.0, float(timeout_s)))
+        finally:
+            w.waiting = False
+
+    def _rx_ready(self, st: RxStream, n: int) -> bool:
+        """(lock held) Whether a waiting egress pump should read ``st`` now."""
+        return (
+            st.queued >= n
+            or (st.queue_samples is not None and st.queued >= st.queue_samples)  # full queue
+            or not st.streaming
+            or st.pending_error != ErrorCode.NONE
+            or (bool(st.queue) and (self._blocked or st.queue[0].data is None))
+            or self._thread is None
+            or self._closed
+        )
+
+    def _wake_rx(self, sid: StreamId | None = None) -> None:
+        """(lock held) Wake the waiting egress pumps (or the one of ``sid``) that should
+        read now."""
+        ws = self._rx_waiters if sid is None else {sid: self._rx_waiters.get(sid)}
+        for r, w in ws.items():
+            if w is not None and w.waiting and self._rx_ready(self.rx[r], w.n):
+                w.evt.set()
+
+    def _wake_held(self, g: RateGroup) -> None:
+        """(lock held) ``g`` cannot advance until TX samples arrive: wake the waiting egress
+        pumps of its RX streams that hold samples (as :meth:`mark_blocked` does for the
+        whole engine)."""
+        for r in g.rx:
+            w = self._rx_waiters.get(r)
+            if w is not None and w.waiting and self.rx[r].queue:
+                w.evt.set()
+
+    def mark_blocked(self) -> None:
+        """The engine thread is about to wait for an outside input (TX samples, a remote
+        barrier ack, a resume): egress pumps take the samples queued now instead of waiting
+        for a full batch, so a client that waits for its RX before it sends more cannot
+        deadlock. Cleared by the next :meth:`step`. Wall-clock only (no output changes)."""
+        with self._lock:
+            self._blocked = True
+            self._wake_rx()
 
     def recv_async(self, h: StreamHandle, timeout_s: float) -> AsyncMetadata | None:
         """Next asynchronous TX event of ``h`` (BURST_ACK, TIME_ERROR, UNDERFLOW), or None."""
@@ -1242,8 +1339,15 @@ class Emulator:
         with self._lock:
             self._thread = None
             self._cond.notify_all()
+            self._wake_rx()
 
     def _serve_loop(self) -> None:
+        try:
+            self._serve()
+        finally:  # end of the run (or a failure): queued RX must not wait for a batch
+            self.mark_blocked()
+
+    def _serve(self) -> None:
         assert self._stop_evt is not None
         stop = self._stop_evt
         last = self.clock.now_ns()
@@ -1260,6 +1364,7 @@ class Emulator:
                 if stop.is_set():
                     break
                 if self._kicks == kicks:  # else an input arrived after the step began
+                    self.mark_blocked()  # batching egress pumps flush (served RX)
                     self._cond.wait(0.005)
             waiting = any(g.waiting_on for g in self.groups)
             overdue = (self.clock.now_ns() - last) * 1e-9 >= self.cfg.stall_timeout_s
@@ -1501,3 +1606,4 @@ class Emulator:
         with self._lock:
             self._closed = True
             self._cond.notify_all()
+            self._wake_rx()

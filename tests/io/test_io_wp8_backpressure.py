@@ -103,17 +103,21 @@ def _held_frontier(eng, stream: str, *, still_s: float = 1.0, deadline_s: float 
 
 def test_i6_lockstep_rx_backpressure_bounds_the_frontier() -> None:
     eng = make_engine(lab_like_fake(), traffic={"ap.tx0": ToneSource(F, 1.0e3, 1.0)})
-    sndhwm, rcvhwm = 2, 64  # server egress SNDHWM (set here), client RCVHWM (RxReceiver)
-    with served(eng, rx_sndhwm=sndhwm) as srv:
+    # server egress HWM: 2 pages, rounded up to whole frames (one frame of a lockstep batch)
+    with served(eng, rx_sndhwm=2) as srv:
         cli = RemoteEngine(str(srv.endpoints["control"]))
         try:
             h = cli.open_stream(StreamSpec("rx1.rx0", "rx", 3.5e9, F))
             cli.stream_cmd(h, StreamCmd("start_cont", 0, False, TimeSpec(0, 0)))
             f_held = _held_frontier(eng, "rx1.rx0")  # the engine waits for the reader
             # bounded by the configured buffering: the engine's RX queue (64 pages), the ZMQ
-            # high-water marks (frames of one page) and the OS TCP buffers in between
+            # high-water marks (in frames; lockstep batches several pages per frame and
+            # sizes both marks in frames of that length) and the OS TCP buffers in between
+            eg, rx = srv._egress[h.id], cli._rx[h.id]
+            assert eg.frame_samples == rx.frame_samples >= h.page_size
             queue = eng.rx["rx1.rx0"].queue_samples
-            bound = queue + (sndhwm + rcvhwm + 2) * h.page_size + tcp_buffer_bytes() // 8
+            frames = eg.sndhwm + rx.rcvhwm + 2
+            bound = queue + frames * eg.frame_samples + tcp_buffer_bytes() // 8
             assert queue <= f_held <= bound
             # reading again resumes the engine; every sample arrives, in order, no loss
             expect = 0
@@ -133,7 +137,7 @@ def test_i6_lockstep_rx_backpressure_slow_small_reads_keep_the_client_bounded() 
     the engine back: the client takes frames off its socket only as far as each read needs
     them (at most one frame buffered), so the rest stays queued in ZMQ at the high-water
     mark instead of piling up in client memory (found by the WP8 review: every read used
-    to drain the whole socket)."""
+    to drain the whole socket). A frame is several pages in lockstep (RX batching)."""
     eng = make_engine(lab_like_fake(), traffic={"ap.tx0": ToneSource(F, 1.0e3, 1.0)})
     with served(eng, rx_sndhwm=2) as srv:
         cli = RemoteEngine(str(srv.endpoints["control"]))
@@ -149,7 +153,7 @@ def test_i6_lockstep_rx_backpressure_slow_small_reads_keep_the_client_bounded() 
                 assert md.error_code == ErrorCode.NONE and md.first_sample == got
                 got += y.size
                 peak = max(peak, rx.queued)
-            assert peak < h.page_size  # one RX frame (a page) minus the sample just read
+            assert peak < rx.frame_samples  # one RX frame minus the sample just read
             assert eng.frontier()["rx1.rx0"] - got < 250_000  # the engine was held back
         finally:
             cli.close()

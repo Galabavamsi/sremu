@@ -19,10 +19,10 @@ import pytest
 from experiments import ea, eb
 
 from sremu import rng as _rng
-from sremu.units import C0
 from sremu.contracts import LatencyModel, RisCapabilities
 from sremu.control.builtin import ProbeBandit
 from sremu.control.controller import make_observation, setup_controller
+from sremu.units import C0
 
 pytestmark = pytest.mark.unit
 

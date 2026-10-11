@@ -1075,13 +1075,16 @@ int64  first_sample absolute index at stream rate (TX: valid iff HAS_TIME, else 
 uint32 nsamps       <= 2^22
 uint16 nchan        == 1
 uint16 dtype        1 cf32_le, 2 sc16_le
-uint64 wall_ns      sender monotonic clock; metrics only, never data plane
+uint64 wall_ns      sender perf_counter clock (the engine clock); metrics only, never data plane
 uint64 reserved     0
 ```
 
 - **Validation.** Bad magic, version, dtype, nchan or size, or a payload length mismatch → the frame is dropped and counted (`BAD_PACKET`). The engine never raises on bad input.
 - **Backpressure.** TX `PUSH` blocks at HWM, giving lockstep backpressure. In paced mode RX sends with `NOBLOCK`; `EAGAIN` → `OVERFLOW_BEFORE` on the next frame.
 - PUB/SUB never carries IQ (it drops at HWM).
+- **RX framing (amendment 2026-10-11, build round 4).** In lockstep an RX frame carries up to `RX_BATCH_PAGES` = 8 pages (an explicit `rx_frame_samples` wins); paced mode keeps one page per frame, because a batch would add its length to the delivery latency. The egress pump sleeps in `Emulator.wait_rx` and sends when a full frame is queued, or earlier when the stream stops, an error is pending, the engine stops, or the engine thread is about to wait with samples queued (`Emulator.mark_blocked`: a fruitless step waiting on TX data or backpressure, an idle hold, a remote barrier ack, server pause, end of run; per rate group). A wall-clock safety net `ServerConfig.rx_flush_s` (10 ms) applies otherwise; END_OF_STREAM is never held back by it. Sample values, indices and flags are unchanged; EOB and gaps still end a frame. HWMs are counted in frames on both ends (`stream.open` returns `frame_samples`), so lockstep run-ahead in samples is unchanged. Determinism guards (RX IQ, recorder files, event logs) are bit-identical to the per-page framing.
+- **Latency clock.** Every latency stamp (control-server receipt `t_wall_recv_ns`, frame `wall_ns`, ingress/egress timing) uses the engine clock (`perf_counter_ns` for `SystemClock`), so latencies are differences on one clock on every OS (`monotonic_ns` has 15.6 ms ticks on Windows).
+- **Known limitation (not fixed).** A served lockstep rate group with no end and no consumer skips pages on every step and spins the engine thread, starving the transport threads of the other groups (closed loop on the other group measured at RTF 0.02–0.04 in a two-group probe). Single-group scenes and groups with a consumer are unaffected.
 
 ### 8.4 Raw REQ/REP mode for srsRAN / GNU Radio (feasibility, gated) — `transport/rawreqrep.py`
 
@@ -1655,7 +1658,7 @@ All experiments run from `scenarios/studies/*.yaml` and `paper/sweeps/*.yaml`. E
 
 - **E1 (MUST):** V-CFO-3. Two processes, native ZMQ, the ANTS Fig. 2 regenerated.
 - **E2 (SHOULD):** GNU Radio 3.10 (WSL2 Ubuntu or AWS) with stock ZMQ REQ Source / REP Sink against the raw mode, a QPSK burst stream, and an external controller flipping the RIS at a scheduled time. Shows the switch at the exact sample and EVM per state. Requires IO-08 to pass first.
-- **E3 (STRETCH, 4 h time-box, Linux):** srsRAN 4G eNB + srsUE at 5.76 MS/s. Attach success, iperf throughput per RIS state, RTF (≤ 1, because srsRAN 4G sleeps on RX [FACT]). If the time-box is exceeded, the paper says nothing about srsRAN beyond the raw mode tested with GNU Radio.
+- **E3 (STRETCH, 4 h time-box, Linux):** srsRAN 4G eNB + srsUE at 5.76 MS/s. Attach success, iperf throughput per RIS state, RTF (≤ 1, because srsRAN 4G sleeps on RX [FACT]). If the time-box is exceeded, the paper says nothing about srsRAN beyond the raw mode tested with GNU Radio. **Amended 2026-10-11 (author decision, GNU Radio only):** E2 was run with stock GNU Radio 3.10.9.2 (WSL2), and E3 was not attempted. The paper states that srsRAN 4G and OAI were analysed but not run, with the reason (the lockstep bridge needs a per-peer TX delay of at least the fractional-delay look-ahead plus partial replies; estimated 24–40 h), and lists E3 as future work.
 
 ### E-F: End-to-end link metrics (RQ-37)
 

@@ -13,14 +13,18 @@ remote side attaches to by name, section 4.9) and serves it with
   open streams and issue timed stream commands first; TX streams no client has opened are
   waited for (``--unopened-tx wait``, default);
 * raw REQ/REP peers: ``--raw-peer "name=enb,format=srsran_dummy,tx_port=tcp://127.0.0.1:2000,
-  rx_port=tcp://127.0.0.1:2001,tx_stream=enb.tx0,rx_stream=enb.rx0"`` (lockstep only);
+  rx_port=tcp://127.0.0.1:2001,tx_stream=enb.tx0,rx_stream=enb.rx0"`` (lockstep only;
+  ``request_items`` defaults to 8 pages for ``format=gnuradio_count``; GNU Radio example in
+  ``examples/gnuradio_zmq``);
 * ``--out DIR``: record a run directory as ``sremu run`` does (manifest, events, metrics,
   SigMF of every RX stream with ``record.iq``).
 
 On start one line ``SREMU-SERVE {json}`` with the bound endpoints is printed to stdout
 (flushed), so scripts can use ephemeral ports (``tcp://127.0.0.1:0``). The server stops on
 ``sim.shutdown``, on ``--exit-when-done`` once the run has ended and every RX egress has
-been drained, or on Ctrl-C.
+been drained, or on Ctrl-C. With raw peers, ``--exit-when-done`` needs each peer to read its
+RX stream to the end of the run (the engine cannot finish while a raw consumer stops
+reading); at the end the peer still gets the samples queued for it.
 
 Until the CLI registry routes ``sremu run --serve`` here (contract change request WP8-1),
 run it as ``python -m sremu.commands.serve S.yaml [options]``.

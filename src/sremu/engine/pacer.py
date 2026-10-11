@@ -4,7 +4,13 @@
   ``R_j = t0 + k1/f + D_lag`` (wall time; ``D_lag`` default 1 ms of TX input slack).
 * **Sleep.** Hybrid: ``sleep(R - now - 1.5 ms)``, then spin. Windows ``time.sleep(0.5 ms)``
   overshoots by about 0.5-0.9 ms [MEASURED], so paced numbers for the paper come from
-  Linux.
+  Linux. The spin yields the CPU and the GIL on every iteration (``os.sched_yield`` on
+  POSIX, ``time.sleep(0)`` = ``Sleep(0)`` on Windows) until :data:`YIELD_GUARD_NS` before
+  the release and spins plainly only for that last stretch. A plain spin holds the GIL, so
+  a served engine's control and transport threads got it only when a page's compute
+  released it or after the 5 ms switch interval; at 0.5 ms pages the paced thread never
+  sleeps, it spins between every two pages. (Not ``time.sleep(0)`` on Linux: there it is a
+  ``clock_nanosleep`` that returns tens of microseconds late, which would delay releases.)
 * **Deadline** = ``R_j + slack``; misses are counted at slack 0, 1 and 5 ms by default
   (5 ms is ACHEM's threshold).
 * Late TX data, RX overflow and recorder drops are counted by the emulator
@@ -17,18 +23,30 @@ with a deterministic fake clock (RT-18).
 
 from __future__ import annotations
 
+import os
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 from typing import Final, Protocol
 
 from sremu.metrics.rt import DeadlineStats
 from sremu.timebase import parse_exact
 
-__all__ = ["SPIN_NS", "FakeClock", "Pacer", "SystemClock", "WallClock"]
+__all__ = ["SPIN_NS", "YIELD_GUARD_NS", "FakeClock", "Pacer", "SystemClock", "WallClock"]
 
 SPIN_NS: Final[int] = 1_500_000
 """Spin for the last 1.5 ms before a release (hybrid sleep)."""
+YIELD_GUARD_NS: Final[int] = 100_000
+"""The spin yields the GIL until 0.1 ms before a release, then spins plainly (release
+precision: a thread that took the GIL during a yield may hold it for a while)."""
+
+
+def _sleep0() -> None:
+    time.sleep(0)
+
+
+_yield: Callable[[], None] = getattr(os, "sched_yield", None) or _sleep0
+"""Give up the CPU and the GIL once (``os.sched_yield`` on POSIX, ``Sleep(0)`` on Windows)."""
 
 
 class WallClock(Protocol):
@@ -55,10 +73,14 @@ class SystemClock:
         return time.perf_counter_ns()
 
     def sleep_until(self, t_ns: int, spin_ns: int = SPIN_NS) -> None:
-        """``sleep(t - now - spin)``, then spin until ``t``."""
+        """``sleep(t - now - spin)``, then spin until ``t``: yielding the GIL until
+        :data:`YIELD_GUARD_NS` before ``t``, plainly after that."""
         rem = t_ns - time.perf_counter_ns()
         if rem > spin_ns:
             time.sleep((rem - spin_ns) * 1e-9)
+        t_yield = t_ns - YIELD_GUARD_NS
+        while time.perf_counter_ns() < t_yield:
+            _yield()  # other threads (control requests, transport) run meanwhile
         while time.perf_counter_ns() < t_ns:
             pass
 

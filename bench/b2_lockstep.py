@@ -88,6 +88,9 @@ pages of every repetition. Every scene with panels asserts a non-zero RIS term o
 boundary to the RX client's last sample) as ``rtf_median``, with the RX client's own figure
 (``rtf_rx_client_median``, the pre-fix metric) and the engine-only figure
 (``rtf_server_median``) beside it, and enforces ``--point-cap-s`` with hard per-run deadlines.
+F5 rows also record the transport settings: ``rx_frame_samples`` (the served RX frame
+length; lockstep batches ``RX_BATCH_PAGES`` pages per frame) and ``tx_chunk_samples`` (the TX
+client's samples per send).
 
 **Background load** (sequential mode): before each point the host is sampled for
 ``--point-quiet-window-s``; with ``--point-quiet-wait-s`` > 0 the suite waits (up to that long)
@@ -468,6 +471,8 @@ F5_ROW_KEYS = (
     "clock",
     "clock_shared",
     "client_affinity",
+    "rx_frame_samples",
+    "tx_chunk_samples",
 )
 """Extra point-result fields copied into the rows of F5 points."""
 

@@ -67,19 +67,20 @@ def test_exit_when_done_after_the_rx_client_closed_its_stream_early() -> None:
     # The client leaves after its first frame. While its stream is open, lockstep
     # backpressure lets the engine run ahead by at most the RX queue + the ZMQ high-water
     # marks + the OS TCP buffers (test_io_wp8_backpressure); on Linux the last term alone
-    # can exceed 1e6 samples, so a 0.5 s run (5e5 samples) could end before the client
-    # left. The run therefore ends beyond that bound (asserted below), so only the served
-    # engine itself can finish it.
-    duration = Fraction(4)
+    # can exceed 1e6 samples (4.7e6 under WSL2 with a 32 MiB tcp_rmem maximum), so a 0.5 s
+    # run (5e5 samples) could end before the client left. The run therefore ends beyond that
+    # bound (asserted below), so only the served engine itself can finish it.
+    duration = max(Fraction(4), 2 * Fraction(tcp_buffer_bytes() // 8) / F)
     eng = _engine(duration)
     with served(eng, exit_when_done=True, start_paused=True) as srv:
         cli = RemoteEngine(str(srv.endpoints["control"]))
         try:
             h = cli.open_stream(StreamSpec("rx1.rx0", "rx", 3.5e9, F))
             rcvhwm = cli._rx[h.id].sock.getsockopt(zmq.RCVHWM)
+            eg = srv._egress[h.id]  # both high-water marks count frames of eg.frame_samples
             ahead = (
                 eng.rx["rx1.rx0"].queue_samples
-                + (srv.config.rx_sndhwm + rcvhwm + 2) * h.page_size
+                + (eg.sndhwm + rcvhwm + 2) * eg.frame_samples
                 + tcp_buffer_bytes() // 8
             )
             assert ahead < duration * F

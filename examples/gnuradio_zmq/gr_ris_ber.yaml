@@ -1,0 +1,39 @@
+# GNU Radio DQPSK modem through a RIS link (examples/gnuradio_zmq/run_ris_ber.py; SIM geometry).
+# A transmitter "gr" 5 m from an ideal 1-bit 16 x 16 RIS at -30 deg and a receiver "grrx" 5 m
+# away at +20 deg, 3.5 GHz, 1 MS/s; the direct TX-RX path is behind a 40 dB partition (sremu
+# applies occluders to the direct path only), so the RIS hop dominates and the RIS
+# configuration decides the link. Both streams belong to one raw REQ/REP peer, the stock
+# GNU Radio modem of gr_dqpsk_modem.py (250 ksym/s, RRC 0.35, 4 samples per symbol, unit
+# power): TX full scale -31 dBm, RX noise figure 7 dB, RX gain 90 dB after the noise (SNR
+# neutral; it brings the received IQ to about unit scale for the modem's AGC). run_ris_ber.py
+# sets run.duration_s per run and may scale the rate (full scale and occupied bandwidth follow
+# the rate, so the SNR per symbol is unchanged). Lockstep only.
+schema_version: "1.0"
+name: gr_ris_ber
+seed: 7
+description: "GNU Radio DQPSK modem through a blocked-LOS RIS link (raw REQ/REP peer)"
+environment:
+  occluders:
+    - id: los_wall
+      kind: partition
+      transmission_loss_db: 40.0
+      vertices_m: [[4.0, -0.4, -1.0], [5.0, -0.4, -1.0], [5.0, -0.4, 1.0], [4.0, -0.4, 1.0]]
+nodes:
+  - id: gr
+    position_m: [4.330127019, -2.5, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: tx0, direction: tx, fc_hz: 3.5e9, rate_sps: "1e6", occupied_bw_hz: 3.4e5, full_scale_dbm: -31}
+  - id: grrx
+    position_m: [4.698463104, 1.710100717, 0.0]
+    antenna: {pattern: isotropic}
+    streams:
+      - {name: rx0, direction: rx, fc_hz: 3.5e9, rate_sps: "1e6", noise_figure_db: 7, gain_db: 90}
+ris:
+  - id: ris0
+    pose: {center_m: [0, 0, 0], normal: [1, 0, 0], u_axis: [0, 1, 0]}
+    grid: {n_u: 16, n_v: 16, pitch_u_m: 0.0428, pitch_v_m: 0.0428}
+    states: {library: ideal_antipodal}
+    initial: {fill: 0}
+record: {iq: true}
+run: {duration_s: "0.3"}

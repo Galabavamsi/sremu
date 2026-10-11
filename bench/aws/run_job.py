@@ -24,7 +24,10 @@ still upload):
 * ``b1b2``: ``b1`` then ``b2`` (sized for c7i.48xlarge, 192 vCPUs).
 * ``b3``: B3 paced server plan, sequential, engine pinned to one slot, client processes on
   the next ``--client-cores`` cores (sized for a quiet c7i.8xlarge).
-* ``b4``: B4 lockstep part (lateness must be 0) then the paced + async part, pinned as b3.
+* ``b4``: B4 lockstep part (lateness must be 0) then the paced + async part with plan
+  ``served-1ms`` (1 ms pages, timed leads 2-12 ms, asap; see :mod:`bench.b4_control`),
+  pinned as b3. ``python -m bench.b4_control --part paced --plan classic`` repeats the first
+  run's settings (0.5 ms pages, 2 ms lead).
 * ``b3b4``: ``b3`` then ``b4``.
 * ``eb3``: the E-B3 timing demonstration (external TDMA controller), pinned as b3.
 * ``smoke``: quick versions of B1, B2 (server plan, 2 workers), B3 and B4 (minutes).
@@ -142,7 +145,18 @@ def steps(
     )
     b4p = Step(
         "b4_paced",
-        [*m, "bench.b4_control", "--part", "paced", "--budget-min", "{budget}", "--out", runs],
+        [
+            *m,
+            "bench.b4_control",
+            "--part",
+            "paced",
+            "--plan",
+            "served-1ms",
+            "--budget-min",
+            "{budget}",
+            "--out",
+            runs,
+        ],
         eng,
         env,
         tail_min=5.0,
@@ -159,15 +173,16 @@ def steps(
         return [b1, b2]
     if job == "b3":
         return [b3]
-    # B4 paced: 24 repetitions of 65 s virtual; while a configuration command costs
-    # milliseconds of engine time, a repetition at >= 100 commands/s runs about 2.4x its
-    # virtual length (measured), so the paced part needs about an hour
+    # B4 paced, plan served-1ms (1 ms pages, lead sweep): 42 repetitions of 65 s virtual;
+    # at 10 and 100 commands/s a repetition runs about its virtual length, at 1000/s
+    # (command-bound) about 2.4x (measured in the first B4 run), so the paced part needs
+    # about an hour
     if job == "b4":
-        b4l.reserve_min = 60.0
+        b4l.reserve_min = 65.0
         return [b4l, b4p]
     if job == "b3b4":
-        b3.reserve_min = 70.0
-        b4l.reserve_min = 60.0
+        b3.reserve_min = 75.0
+        b4l.reserve_min = 65.0
         return [b3, b4l, b4p]
     if job == "smoke":
         return [

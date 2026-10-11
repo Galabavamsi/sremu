@@ -360,6 +360,9 @@ teardown) before the benchmark kills it and fails the point."""
 STALL_IDLE_S = 30.0
 """A repetition whose RX client read nothing during the last ``STALL_IDLE_S`` before its
 wall deadline fails as a stall (never reported as a truncated measurement)."""
+TX_CHUNK_SAMPLES = 4096
+"""Samples per ``send`` of the F5 TX client (recorded in every F5 point as
+``tx_chunk_samples``; one TX frame per call)."""
 
 
 class ServerMarks:
@@ -627,6 +630,9 @@ def measure_zmq(
             start_paused=True,
         )
         srv = ControlServer(eng, cfg).start()
+        # RX frame length the served streams use (lockstep batches several pages per frame)
+        frame_for = getattr(srv, "rx_frame_for", None)
+        rx_frame = int(frame_for(eng.groups[0].page)) if callable(frame_for) else None
         try:
             ep = str(srv.endpoints["control"])
             common = [
@@ -649,6 +655,8 @@ def measure_zmq(
                 str(n_total),
                 "--tone",
                 repr(float(rate) / 10.0),
+                "--chunk",
+                str(TX_CHUNK_SAMPLES),
             ]
             rx_cmd = [
                 sys.executable,
@@ -762,6 +770,7 @@ def measure_zmq(
             "run_wall_s": time.perf_counter() - w_one,
             "max_gap_s": rx_res.get("max_gap_s"),
             "rx_pause_s": rx_res.get("pause_s"),
+            "rx_frame_samples": rx_frame,
             "transport_counters": counters,
             "client_affinity": {
                 "rx": rx_res.get("affinity"),
@@ -870,6 +879,8 @@ def measure_zmq(
         "clock_shared": all(r["clock_ok"] for r in runs),
         "client_cpus_requested": os.environ.get("SREMU_CLIENT_CPUS") or None,
         "client_affinity": (out_reps[0] if out_reps else pilot)["client_affinity"],
+        "rx_frame_samples": pilot["rx_frame_samples"],
+        "tx_chunk_samples": TX_CHUNK_SAMPLES,
         "rtf_source": F5_METRIC,
         "f5_runs": [{"run": "pilot", **pilot}]
         + [{"run": f"rep{i}", **r} for i, r in enumerate(out_reps)],

@@ -62,7 +62,9 @@ class RtfReport:
 
     ``virtual_s``: min over streams of samples/f_s (exact). ``wall_s``: wall time. ``rtf``:
     ``virtual_s / wall_s``. ``rtf_min``: minimum over complete 100 ms virtual windows (None
-    when no window completed). ``aggregate_sps``: sum of samples over streams / wall.
+    when no window completed). ``aggregate_sps``: sum over streams of the samples produced
+    in ``wall_s`` (since :meth:`RtfMeter.start` or the last :meth:`RtfMeter.restart`) /
+    ``wall_s``. ``samples``: per stream, every sample produced (warm-up included).
     ``windows``: per complete window ``(t0_s, wall_s, rtf)``.
     """
 
@@ -113,6 +115,7 @@ class RtfMeter:
         self.windows: list[tuple[Fraction, float, float]] = []
         self._thr: dict[StreamId, int] | None = None
         self._v0 = Fraction(0)
+        self._s0 = sum(self.samples.values())  # samples before the measurement (restart)
         self._pending_start = False
 
     def start(self, wall_ns: int) -> None:
@@ -120,6 +123,7 @@ class RtfMeter:
         self._t0_ns = int(wall_ns)
         self._last_ns = int(wall_ns)
         self._win_start_ns = int(wall_ns)
+        self._s0 = sum(self.samples.values())
 
     def restart(self, wall_ns: int, samples: Mapping[StreamId, int]) -> None:
         """Restart the measurement at ``wall_ns`` with the streams already at ``samples``
@@ -128,6 +132,7 @@ class RtfMeter:
         self.samples = {s: int(samples.get(s, 0)) for s in self.rates}
         v0 = self.virtual_s()
         self._v0 = v0
+        self._s0 = sum(self.samples.values())
         self._win_index = int(v0 // self.window_s) + 1
         self.windows = []
         self._thr = None
@@ -188,7 +193,8 @@ class RtfMeter:
         wall = (end - self._t0_ns) * 1e-9
         v = self.virtual_s() - self._v0
         rtf = float(v) / wall if wall > 0 else None
-        agg = sum(self.samples.values()) / wall if wall > 0 else None
+        # only the samples produced in the measured wall span (not the warm-up's)
+        agg = (sum(self.samples.values()) - self._s0) / wall if wall > 0 else None
         rmin = min((w[2] for w in self.windows), default=None)
         return RtfReport(v, wall, rtf, rmin, agg, dict(self.samples), tuple(self.windows))
 
