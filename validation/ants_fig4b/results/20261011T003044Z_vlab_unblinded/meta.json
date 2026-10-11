@@ -1,0 +1,68 @@
+{
+  "study": "V-LAB",
+  "run": "vlab_unblinded",
+  "protocol_id": "V-LAB-ANTS-Fig4b",
+  "protocol_version": "2.0",
+  "protocol_digest": "d8623254ac6f9785f147b38fd8449b457f87c0c658baaae688eff597b09e0b7c",
+  "preregistered_sha256": "d8623254ac6f9785f147b38fd8449b457f87c0c658baaae688eff597b09e0b7c",
+  "locked": true,
+  "prediction_spec_sha256": "cbf69364bc0c56b9bb23164671d8b15697ffba2eb459bce965d538b4bda54406",
+  "git_commit": "7a632876ae731f708c081fabc09b255bb3b29339",
+  "git_dirty": false,
+  "outputs": [
+    {
+      "path": "F4.csv",
+      "sha256": "f1ec9aaed598ec9f340d0442ab48023d41b1aae44541888e9bba0a63259729f3",
+      "data_class": "DIG"
+    },
+    {
+      "path": "F4_delta_rmse.csv",
+      "sha256": "0ab37698149e8b76b37fedb96e67c9c6ac2bc3833dad293582259da27357f25b",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "F4.meta.json",
+      "sha256": "0f640abcd4da179e3aa9e593f7188ee6c36b610b6dcc8eca5f2fab2594962e32",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "table_v.csv",
+      "sha256": "72b327f6be4efc68f6201782f73a0ec116197a8f8e48717d12ed7593ee778aad",
+      "data_class": "DIG"
+    },
+    {
+      "path": "table_v.json",
+      "sha256": "a4dd3485bd98aa49f33df3d7d26238d1e316aca850b1021dd3d711f7fc12488c",
+      "data_class": "DIG"
+    },
+    {
+      "path": "results.json",
+      "sha256": "04965b036ca57dbb6586a557a073e37c55fea5f25211ebcaaf09e9e4a61ea2fb",
+      "data_class": "DIG"
+    },
+    {
+      "path": "report.md",
+      "sha256": "82907aca88696261cace11230f5b7f601d5a7b4df403786aeb71bf0491a1badb",
+      "data_class": "DIG"
+    }
+  ],
+  "data_classes": [
+    "DIG",
+    "SIM-sremu"
+  ],
+  "wall_s": 17.28909279999789,
+  "dry_run_decoy": false,
+  "decisions": "C1 fails, C2 fails, C3 fails",
+  "source": {
+    "path": "D:\\projects\\ris\\data\\digitized\\fig4b_measured\\fig4b_measured_rx_power.csv",
+    "sha256": "f8c1b1e9f45cff2b37c0760a100d3367ef312a214d3d0824e62e2f785c0991c0",
+    "protocol_digest": "d8623254ac6f9785f147b38fd8449b457f87c0c658baaae688eff597b09e0b7c",
+    "columns": {
+      "theta_deg": "theta_deg_center",
+      "r_m": "r_m_center",
+      "y_dbm": "p_dbm",
+      "sigma_db": "p_dbm_unc"
+    }
+  },
+  "dirty_tree_allowed": false
+}

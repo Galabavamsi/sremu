@@ -1,0 +1,52 @@
+{
+  "figure": "F4",
+  "dry_run_decoy": false,
+  "data_classes": [
+    "ASSUMED",
+    "DIG",
+    "SIM-sremu"
+  ],
+  "columns": {
+    "measured_dbm": "DIG",
+    "pred_m2_prior_median_dbm": "SIM-sremu",
+    "residual_m2_db": "DIG minus SIM-sremu"
+  },
+  "decoy_c2_detection_rate": 0.0,
+  "underpowered": true,
+  "naming": "consistency check under geometric uncertainty",
+  "inputs": [
+    {
+      "path": "D:\\projects\\ris\\research\\scratch\\vlab_unblind_7a63287\\validation\\ants_fig4b\\PROTOCOL.md",
+      "sha256": "8792ffb49431a23515680b075cd3b645c263db45320f2d77dc60a29739d4627a",
+      "data_class": "ASSUMED"
+    },
+    {
+      "path": "D:\\projects\\ris\\research\\scratch\\vlab_unblind_7a63287\\validation\\ants_fig4b\\protocol.json",
+      "sha256": "fe8a90188464f9ccf972c8918e4f7fc06b12ea7e9616f731b9114b6fca4ca9c8",
+      "data_class": "ASSUMED"
+    },
+    {
+      "path": "D:\\projects\\ris\\sremu\\runs\\vlab\\20261010T221931Z_vlab_tensor\\pred_tensor.npz",
+      "sha256": "2997f6a3c5cf85931d4473dc0105f8040d1289f5f41d440a5c8fb0c0630fb61c",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "D:\\projects\\ris\\sremu\\runs\\vlab\\20261010T223008Z_vlab_tensor_S-OR\\pred_tensor.npz",
+      "sha256": "eab2c7537b8f4e23248be5b1a1ad9d92bf46f5bf3da138668c2290295a5b57fe",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "D:\\projects\\ris\\data\\digitized\\fig4b_measured\\fig4b_measured_rx_power.csv",
+      "sha256": "f8c1b1e9f45cff2b37c0760a100d3367ef312a214d3d0824e62e2f785c0991c0",
+      "data_class": "DIG"
+    }
+  ],
+  "assumptions": [
+    "V-LAB geometry prior of protocol.json v2: author-supplied lab facts (2026-10-11) with ranges; the exact lab geometry is not supplied (human gate H-1)",
+    "Gamma magnitudes U[0.6, 1.0] and phase offsets U[-15, 15] deg around lab_binary_3p5ghz (ASSUMED)",
+    "antennas: isotropic or vertical short dipole (1.5 sin^2, 40 dB null floor) for the VERT2450/VERT900 whips [ENG]",
+    "floor polarization V (vertical whips); concrete from P.2040-3 (UNVERIFIED)",
+    "element-wise near-field K1 summation; mutual coupling and the cells' reactive near field not modelled; nodes within one wavelength of a tile rejected"
+  ],
+  "sremu_commit": "7a632876ae731f708c081fabc09b255bb3b29339"
+}

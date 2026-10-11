@@ -1,0 +1,97 @@
+{
+  "manifest_version": "1.0",
+  "sremu_version": "0.1.0.dev0",
+  "git_commit": "7a632876ae731f708c081fabc09b255bb3b29339",
+  "git_dirty": false,
+  "dirty_patch_sha256": null,
+  "contract_version": "1.1",
+  "versions": {
+    "python": "3.12.4",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "numba": "0.68.0",
+    "pydantic": "2.14.0",
+    "pyzmq": "27.2.0",
+    "torch": null
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu_model": "AMD Ryzen 9 8945H w/ Radeon 780M Graphics",
+  "logical_cpus": 16,
+  "power_plan_or_governor": "Balanced",
+  "gpu": [
+    "NVIDIA GeForce RTX 4070 Laptop GPU, 581.08, 8188 MiB"
+  ],
+  "aws_instance": null,
+  "scenario_name": "vlab/vlab_unblinded",
+  "scenario_sha256": "cbf69364bc0c56b9bb23164671d8b15697ffba2eb459bce965d538b4bda54406",
+  "inputs": [
+    {
+      "path": "D:\\projects\\ris\\research\\scratch\\vlab_unblind_7a63287\\validation\\ants_fig4b\\PROTOCOL.md",
+      "sha256": "8792ffb49431a23515680b075cd3b645c263db45320f2d77dc60a29739d4627a",
+      "data_class": "ASSUMED"
+    },
+    {
+      "path": "D:\\projects\\ris\\research\\scratch\\vlab_unblind_7a63287\\validation\\ants_fig4b\\protocol.json",
+      "sha256": "fe8a90188464f9ccf972c8918e4f7fc06b12ea7e9616f731b9114b6fca4ca9c8",
+      "data_class": "ASSUMED"
+    },
+    {
+      "path": "D:\\projects\\ris\\sremu\\runs\\vlab\\20261010T221931Z_vlab_tensor\\pred_tensor.npz",
+      "sha256": "2997f6a3c5cf85931d4473dc0105f8040d1289f5f41d440a5c8fb0c0630fb61c",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "D:\\projects\\ris\\sremu\\runs\\vlab\\20261010T223008Z_vlab_tensor_S-OR\\pred_tensor.npz",
+      "sha256": "eab2c7537b8f4e23248be5b1a1ad9d92bf46f5bf3da138668c2290295a5b57fe",
+      "data_class": "SIM-sremu"
+    },
+    {
+      "path": "D:\\projects\\ris\\data\\digitized\\fig4b_measured\\fig4b_measured_rx_power.csv",
+      "sha256": "f8c1b1e9f45cff2b37c0760a100d3367ef312a214d3d0824e62e2f785c0991c0",
+      "data_class": "DIG"
+    }
+  ],
+  "assumptions": [
+    "V-LAB geometry prior of protocol.json v2: author-supplied lab facts (2026-10-11) with ranges; the exact lab geometry is not supplied (human gate H-1)",
+    "Gamma magnitudes U[0.6, 1.0] and phase offsets U[-15, 15] deg around lab_binary_3p5ghz (ASSUMED)",
+    "antennas: isotropic or vertical short dipole (1.5 sin^2, 40 dB null floor) for the VERT2450/VERT900 whips [ENG]",
+    "floor polarization V (vertical whips); concrete from P.2040-3 (UNVERIFIED)",
+    "element-wise near-field K1 summation; mutual coupling and the cells' reactive near field not modelled; nodes within one wavelength of a tile rejected"
+  ],
+  "seed": 20261010,
+  "rng_scheme": "philox4x32-10/blake2b-v1",
+  "mode": "validation-study",
+  "coupling": "none",
+  "backend": "numba_cpu",
+  "threads": 16,
+  "deterministic": true,
+  "numba_disable_svml": true,
+  "page_size": {},
+  "links": {},
+  "verify_interp_max_rel": null,
+  "richardson_db": null,
+  "counters": {},
+  "nondeterministic_inputs": false,
+  "oracle_csi_used": false,
+  "argv": [
+    "D:\\projects\\ris\\research\\scratch\\vlab_unblind_7a63287\\validation\\ants_fig4b\\run.py",
+    "--tensor",
+    "D:/projects/ris/sremu/runs/vlab/20261010T221931Z_vlab_tensor/pred_tensor.npz",
+    "--tensor-sor",
+    "D:/projects/ris/sremu/runs/vlab/20261010T223008Z_vlab_tensor_S-OR/pred_tensor.npz",
+    "--out",
+    "D:/projects/ris/sremu/runs/vlab/unblinded_7a63287",
+    "--columns",
+    "{\"theta_deg\": \"theta_deg_center\", \"r_m\": \"r_m_center\", \"y_dbm\": \"p_dbm\", \"sigma_db\": \"p_dbm_unc\"}"
+  ],
+  "t_start_utc": "2026-10-11T00:30:44.353996Z",
+  "t_end_utc": "2026-10-11T00:31:01.642802Z",
+  "wall_s": 17.28909279999789,
+  "host_load_samples": [
+    {
+      "t_utc": "2026-10-11T00:31:01.635296Z",
+      "cpu_busy_fraction": 0.22438831440357124,
+      "loadavg_1min": null
+    }
+  ]
+}
