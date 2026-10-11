@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -774,8 +774,9 @@ class Emulator:
         s.t_b_last = t_b
         obs = self._observation(s, t_b)
         if s.remote:
-            proxy = s.ctrl
-            assert isinstance(proxy, RemoteControllerProxy)
+            # the slot's kind was checked at registration (a runtime-checkable Protocol
+            # isinstance costs tens of microseconds per barrier)
+            proxy = cast(RemoteControllerProxy, s.ctrl)
             proxy.send_barrier(obs)
             # release the (re-entrant) lock completely so the remote side can schedule
             # its commands from another thread, as Condition.wait does
@@ -787,8 +788,7 @@ class Emulator:
             if not ok:
                 raise SremuTimeout(f"controller {s.name!r} did not ack barrier t_b = {t_b}")
         else:
-            ctrl = s.ctrl
-            assert isinstance(ctrl, Controller)
+            ctrl = cast(Controller, s.ctrl)
             actions = list(ctrl.decide(obs))
             for i, a in enumerate(actions):
                 at = self.barriers.action_time(s, t_b, i, a)

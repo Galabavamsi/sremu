@@ -36,6 +36,18 @@ of the absolute index. It never multiplies the deterministic channel.
 **Causality (4.5).** RX samples [k0, k1) need TX committed through
 ``k1 + h_FD - floor(tau_min*f_s)``; a group advances only as far as its linked TX streams
 are committed (partial pages are allowed: segmentation by availability).
+
+**Caches** (performance only; every cached value is a pure function of its key, so a hit
+is bitwise the value a fresh evaluation would give; snapshots are keyed by ``(t, left)``,
+which identifies them only between geometry events, and the engine clears these caches at
+every applied event). Jobs are keyed by (RX, interval,
+timeline signature); the signature holds the epoch identities ``(seq, version)`` per tile,
+the switch samples of running transitions and the enable flags, not the book version, so a
+command that switches later does not invalidate the current piece's jobs. ``combine()`` is
+memoized per (snapshot, configuration): the plan, the non-tile amplitudes and an epoch at
+the same configuration share one evaluation per snapshot (the plan reads only the path
+structure, which every configuration shares). FD specs and link layouts are memoized on
+their inputs.
 """
 
 from __future__ import annotations
@@ -69,7 +81,7 @@ from sremu.contracts import (
 from sremu.errors import ConfigurationError
 from sremu.timebase import ceil_ticks
 
-from .commands import CommandManager, EpochInfo, mixture_amplitudes, panel_combine_fn
+from .commands import CommandManager, EpochInfo, mixture_amplitudes
 from .streams import StreamConfig, TxStream
 
 __all__ = [
@@ -341,10 +353,18 @@ class JobBuilder:
         self._amps: OrderedDict[tuple[Any, ...], dict[LinkId, NDArray[np.complex128]]] = (
             OrderedDict()
         )
+        # combine() results per (snapshot key, configuration bytes): plans() of consecutive
+        # grid intervals share their common snapshot, and the non-tile amplitudes and an
+        # epoch at the same configuration share one evaluation (combine is a pure function
+        # of the snapshot and the configuration, so a hit is bitwise the same result)
+        self._comb: OrderedDict[tuple[Any, ...], Mapping[LinkId, LinkPaths]] = OrderedDict()
+        self._initial_flags = tuple(bool(b.spec.initial.enabled) for b in commands.books.values())
+        self._fd: dict[tuple[float, Fraction], FDSpec] = {}
+        self._layouts: dict[tuple[Any, ...], LinkLayout] = {}
         self._splits: dict[StreamId, tuple[tuple[int, ...], NDArray[np.int64]]] = {}
         self._needs: OrderedDict[tuple[Any, ...], dict[StreamId, tuple[int, int]]] = OrderedDict()
         self._sigs: dict[tuple[Any, ...], tuple[Any, ...]] = {}
-        self._sig_last: dict[StreamId, tuple[tuple[int, ...], int, tuple[Any, ...]]] = {}
+        self._sig_last: dict[StreamId, tuple[tuple[int, ...], int, int, tuple[Any, ...]]] = {}
         self._needs_last: (
             tuple[Interval, tuple[StreamId, ...], dict[StreamId, tuple[int, int]]] | None
         ) = None
@@ -367,6 +387,7 @@ class JobBuilder:
         """Drop cached jobs and amplitudes (after a ring reallocation or model change)."""
         self._jobs.clear()
         self._amps.clear()
+        self._comb.clear()
         self._plans.clear()
         self._needs.clear()
         self._sigs.clear()
@@ -379,14 +400,40 @@ class JobBuilder:
         if len(cache) > (size or self._cache_size):
             cache.popitem(last=False)
 
+    # ------------------------------------------------------------------ combine
+    def _combine(
+        self, snap: Snapshot, skey: tuple[Any, ...], cfg: Mapping[PanelId, PanelConfig]
+    ) -> Mapping[LinkId, LinkPaths]:
+        """``model.combine(snap, cfg)``, memoized per (snapshot key, configuration)."""
+        key = (
+            skey,
+            tuple((pid, c.state.tobytes(), bool(c.enabled)) for pid, c in cfg.items()),
+        )
+        hit = self._comb.get(key)
+        if hit is None:
+            hit = self.model.combine(snap, cfg)
+            self._lru_put(self._comb, key, hit, 64)
+        return hit
+
     # ------------------------------------------------------------------ plans
     def plans(self, iv: Interval) -> dict[LinkId, LinkPlanInfo]:
         """Delays, FD plan and layout of every link for an interval (config independent)."""
         hit = self._plans.get(iv.key)
         if hit is not None:
             return hit
-        pa = self.model.combine(iv.snap_a, {})
-        pb = pa if iv.snap_b is iv.snap_a else self.model.combine(iv.snap_b, {})
+        # only the path structure is read here (delays, path count, tile keys), and it does
+        # not depend on the configuration: a disabled or unconfigured panel keeps its paths
+        # with zero amplitude, which jobs() relies on when it assembles amplitudes from
+        # several configurations into one path-indexed array. The non-tile configuration at
+        # the initial enable flags is the one _nontile() evaluates for the same snapshot,
+        # so the plan shares that combine() instead of running one of its own.
+        cfg = self._nontile_cfg(self._initial_flags)
+        pa = self._combine(iv.snap_a, self._snap_key(iv.snap_a, iv, "a"), cfg)
+        pb = (
+            pa
+            if iv.snap_b is iv.snap_a
+            else self._combine(iv.snap_b, self._snap_key(iv.snap_b, iv, "b"), cfg)
+        )
         out: dict[LinkId, LinkPlanInfo] = {}
         for links in self.links_by_rx.values():
             for rl in links:
@@ -394,7 +441,11 @@ class JobBuilder:
                 if a.n_paths != b.n_paths:
                     raise ConfigurationError(f"link {rl.link}: path count changes in an interval")
                 group, nb = plan_groups(a.delay_s, b.delay_s, rl.bandwidth_hz, self.nb_eps)
-                fd = choose_fd(rl.bandwidth_hz, self.configs[rl.tx].rate, self.fd_target_db)
+                fkey = (rl.bandwidth_hz, self.configs[rl.tx].rate)
+                fd = self._fd.get(fkey)
+                if fd is None:  # a pure function of (bandwidth, rate, target)
+                    fd = choose_fd(rl.bandwidth_hz, self.configs[rl.tx].rate, self.fd_target_db)
+                    self._fd[fkey] = fd
                 spread = float(max(np.ptp(a.delay_s), np.ptp(b.delay_s))) if a.n_paths else 0.0
                 tmin = float(min(a.delay_s.min(), b.delay_s.min())) if a.n_paths else 0.0
                 tmax = float(max(a.delay_s.max(), b.delay_s.max())) if a.n_paths else 0.0
@@ -408,7 +459,7 @@ class JobBuilder:
                     spread,
                     tmin,
                     tmax,
-                    link_layout(iv.snap_a, a),
+                    self._layout(iv.snap_a, a),
                 )
                 out[rl.link] = info
                 if rl.link not in self.decisions:
@@ -452,17 +503,36 @@ class JobBuilder:
         )
         return (t, left)
 
+    def _layout(self, snap: Snapshot, lp: LinkPaths) -> LinkLayout:
+        """:func:`link_layout`, memoized on its inputs (tile keys and panel structure)."""
+        key = (
+            lp.tile.tobytes(),
+            int(lp.n_paths),
+            tuple((pid, rc.n_rows, rc.n_tiles) for pid, rc in snap.ris.items()),
+        )
+        hit = self._layouts.get(key)
+        if hit is None:
+            hit = link_layout(snap, lp)
+            if len(self._layouts) > 1024:
+                self._layouts.clear()
+            self._layouts[key] = hit
+        return hit
+
+    def _nontile_cfg(self, flags: tuple[bool, ...]) -> dict[PanelId, PanelConfig]:
+        """Every panel at its initial states with the given (panel-centre) enable flags."""
+        return {
+            pid: PanelConfig(pid, b.spec.initial.state, flag)
+            for (pid, b), flag in zip(self.commands.books.items(), flags, strict=True)
+        }
+
     def _nontile(
         self, snap: Snapshot, skey: tuple[Any, ...], flags: tuple[bool, ...]
     ) -> dict[LinkId, NDArray[np.complex128]]:
         key = ("nt", skey, flags)
         hit = self._amps.get(key)
         if hit is None:
-            cfg = {
-                pid: PanelConfig(pid, b.spec.initial.state, flag)
-                for (pid, b), flag in zip(self.commands.books.items(), flags, strict=True)
-            }
-            hit = {lk: lp.amp for lk, lp in self.model.combine(snap, cfg).items()}
+            cfg = self._nontile_cfg(flags)
+            hit = {lk: lp.amp for lk, lp in self._combine(snap, skey, cfg).items()}
             self._lru_put(self._amps, key, hit)
         return hit
 
@@ -473,7 +543,14 @@ class JobBuilder:
         hit = self._amps.get(key)
         if hit is None:
             book = self.commands.books[pid]
-            fn = panel_combine_fn(self.model, snap, pid)
+
+            def fn(
+                states: NDArray[np.int16], snap: Snapshot = snap, pid: PanelId = pid
+            ) -> Mapping[LinkId, NDArray[np.complex128]]:
+                # panel_combine_fn through the memo: only ``pid`` configured, enabled
+                cfg = {pid: PanelConfig(pid, np.asarray(states, np.int16), True)}
+                return {lk: lp.amp for lk, lp in self._combine(snap, skey, cfg).items()}
+
             if which == "after":
                 mix = ep.after()
             elif which == "start":
@@ -486,46 +563,71 @@ class JobBuilder:
         return hit
 
     # ------------------------------------------------------------------ signatures
+    def _versions(self) -> tuple[int, ...]:
+        return tuple(b.version for b in self.commands.books.values())
+
     def split_points(self, rx: StreamId) -> NDArray[np.int64]:
         """Every command switch sample of every panel at ``rx`` (sorted, unique)."""
-        vers = tuple(b.version for b in self.commands.books.values())
+        vers = self._versions()
         hit = self._splits.get(rx)
         if hit is not None and hit[0] == vers:
             return hit[1]
-        arrs = [b.view(rx).splits for b in self.commands.books.values()]
-        sp = np.unique(np.concatenate(arrs)) if arrs else np.zeros(0, np.int64)
+        books = list(self.commands.books.values())
+        if len(books) == 1:
+            sp = books[0].view(rx).splits  # already sorted and unique
+        elif books:
+            sp = np.unique(np.concatenate([b.view(rx).splits for b in books]))
+        else:
+            sp = np.zeros(0, np.int64)
         self._splits[rx] = (vers, sp)
         return sp
 
     def signature(self, rx: StreamId, a: int) -> tuple[Any, ...]:
-        """Per-panel ``(epochs per tile, enabled per tile, centre enabled)`` at sample ``a``.
+        """Timeline signature of ``rx`` at sample ``a`` (see :meth:`_signature`).
 
         Constant between consecutive switch samples, so it is cached per (versions, split
-        index)."""
-        vers = tuple(b.version for b in self.commands.books.values())
-        splits = self.split_points(rx)
-        i = int(np.searchsorted(splits, a, side="right")) if splits.size else 0
-        key = (rx, vers, i)
+        index); the last one per RX is kept with its sample range ``[lo, hi)``."""
+        vers = self._versions()
         last = self._sig_last.get(rx)
-        if last is not None and last[0] == vers and last[1] == i:
-            return last[2]
-        hit = self._sigs.get(key)
-        if hit is not None:
-            return hit
-        if len(self._sigs) > 4096:
-            self._sigs.clear()
-        sig_t = self._sigs.get(key) or self._signature(rx, a)
-        self._sigs[key] = sig_t
-        self._sig_last[rx] = (vers, i, sig_t)
+        if last is not None and last[0] == vers and last[1] <= a < last[2]:
+            return last[3]
+        splits = self.split_points(rx)
+        n = int(splits.shape[0])
+        i = int(np.searchsorted(splits, a, side="right")) if n else 0
+        lo = int(splits[i - 1]) if i > 0 else -(1 << 62)
+        hi = int(splits[i]) if i < n else 1 << 62
+        key = (rx, vers, i)
+        sig_t = self._sigs.get(key)
+        if sig_t is None:
+            if len(self._sigs) > 4096:
+                self._sigs.clear()
+            sig_t = self._signature(rx, a)
+            self._sigs[key] = sig_t
+        self._sig_last[rx] = (vers, lo, hi, sig_t)
         return sig_t
 
     def _signature(self, rx: StreamId, a: int) -> tuple[Any, ...]:
+        """Everything :meth:`jobs` reads from the command timeline at sample ``a``: per panel
+        and tile the identity ``(seq, version)`` of the epoch in force (a version changes
+        whenever an epoch's start, classes or target change), the switch samples of every
+        running non-step epoch at this RX (its transition terms start there), and the
+        per-tile and panel-centre enable flags. It does not contain the book version, so
+        inserting a command that switches later (or pruning old ones) keeps the cached jobs
+        of the current piece valid."""
         sig = []
         for pid, book in self.commands.books.items():
             v = book.view(rx)
             ep = v.epochs_at(a)
             en, enc = v.enabled_at(a)
-            sig.append((pid, book.version, ep.tobytes(), en.tobytes(), enc))
+            eps = v.cfg_epochs
+            idx = ep.tolist()
+            keys = tuple(eps[e].key for e in idx)
+            trans = tuple(
+                (eps[e].key, v.cfg_k[e - 1].tobytes())
+                for e in sorted(set(idx))
+                if not eps[e].is_step
+            )
+            sig.append((pid, keys, trans, en.tobytes(), enc))
         return tuple(sig)
 
     # ------------------------------------------------------------------ jobs
@@ -545,6 +647,13 @@ class JobBuilder:
         centre_flags = tuple(bool(s[4]) for s in sig)
         nt_a = self._nontile(iv.snap_a, ska, centre_flags)
         nt_b = nt_a if iv.degenerate else self._nontile(iv.snap_b, skb, centre_flags)
+        # per panel (the same for every link of this RX): the epoch of each tile at ``a``
+        # and, per distinct epoch, the tiles that are in it and enabled
+        tile_groups: dict[PanelId, list[tuple[int, NDArray[np.bool_]]]] = {}
+        for pid, v in views.items():
+            eps_tiles = v.epochs_at(a)
+            en_tiles, _enc = v.enabled_at(a)
+            tile_groups[pid] = [(int(e), (eps_tiles == e) & en_tiles) for e in np.unique(eps_tiles)]
         out: list[LinkJob] = []
         for rl in self.links_by_rx.get(rx, []):
             pl = plans[rl.link]
@@ -556,10 +665,7 @@ class JobBuilder:
             terms: list[TransitionTerm] = []
             for pid, idx, tiles in lay.panels:
                 v = views[pid]
-                eps_tiles = v.epochs_at(a)
-                en_tiles, _enc = v.enabled_at(a)
-                for e in np.unique(eps_tiles):
-                    on = (eps_tiles == e) & en_tiles
+                for e, on in tile_groups[pid]:
                     sel = on[tiles]
                     if not sel.any():
                         continue

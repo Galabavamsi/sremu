@@ -73,7 +73,9 @@ Applied by WP0 maintenance. Decision ids refer to "Lead decisions v1.2" at the t
 
 ### Other WP0 interfaces
 
-- **D4.** `sremu.units.C_LEGACY_V1 = 3.0e8`, for `physics/legacy.py` only.
+- **D4.** `sremu.units.C_LEGACY_V1 = 3.0e8`, for `physics/legacy.py` only. (D24, 11 Oct
+  2026: the constant and the internal teeth tests that use it stay in the code; the paper
+  features neither and makes no comparison with any earlier simulator.)
   `tests/unit/test_layering.py` allows exactly two speed-of-light literals, both in
   `units.py` (`C0` and `C_LEGACY_V1`). It also checks that no module other than
   `physics/legacy.py` references `C_LEGACY_V1`.

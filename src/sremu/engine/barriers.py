@@ -25,8 +25,9 @@ No wall clock here except the remote ack timeout, which the caller passes in.
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 
 import numpy as np
@@ -61,6 +62,34 @@ __all__ = [
 
 _POSITION_COUNTER_BASE = 1 << 32  # ctrl/<name> generator counters for position noise
 
+_U_BLOCK = 256  # latency uniforms generated per block of barrier indices
+_U_CACHE_MAX = 64
+_u_cache: dict[tuple[int, str, int, int], NDArray[np.float64]] = {}
+_u_lock = threading.Lock()
+_jitter_cache: dict[str, tuple[str, tuple[Fraction, ...]]] = {}
+
+
+def _latency_uniform(seed: int, name: str, m: int, i: int) -> float:
+    """``rng.uniform(derive_key(seed, "ctrl.latency", name), m, 1, sub=i)[0]``.
+
+    The generator is counter based (element j of ``uniform(key, k0, n)`` depends only on
+    the counter ``k0 + j``), so the value is read from a block of ``_U_BLOCK`` consecutive
+    counters generated at once: bitwise the same number, without one generator call (about
+    0.3 ms with the NumPy twin) per barrier."""
+    b = m // _U_BLOCK
+    ck = (int(seed), str(name), int(i), b)
+    blk = _u_cache.get(ck)
+    if blk is None:
+        key = rng.derive_key(seed, "ctrl.latency", name)
+        blk = rng.uniform(key, b * _U_BLOCK, _U_BLOCK, sub=int(i))
+        # the cache is module-wide and engines may run in several threads: the eviction
+        # (iterate, then pop) must not interleave with another thread's insert
+        with _u_lock:
+            if len(_u_cache) >= _U_CACHE_MAX:
+                _u_cache.pop(next(iter(_u_cache)), None)
+            _u_cache[ck] = blk
+    return float(blk[m - b * _U_BLOCK])
+
 
 def draw_latency_s(seed: int, name: str, latency: LatencyModel, m: int, i: int = 0) -> Fraction:
     """Latency of action ``i`` at barrier ``m``: ``fixed_s`` + keyed jitter (exact, s).
@@ -69,11 +98,15 @@ def draw_latency_s(seed: int, name: str, latency: LatencyModel, m: int, i: int =
     from ``rng.uniform(derive_key(seed, "ctrl.latency", name), m, 1, sub=i)``. The float
     jitter enters as ``Fraction(repr(x))`` (R5).
     """
-    jit = latency.parsed_jitter()
-    if jit is None:
+    if latency.jitter is None:
         return Fraction(latency.fixed_s)
-    key = rng.derive_key(seed, "ctrl.latency", name)
-    u = float(rng.uniform(key, int(m), 1, sub=int(i))[0])
+    jit = _jitter_cache.get(latency.jitter)
+    if jit is None:  # parse once per jitter string (the parse is pure)
+        jit = latency.parsed_jitter()
+        assert jit is not None
+        if len(_jitter_cache) < 256:
+            _jitter_cache[latency.jitter] = jit
+    u = _latency_uniform(seed, name, int(m), int(i))
     kind, args = jit
     if kind == "uniform":
         a, b = float(args[0]), float(args[1])
@@ -158,6 +191,8 @@ class ControllerSlot:
     m: int
     order: int
     t_b_last: Fraction | None = None
+    # limit() per rate: (barrier index m, to_ticks(t_b + L_min, f)) of the last request
+    _limits: dict[Fraction, tuple[int, int]] = field(default_factory=dict, repr=False)
 
     @property
     def t_next(self) -> Fraction:
@@ -165,8 +200,14 @@ class ControllerSlot:
         return self.m * self.period
 
     def limit(self, f: Fraction) -> int:
-        """RX frontier limit ``to_ticks(t_b + L_min, f)`` of the next barrier (exclusive)."""
-        return to_ticks(self.t_next + self.l_min, f)
+        """RX frontier limit ``to_ticks(t_b + L_min, f)`` of the next barrier (exclusive);
+        cached per (barrier index, rate), since the engine asks for it at every step."""
+        hit = self._limits.get(f)
+        if hit is not None and hit[0] == self.m:
+            return hit[1]
+        k = to_ticks(self.t_next + self.l_min, f)
+        self._limits[f] = (self.m, k)
+        return k
 
     def lookahead_bound(self) -> Fraction | None:
         """``t_b + L_min`` of the latest barrier (None before the first one)."""

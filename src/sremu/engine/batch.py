@@ -275,13 +275,13 @@ def run_batch(
         if barriers.slots:
             nxt.append(min(s.t_next for s in barriers.slots))
         for book in mgr.books.values():
-            for cmd in book.active_config() + book.active_enabled():
-                if cmd.t > t:
-                    nxt.append(cmd.t)
+            nt = book.next_time_after(t)  # earliest active switch after t (only min(nxt) is used)
+            if nt is not None:
+                nxt.append(nt)
             # a running non-step transition is followed on its own sub-grid (left points)
-            run_ = [c for c in book.active_config() if c.t <= t]
-            if run_:
-                p = _transition_split(run_[-1], t)
+            last = book.latest_config_at(t)
+            if last is not None:
+                p = _transition_split(last, t)
                 if p is not None:
                     nxt.append(p)
         t_end = min(nxt)
@@ -292,17 +292,17 @@ def run_batch(
         mixed = False
         for pid, book in mgr.books.items():
             cfg[pid] = book.config_at(t)
-            act = [c for c in book.active_config() if c.t <= t]
-            if act and not act[-1].is_step:
+            last = book.latest_config_at(t)
+            if last is not None and not last.is_step:
                 mixed = True
         paths = model.combine(snap, cfg)
         if mixed:
             amps = {lk: lp.amp.copy() for lk, lp in paths.items()}
             for pid, book in mgr.books.items():
-                act = [c for c in book.active_config() if c.t <= t]
-                if not act or act[-1].is_step:
+                last = book.latest_config_at(t)
+                if last is None or last.is_step:
                     continue
-                mix = act[-1].frozen(t - act[-1].t)
+                mix = last.frozen(t - last.t)
                 fn = panel_combine_fn(model, snap, pid)
                 cur = fn(cfg[pid].state)
                 new = mixture_amplitudes(mix, book.spec.n_states, fn)

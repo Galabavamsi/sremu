@@ -43,11 +43,26 @@ No wall clock here (I7). Normative rules implemented:
   same for every receiver and tile [ENG; the per-tile renderer then starts the new
   transition at each tile's own switch sample]. The channel of a mixture follows by
   linearity of ``combine`` in Gamma (:func:`mixture_amplitudes`).
+
+**Cost per command** (engine bookkeeping; Python work does not grow with the number of
+commands a book holds, only O(n) array copies do): a panel book keeps its active commands
+in ``(t, seq)`` order and inserts by bisection; a
+config insert recomposes only the commands from the insertion point on, and stops at the
+first later command whose derived data (controls, previous target, start mixture, classes,
+target) is unchanged, because everything after it depends only on that data. The per-RX
+switch-sample arrays and the epoch list are updated in place of a rebuild (a geometry
+event, which re-maps switch samples, rebuilds them). Statuses are updated from per-RX
+min-heaps of ``max_j k_{r,j} + 1``: a command is applied once it has been popped on every
+RX, so a status update costs O(log n) per command that completes instead of a scan of every
+scheduled command. Prune (memory bound) drops a prefix by slicing. The result is identical
+to recomposing and rescanning everything at every insert (``tests/runtime/
+test_rt_perf_commands.py`` checks it against that reference on random timelines).
 """
 
 from __future__ import annotations
 
 import bisect
+import heapq
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -560,8 +575,47 @@ class RxView:
         return vals[cnt].astype(bool), bool(vals[cc])
 
 
+def _cmd_t(c: PanelCommand) -> Fraction:
+    return c.t
+
+
+def _sorted_unique(x: NDArray[np.int64]) -> NDArray[np.int64]:
+    """``np.unique`` of a 1-D int64 array (sorted, unique) without its Python overhead."""
+    y = np.sort(x)
+    if y.shape[0] < 2:
+        return y
+    keep = np.empty(y.shape[0], dtype=bool)
+    keep[0] = True
+    np.not_equal(y[1:], y[:-1], out=keep[1:])
+    return y[keep]
+
+
+def _cmd_ts(c: PanelCommand) -> tuple[Fraction, int]:
+    return (c.t, c.seq)
+
+
+def _epoch_info(c: PanelCommand) -> EpochInfo:
+    """The epoch a config command opens (identity ``(seq, version)``)."""
+    assert c.start is not None
+    assert c.target is not None
+    return EpochInfo(
+        (c.seq, c.version),
+        c.start,
+        tuple(c.classes),
+        c.target,
+        c.profile,
+        c.duration_s,
+        c.is_step or not c.classes,
+    )
+
+
 class PanelBook:
-    """Command timeline of one panel (see the module docstring)."""
+    """Command timeline of one panel (see the module docstring).
+
+    ``config``/``enabled``: every accepted command of each kind (superseded ones included)
+    in ``(t, seq)`` order. The active (non-superseded) commands, their epochs and their
+    per-RX switch-sample arrays are kept alongside and updated incrementally.
+    """
 
     def __init__(self, spec: PanelSpec, n_tiles: int) -> None:
         self.spec = spec
@@ -578,32 +632,114 @@ class PanelBook:
         self._head: PanelCommand | None = None
         self._head_enabled: bool = bool(spec.initial.enabled)
         self._ver_counter = 0
+        # active commands in (t, seq) order, the epoch of each active config command and
+        # the per-RX arrays of RxView (built on the first view of an RX, then maintained)
+        self._act_c: list[PanelCommand] = []
+        self._act_e: list[PanelCommand] = []
+        self._ep: list[EpochInfo] = []
+        self._epochs: tuple[int, tuple[EpochInfo, ...]] | None = None
+        self._kc: dict[StreamId, NDArray[np.int64]] = {}
+        self._ke: dict[StreamId, NDArray[np.int64]] = {}
+        self._kec: dict[StreamId, NDArray[np.int64]] = {}
+        self._env = np.zeros(0, dtype=bool)
 
     # ------------------------------------------------------------------ timeline
     def active_config(self) -> list[PanelCommand]:
-        """Non-superseded config commands in ``(t, seq)`` order."""
-        return [c for c in self.config if not c.superseded]
+        """Non-superseded config commands in ``(t, seq)`` order (a new list)."""
+        return list(self._act_c)
 
     def active_enabled(self) -> list[PanelCommand]:
-        """Non-superseded enable commands in ``(t, seq)`` order."""
-        return [c for c in self.enabled if not c.superseded]
+        """Non-superseded enable commands in ``(t, seq)`` order (a new list)."""
+        return list(self._act_e)
+
+    def latest_config_at(self, t: Fraction) -> PanelCommand | None:
+        """The last active config command with ``t_i <= t`` (None: none)."""
+        i = bisect.bisect_right(self._act_c, t, key=_cmd_t)
+        return self._act_c[i - 1] if i else None
+
+    def next_time_after(self, t: Fraction) -> Fraction | None:
+        """Earliest switch time ``t_i > t`` of an active command of either kind."""
+        out: Fraction | None = None
+        for act in (self._act_c, self._act_e):
+            i = bisect.bisect_right(act, t, key=_cmd_t)
+            if i < len(act) and (out is None or act[i].t < out):
+                out = act[i].t
+        return out
 
     def insert(self, cmd: PanelCommand) -> list[PanelCommand]:
         """Insert an accepted command; returns the commands it supersedes."""
-        lst = self.config if cmd.kind == "config" else self.enabled
-        sup = [c for c in lst if c.t == cmd.t and not c.superseded and c.seq < cmd.seq]
+        config = cmd.kind == "config"
+        lst = self.config if config else self.enabled
+        act = self._act_c if config else self._act_e
+        # active commands at the same t are contiguous in (t, seq) order
+        if not act or act[-1].t < cmd.t:  # appended after every active command
+            i0 = i1 = len(act)
+        else:
+            i0 = bisect.bisect_left(act, cmd.t, key=_cmd_t)
+            i1 = bisect.bisect_right(act, cmd.t, key=_cmd_t)
+        same = act[i0:i1]
+        sup = [c for c in same if c.seq < cmd.seq]
         for c in sup:
             c.superseded = True
             c.record.status = "superseded"
-        lst.append(cmd)
-        lst.sort(key=lambda c: (c.t, c.seq))
-        self._recompose()
+        if not lst or _cmd_ts(lst[-1]) < _cmd_ts(cmd):
+            lst.append(cmd)
+        else:
+            bisect.insort(lst, cmd, key=_cmd_ts)
+        mid = sorted([c for c in same if c.seq >= cmd.seq] + [cmd], key=_cmd_ts)
+        act[i0:i1] = mid
+        self._splice(config, i0, i1, mid)
+        if config:
+            old = {id(c): e for c, e in zip(same, self._ep[i0:i1], strict=True)}
+            self._ep[i0:i1] = [old.get(id(c), self._initial_epoch) for c in mid]
+            self._recompose_from(i0, i0 + len(mid) - 1)
+        else:
+            self.version += 1
         return sup
 
+    def _splice(self, config: bool, i0: int, i1: int, mid: list[PanelCommand]) -> None:
+        """Replace rows [i0, i1) of the per-RX arrays of one kind by the rows of ``mid``."""
+        if config:
+            for rx, arr in self._kc.items():
+                rows = np.array([c.k_tiles[rx] for c in mid], dtype=np.int64).reshape(
+                    len(mid), self.n_tiles
+                )
+                self._kc[rx] = np.concatenate([arr[:i0], rows, arr[i1:]])
+            return
+        for rx, arr in self._ke.items():
+            rows = np.array([c.k_tiles[rx] for c in mid], dtype=np.int64).reshape(
+                len(mid), self.n_tiles
+            )
+            self._ke[rx] = np.concatenate([arr[:i0], rows, arr[i1:]])
+        for rx, arr in self._kec.items():
+            cen = np.array([c.k_centre[rx] for c in mid], dtype=np.int64)
+            self._kec[rx] = np.concatenate([arr[:i0], cen, arr[i1:]])
+        vals = np.array([bool(c.enabled) for c in mid], dtype=bool)
+        self._env = np.concatenate([self._env[:i0], vals, self._env[i1:]])
+
+    def switch_samples_changed(self) -> None:
+        """Some command's switch samples were re-mapped (geometry event): rebuild the per-RX
+        arrays on the next view and invalidate the views."""
+        self._kc.clear()
+        self._ke.clear()
+        self._kec.clear()
+        self.version += 1
+
     def _recompose(self) -> None:
-        """Recompute targets, start mixtures and classes of the config timeline."""
+        """Recompute targets, start mixtures and classes of the whole config timeline."""
+        self._recompose_from(0, len(self._act_c) - 1)
+
+    def _recompose_from(self, start: int, fixed: int) -> None:
+        """Recompute targets, start mixtures and classes of the active config commands from
+        index ``start`` on (the earlier ones do not depend on later commands).
+
+        A command after index ``fixed`` whose recomputed data equal its stored data
+        (controls, previous target, target, start mixture, classes) ends the pass: every
+        later command depends only on its predecessor's data, so nothing after it changes.
+        Versions are assigned exactly as a full recompose would assign them."""
         spec = self.spec
-        prev: PanelCommand | None = self._head
+        act = self._act_c
+        prev: PanelCommand | None = act[start - 1] if start > 0 else self._head
         if prev is None:
             controls = spec.initial_controls.astype(np.int16).copy()
             target = spec.initial.state.astype(np.int16).copy()
@@ -613,7 +749,8 @@ class PanelBook:
             controls = prev.controls.copy()
             target = prev.target.copy()
         mix = Mixture(target.copy())
-        for c in self.active_config():
+        for j in range(start, len(act)):
+            c = act[j]
             if prev is not None:
                 mix = prev.frozen(c.t - prev.t)
             if c.physical is not None:
@@ -635,6 +772,15 @@ class PanelBook:
                 or len(c.classes) != len(masks)
                 or any(not np.array_equal(a, b) for a, b in zip(c.classes, masks, strict=True))
             )
+            if (
+                j > fixed
+                and not changed
+                and c.controls is not None
+                and c.last is not None
+                and np.array_equal(c.controls, controls)
+                and np.array_equal(c.last, target)
+            ):
+                break
             c.controls = controls.copy()
             c.last = target.copy()
             if changed:
@@ -643,6 +789,7 @@ class PanelBook:
                 c.target = new_target
                 c.start = mix
                 c.classes = masks
+                self._ep[j] = _epoch_info(c)
             target = new_target
             prev = c
         self.version += 1
@@ -650,46 +797,56 @@ class PanelBook:
     # ------------------------------------------------------------------ queries
     def epochs(self) -> tuple[EpochInfo, ...]:
         """Epoch 0 (initial) followed by one epoch per active config command."""
-        out = [self._initial_epoch]
-        for c in self.active_config():
-            assert c.start is not None
-            assert c.target is not None
-            out.append(
-                EpochInfo(
-                    (c.seq, c.version),
-                    c.start,
-                    tuple(c.classes),
-                    c.target,
-                    c.profile,
-                    c.duration_s,
-                    c.is_step or not c.classes,
-                )
+        hit = self._epochs
+        if hit is not None and hit[0] == self.version:
+            return hit[1]
+        out = (self._initial_epoch, *self._ep)
+        self._epochs = (self.version, out)
+        return out
+
+    def _rx_arrays(
+        self, rx: StreamId
+    ) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.int64]]:
+        k = self.n_tiles
+        cfg_k = self._kc.get(rx)
+        if cfg_k is None:
+            cfg = self._act_c
+            cfg_k = (
+                np.stack([c.k_tiles[rx] for c in cfg]).astype(np.int64)
+                if cfg
+                else np.zeros((0, k), np.int64)
             )
-        return tuple(out)
+            self._kc[rx] = cfg_k
+        en_k = self._ke.get(rx)
+        en_kc = self._kec.get(rx)
+        if en_k is None or en_kc is None:
+            en = self._act_e
+            en_k = (
+                np.stack([c.k_tiles[rx] for c in en]).astype(np.int64)
+                if en
+                else np.zeros((0, k), np.int64)
+            )
+            en_kc = np.array([c.k_centre[rx] for c in en], dtype=np.int64)
+            self._ke[rx] = en_k
+            self._kec[rx] = en_kc
+            self._env = np.array([bool(c.enabled) for c in en], dtype=bool)
+        return cfg_k, en_k, en_kc
 
     def view(self, rx: StreamId) -> RxView:
         """Per-RX switch-sample arrays (cached per book version)."""
         hit = self._views.get(rx)
         if hit is not None and hit[0] == self.version:
             return hit[1]
-        cfg = self.active_config()
-        en = self.active_enabled()
-        k = self.n_tiles
-        cfg_k = (
-            np.stack([c.k_tiles[rx] for c in cfg]).astype(np.int64)
-            if cfg
-            else np.zeros((0, k), np.int64)
-        )
-        en_k = (
-            np.stack([c.k_tiles[rx] for c in en]).astype(np.int64)
-            if en
-            else np.zeros((0, k), np.int64)
-        )
-        en_kc = np.array([c.k_centre[rx] for c in en], dtype=np.int64)
-        en_vals = np.array([bool(c.enabled) for c in en], dtype=bool)
-        splits = np.unique(np.concatenate([cfg_k.ravel(), en_k.ravel(), en_kc]))
+        cfg_k, en_k, en_kc = self._rx_arrays(rx)
+        splits = _sorted_unique(np.concatenate([cfg_k.ravel(), en_k.ravel(), en_kc]))
         v = RxView(
-            cfg_k, self.epochs(), en_k, en_kc, en_vals, bool(self.spec.initial.enabled), splits
+            cfg_k,
+            self.epochs(),
+            en_k,
+            en_kc,
+            self._env,
+            bool(self.spec.initial.enabled),
+            splits,
         )
         self._views[rx] = (self.version, v)
         return v
@@ -697,15 +854,13 @@ class PanelBook:
     def config_at(self, t: Fraction) -> PanelConfig:
         """Configuration in effect at RIS time ``t``: the target of the latest config command
         with ``t_i <= t`` (dominant states) and the enable flag at ``t``."""
-        st = self.spec.initial.state if self._head is None else self._head.target
-        for c in self.active_config():
-            if c.t <= t:
-                assert c.target is not None
-                st = c.target
-        en = self._head_enabled
-        for c in self.active_enabled():
-            if c.t <= t:
-                en = bool(c.enabled)
+        c = self.latest_config_at(t)
+        if c is None:
+            st = self.spec.initial.state if self._head is None else self._head.target
+        else:
+            st = c.target
+        i = bisect.bisect_right(self._act_e, t, key=_cmd_t)
+        en = bool(self._act_e[i - 1].enabled) if i else self._head_enabled
         assert st is not None
         return PanelConfig(self.spec.panel, np.asarray(st, np.int16).copy(), en)
 
@@ -721,8 +876,10 @@ class PanelBook:
         return PanelConfig(self.spec.panel, np.asarray(st, np.int16).copy(), en)
 
     def pending_after(self, t: Fraction) -> list[PanelCommand]:
-        """Active commands with ``t_i > t``."""
-        return [c for c in self.active_config() + self.active_enabled() if c.t > t]
+        """Active commands with ``t_i > t`` (config commands first, each kind in order)."""
+        ic = bisect.bisect_right(self._act_c, t, key=_cmd_t)
+        ie = bisect.bisect_right(self._act_e, t, key=_cmd_t)
+        return self._act_c[ic:] + self._act_e[ie:]
 
     def prune(self, frontier: Mapping[StreamId, int], keep: int = 256) -> None:
         """Drop config commands that no RX can use again (keeps memory bounded).
@@ -730,10 +887,11 @@ class PanelBook:
         Command i is dropped when command i+1 is entirely before every RX frontier (every
         tile of every RX has switched to i+1 or later), so no sample >= the frontier is
         rendered with epoch i. Only runs when more than ``keep`` commands are listed.
+        Superseded commands at or before the new head's time go too.
         """
         if len(self.config) <= keep:
             return
-        act = self.active_config()
+        act = self._act_c
         if len(act) <= keep:
             return
         cut = 0  # commands act[:cut] are never rendered again
@@ -746,11 +904,27 @@ class PanelBook:
         if cut < 1:
             return
         head = act[cut - 1]
-        drop = {id(c) for c in act[:cut]}
-        # superseded commands at or before the head's time are final and never rendered
-        self.config = [
-            c for c in self.config if id(c) not in drop and not (c.superseded and c.t <= head.t)
-        ]
+        # every listed command up to the head in (t, seq) order is dropped: the active ones
+        # are act[:cut] and the others are superseded with t <= head.t. A superseded command
+        # at head.t with a larger seq would have superseded the head, so none exists; the
+        # general filter below covers that case anyway.
+        hi = bisect.bisect_right(self.config, (head.t, head.seq), key=_cmd_ts)
+        tail = self.config[hi:]
+        if (
+            hi
+            and self.config[hi - 1] is head
+            and not any(c.superseded for c in tail[: bisect.bisect_right(tail, head.t, key=_cmd_t)])
+        ):
+            self.config = tail
+        else:  # pragma: no cover - defensive (see above)
+            drop = {id(c) for c in act[:cut]}
+            self.config = [
+                c for c in self.config if id(c) not in drop and not (c.superseded and c.t <= head.t)
+            ]
+        del act[:cut]
+        del self._ep[:cut]
+        for rx, arr in self._kc.items():
+            self._kc[rx] = arr[cut:]
         self._head = head
         self._initial_epoch = EpochInfo(
             (-2, head.seq),
@@ -761,7 +935,9 @@ class PanelBook:
             None,
             True,
         )
-        self._recompose()
+        # a full recompose would leave every remaining command unchanged: the first one
+        # starts from the head exactly as before, and the rest depend on their predecessor
+        self.version += 1
 
 
 def _same_mixture(a: Mixture, b: Mixture) -> bool:
@@ -839,8 +1015,18 @@ class CommandManager:
         self.records: list[CommandRecord] = []
         self._pending_final: list[CommandRecord] = []
         self._seq = 0
-        self._scheduled: list[PanelCommand] = []
+        # scheduled (not yet applied) commands by seq, and per RX a min-heap of
+        # (max_j k_{r,j} + 1, seq, generation): the frontier at which the command has
+        # switched on every tile of that RX. ``_hits[seq]`` counts the RXs passed so far
+        # under the current generation (a geometry re-map starts a new one).
+        self._pending: dict[int, PanelCommand] = {}
+        self._rx_heaps: dict[StreamId, list[tuple[int, int, int]]] = {}
+        self._gen: dict[int, int] = {}
+        self._hits: dict[int, int] = {}
+        self._unswept = 0  # superseded commands not yet swept by update_statuses
+        self._no_rx: set[int] = set()  # scheduled commands with no RX (applied at once)
         self._tau_cache: dict[tuple[PanelId, StreamId, int | None, Fraction], float] = {}
+        self._tau_q: dict[tuple[PanelId, StreamId, int | None, Fraction], Fraction] = {}
         # times of the geometry events applied to the model (static scenes: tau is constant
         # between two of them, so the cache is keyed by the latest event at or before t)
         self._geometry_events: list[Fraction] = []
@@ -859,8 +1045,26 @@ class CommandManager:
 
     @property
     def has_pending(self) -> bool:
-        """Whether some accepted command is not yet applied on every RX."""
-        return bool(self._scheduled)
+        """Whether some accepted command is not yet applied on every RX (or a superseded
+        one is still to be swept by :meth:`update_statuses`)."""
+        return bool(self._pending) or self._unswept > 0
+
+    def _track(self, c: PanelCommand) -> None:
+        """(Re)register a scheduled command in the per-RX heaps with a new generation."""
+        g = self._gen.get(c.seq, -1) + 1
+        self._gen[c.seq] = g
+        self._hits[c.seq] = 0
+        self._pending[c.seq] = c
+        for s, k in c.k_tiles.items():
+            heapq.heappush(self._rx_heaps.setdefault(s, []), (int(k.max()) + 1, c.seq, g))
+        if not c.k_tiles:
+            self._no_rx.add(c.seq)
+
+    def _untrack(self, seq: int) -> None:
+        self._pending.pop(seq, None)
+        self._no_rx.discard(seq)
+        self._gen.pop(seq, None)
+        self._hits.pop(seq, None)
 
     def caps(self) -> dict[PanelId, RisCapabilities]:
         """Capabilities of every panel."""
@@ -883,6 +1087,19 @@ class CommandManager:
             return hit
         return float(self.delay_fn(panel, rx, t, tile))
 
+    def _tau_exact(self, panel: PanelId, rx: StreamId, t: Fraction, tile: int | None) -> Fraction:
+        """``Fraction(tau(panel, rx, t, tile))`` (the exact value of the float), cached per
+        geometry epoch in static scenes like :meth:`tau`."""
+        if not self.static_delays:
+            return Fraction(self.tau(panel, rx, t, tile))
+        i = bisect.bisect_right(self._geometry_events, t)
+        key = (panel, rx, tile, self._geometry_events[i - 1] if i else Fraction(0))
+        hit = self._tau_q.get(key)
+        if hit is None:
+            hit = Fraction(self.tau(panel, rx, t, tile))
+            self._tau_q[key] = hit
+        return hit
+
     def geometry_changed(self, t: Fraction) -> None:
         """A timed geometry event at ``t`` was applied to the propagation model, so
         ``tau_RIS->r`` may change from ``t`` on (I3 evaluates it at the switch time with the
@@ -892,9 +1109,12 @@ class CommandManager:
         applied before any sample at or after ``t`` is computed."""
         bisect.insort(self._geometry_events, t)
         self._tau_cache.clear()
+        self._tau_q.clear()
         for pid, book in self.books.items():
             touched = False
-            for c in book.config + book.enabled:
+            tail = book.config[bisect.bisect_left(book.config, t, key=_cmd_t) :]
+            tail += book.enabled[bisect.bisect_left(book.enabled, t, key=_cmd_t) :]
+            for c in tail:
                 if c.t < t or c.superseded or c.record.status != "scheduled":
                     continue
                 ks, kc = self.switch_samples(pid, c.t)
@@ -906,9 +1126,12 @@ class CommandManager:
                 rec.lateness_samples = {
                     s: rec.k_applied[s] - rec.k_req[s] for s in rec.k_applied if s in rec.k_req
                 }
+                if c.seq in self._pending:
+                    self._track(c)  # new switch samples: new heap entries
                 touched = True
             if touched:
-                book.version += 1  # invalidates the per-RX views and the renderer's caches
+                # rebuilds the per-RX arrays; invalidates the views and the renderer's caches
+                book.switch_samples_changed()
 
     def switch_samples(
         self, panel: PanelId, t: Fraction
@@ -924,13 +1147,13 @@ class CommandManager:
                 tiles[p.stream] = np.full(k_count, k, dtype=np.int64)
                 centre[p.stream] = k
                 continue
-            kc = to_ticks(t + Fraction(self.tau(panel, p.stream, t, None)), p.rate)
+            kc = to_ticks(t + self._tau_exact(panel, p.stream, t, None), p.rate)
             if k_count == 1:
                 tiles[p.stream] = np.array([kc], dtype=np.int64)
             else:
                 tiles[p.stream] = np.array(
                     [
-                        to_ticks(t + Fraction(self.tau(panel, p.stream, t, j)), p.rate)
+                        to_ticks(t + self._tau_exact(panel, p.stream, t, j), p.rate)
                         for j in range(k_count)
                     ],
                     dtype=np.int64,
@@ -1123,17 +1346,20 @@ class CommandManager:
         applied physical configuration given directly (bypasses the pipeline).
         """
         policy = late_policy or req.late_policy
-        f_time = max(
-            (from_ticks(int(frontier.get(p.stream, 0)), p.rate) for p in self.rx_ports),
-            default=Fraction(0),
-        )
+
+        def f_time() -> Fraction:  # the frontier time of a refused request's record
+            return max(
+                (from_ticks(int(frontier.get(p.stream, 0)), p.rate) for p in self.rx_ports),
+                default=Fraction(0),
+            )
+
         if req.op not in ("ris.set_config", "ris.set_enabled"):
             return self.reject(
                 req,
                 ErrorCode.NOT_PERMITTED,
                 f"{req.op} is not a panel command",
                 None,
-                frontier_time=f_time,
+                frontier_time=f_time(),
             )
         spec = self.specs.get(req.target)
         if spec is None:
@@ -1142,7 +1368,7 @@ class CommandManager:
                 ErrorCode.UNKNOWN_TARGET,
                 f"unknown panel {req.target!r}",
                 None,
-                frontier_time=f_time,
+                frontier_time=f_time(),
             )
         if req.at.kind == "sample" and req.at.stream not in self.rates:
             return self.reject(
@@ -1150,7 +1376,7 @@ class CommandManager:
                 ErrorCode.UNKNOWN_TARGET,
                 f"unknown RX stream {req.at.stream!r}",
                 None,
-                frontier_time=f_time,
+                frontier_time=f_time(),
             )
         t_req = self.requested_time(req, frontier)
         assert t_req is not None
@@ -1192,8 +1418,8 @@ class CommandManager:
                 book = self.books[req.target]
                 want = book.config_at(t_req)
                 if kind == "config" and vals is not None:
-                    act = [c for c in book.active_config() if c.t <= t_req]
-                    last_ctrl = act[-1].controls if act else None
+                    last = book.latest_config_at(t_req)
+                    last_ctrl = last.controls if last is not None else None
                     ctrl = spec.initial_controls.copy() if last_ctrl is None else last_ctrl.copy()
                     if idx is None:
                         ctrl = vals.copy()
@@ -1210,7 +1436,10 @@ class CommandManager:
                 out_rej.late = True
                 return out_rej
             t_app = self.earliest_time(req.target, frontier, t_req)
-        ks, kc = self.switch_samples(req.target, t_app)
+        if t_app == t_req:  # same switch time: the same samples (copies, not shared dicts)
+            ks, kc = dict(ks_req), dict(kc_req)
+        else:
+            ks, kc = self.switch_samples(req.target, t_app)
         seq = self.next_seq()
         rec = self._record(
             req.cmd_id,
@@ -1249,7 +1478,11 @@ class CommandManager:
         )
         book = self.books[req.target]
         sup = book.insert(cmd)
-        self._scheduled.append(cmd)
+        for c in sup:  # superseded: never applied (swept at the next status update)
+            if c.seq in self._pending:
+                self._untrack(c.seq)
+                self._unswept += 1
+        self._track(cmd)
         rec.config_hash = book.config_after(cmd).config_hash()
         self.records.append(rec)
         final = [c.record for c in sup]
@@ -1267,22 +1500,36 @@ class CommandManager:
     # ------------------------------------------------------------------ statuses
     def update_statuses(self, frontier: Mapping[StreamId, int]) -> list[CommandRecord]:
         """Mark scheduled commands applied once every RX frontier passed every tile switch
-        sample; returns the records that became final."""
+        sample; returns the records that became final.
+
+        The per-RX heaps assume a frontier never decreases from one call to the next (the
+        engine's group cursors and the batch path's time only advance): a heap entry, once
+        popped, is not pushed back."""
         out: list[CommandRecord] = []
-        if not self._scheduled:
+        self._unswept = 0
+        if not self._pending:
             return out
-        keep: list[PanelCommand] = []
-        for c in self._scheduled:
+        done: list[int] = []
+        gen, hits, pending = self._gen, self._hits, self._pending
+        for s, heap in self._rx_heaps.items():
+            f = int(frontier.get(s, 0))
+            while heap and heap[0][0] <= f:
+                _need, seq, g = heapq.heappop(heap)
+                if gen.get(seq) != g:
+                    continue  # applied, superseded or re-mapped since this entry was pushed
+                hits[seq] += 1
+                if hits[seq] == len(pending[seq].k_tiles):
+                    done.append(seq)
+        if self._no_rx:  # a command without RX switch samples is applied at the first update
+            done.extend(self._no_rx)
+            self._no_rx.clear()
+        for seq in sorted(done):  # scheduling (seq) order, as a scan would report them
+            c = pending[seq]
+            self._untrack(seq)
             r = c.record
-            if r.status != "scheduled":
-                continue
-            if all(int(frontier.get(s, 0)) > int(k.max()) for s, k in c.k_tiles.items()):
-                late = any(v != 0 for v in r.lateness_samples.values()) or c.late
-                r.status = "late_applied" if late else "applied"
-                out.append(r)
-            else:
-                keep.append(c)
-        self._scheduled = keep
+            late = any(v != 0 for v in r.lateness_samples.values()) or c.late
+            r.status = "late_applied" if late else "applied"
+            out.append(r)
         if out:
             for book in self.books.values():
                 book.prune(frontier)

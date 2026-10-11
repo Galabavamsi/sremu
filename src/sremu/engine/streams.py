@@ -745,6 +745,11 @@ class RxStream:
             if cfg.cfo_hz != 0.0
             else None
         )
+        # conj(exp(+j*phi_pn(k))): a pure function of the absolute index (bitwise chunk
+        # invariant, tests/runtime/test_elision_determinism.py), so whole blocks serve every
+        # page instead of one Wiener-bridge evaluation per page
+        pn = self.pn
+        self._pn = BlockCache(lambda k, n: np.conj(pn.phasor(k, n))) if pn is not None else None
         self.history = HistoryRing(history)
         self.queue: deque[_Entry] = deque()
         self.queued = 0
@@ -779,8 +784,8 @@ class RxStream:
         # bitwise commutative, which broke chunk invariance on Linux (DESIGN D-4)
         if n and self._lo is not None:
             y = np.multiply(y, self._lo(k0, n))
-        if n and self.pn is not None:
-            y = np.multiply(y, np.conj(self.pn.phasor(k0, n)))
+        if n and self._pn is not None:
+            y = np.multiply(y, self._pn(k0, n))
         if self.capture is not None:
             self.capture.append((k0, np.array(y, dtype=np.complex128, copy=True)))
         if self._plain_front:  # unit scale, no clip: RxFrontEnd.apply is a plain cast
