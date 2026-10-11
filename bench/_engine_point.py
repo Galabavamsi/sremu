@@ -20,8 +20,11 @@ F4 attaches the run-directory recorder of ``sremu run`` (``sremu.commands.run.ma
 SigMF IQ of every RX, events, metrics) writing to a temporary directory that is deleted
 afterwards (its size is reported). F5 serves the engine over the control socket and native
 ZMQ data plane (``sremu.transport.control_server``) to two client processes
-(:mod:`bench._zmq_client`): one sends every TX stream, one reads every RX stream; the RTF of
-F5 is measured by the RX client (virtual time read / wall time after its warm-up samples).
+(:mod:`bench._zmq_client`): one sends every TX stream, one reads every RX stream. The F5 RTF
+is end-to-end: virtual time after the warm-up delivered to the RX client over the wall time
+from the served engine's warm-up boundary (server clock) to the RX client's last sample
+(client clock); see :func:`measure_zmq` for why a starved or buffering client cannot
+inflate it, and for the client-only and server-only figures recorded beside it.
 
 :func:`measure_paced` runs ``Emulator.run_paced`` headless: 5 s warm-up then the measured
 window (section 12.3), with the pacer's deadline statistics restarted at the end of the
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import statistics
 import subprocess
@@ -39,14 +43,24 @@ import sys
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from ._common import REPO
 
-__all__ = ["build_engine", "measure_lockstep", "measure_paced", "prewarm", "snapshot_facts"]
+__all__ = [
+    "F5_METRIC",
+    "ServerMarks",
+    "build_engine",
+    "f5_rates",
+    "measure_lockstep",
+    "measure_paced",
+    "measure_zmq",
+    "prewarm",
+    "snapshot_facts",
+]
 
 
 def _resolve(scenario: Mapping[str, Any]) -> Any:
@@ -220,6 +234,8 @@ def measure_lockstep(
             rep_wall_target_s=rep_wall_target_s,
             point_wall_cap_s=point_wall_cap_s,
             rtf_floor=rtf_floor,
+            warm_wall_max_s=warm_wall_max_s,
+            pilot_wall_max_s=pilot_wall_max_s,
         )
     t_build = time.perf_counter()
     res = _resolve(scenario)
@@ -332,6 +348,129 @@ def _decisions(eng: Any) -> dict[str, Any]:
 
 # =========================================================================== F5 (ZMQ)
 
+F5_METRIC = (
+    "end-to-end: virtual time after the warm-up delivered to the RX client process (min over "
+    "RX streams) / wall time from the served engine's warm-up boundary (server clock) to the "
+    "RX client's last sample (client clock); perf_counter_ns, system-wide"
+)
+"""The F5 RTF definition (``rtf_source`` of every F5 point)."""
+CLIENT_GRACE_S = 90.0
+"""Wall time a client process may take beyond its own deadline (start, imports, connect,
+teardown) before the benchmark kills it and fails the point."""
+STALL_IDLE_S = 30.0
+"""A repetition whose RX client read nothing during the last ``STALL_IDLE_S`` before its
+wall deadline fails as a stall (never reported as a truncated measurement)."""
+
+
+class ServerMarks:
+    """``Emulator.on_page`` hook of a served F5 engine (runs on the engine thread).
+
+    ``t_warm_ns``: ``time.perf_counter_ns()`` (benchmark process) at which every RX stream
+    has computed and queued its first ``n_warm`` samples, i.e. the end of the last warm-up
+    page. Lockstep computes pages in order on that thread, so no sample after the warm-up
+    is computed, let alone delivered, before ``t_warm_ns``. ``progress()`` gives the samples
+    computed on every RX stream and the wall time of the last computed page."""
+
+    def __init__(self, rx_ids: Sequence[str], n_warm: int) -> None:
+        self.n_warm = int(n_warm)
+        self._ids = frozenset(rx_ids)
+        self._warm: set[str] = set()
+        self.k: dict[str, int] = dict.fromkeys(rx_ids, 0)
+        self.t_ns: dict[str, int] = {}
+        self.t_warm_ns: int | None = None
+
+    def __call__(self, rx: str, k0: int, k1: int) -> None:
+        if rx not in self._ids:
+            return
+        now = time.perf_counter_ns()
+        if k1 > self.k[rx]:
+            self.k[rx] = k1
+            self.t_ns[rx] = now
+        if self.t_warm_ns is None and k1 >= self.n_warm:
+            self._warm.add(rx)
+            if len(self._warm) == len(self._ids):
+                self.t_warm_ns = now
+
+    def progress(self) -> tuple[int, int | None]:
+        """(samples computed on every RX stream, wall time of the last computed page)."""
+        return min(self.k.values(), default=0), max(self.t_ns.values(), default=None)
+
+
+def f5_rates(
+    client: Mapping[str, Any],
+    server: Mapping[str, Any],
+    *,
+    n_warm: int,
+    rate: Fraction | float,
+    t_launch_ns: int,
+    t_done_ns: int,
+) -> dict[str, Any]:
+    """The rates of one served F5 run (see :func:`measure_zmq`).
+
+    ``client``: the RX client's JSON line (:mod:`bench._zmq_client`); ``server``:
+    ``{"t_warm_ns", "k_min", "t_last_ns"}`` from :class:`ServerMarks`; ``t_launch_ns`` /
+    ``t_done_ns``: the benchmark process's clock just before it started the clients and
+    just after the RX client exited. Returns:
+
+    * ``rtf`` (end-to-end, the F5 figure): ``v / (t_end_client - t_warm_server)`` with ``v``
+      the virtual time after the warm-up that reached the RX client (min over streams);
+    * ``rtf_rx_client`` (diagnostic, the pre-fix F5 figure): ``v`` over the client's own
+      span from reading its warm-up samples to its last sample;
+    * ``rtf_server`` (diagnostic): virtual time computed after the warm-up over the engine's
+      span from the warm-up boundary to its last computed page;
+    * ``rtf_whole_run`` (sizing fallback): everything delivered, warm-up included, over the
+      client's span from the resume to its last sample;
+    * ``clock_ok``: the client's timestamps are ordered with the benchmark's own
+      (``t_launch <= t_start <= t_resume <= t_end <= t_done`` and ``t_warm_server <=
+      t_end``). If not (process clocks not comparable), ``rtf`` falls back to the smaller of
+      the server-only and client-only figures (``rtf_basis`` says so)."""
+    rate_f = float(rate)
+    got_min = int(client["got_min"])
+    v = max(0, got_min - int(n_warm)) / rate_f
+    t_end = int(client["t_end_ns"])
+    t_cw = client.get("t_warm_ns")
+    t_sw = server.get("t_warm_ns")
+    t_sl = server.get("t_last_ns")
+
+    def ratio(virt: float, wall_s: float | None) -> float | None:
+        return virt / wall_s if wall_s is not None and wall_s > 0 and virt > 0 else None
+
+    wall_c = None if t_cw is None else (t_end - int(t_cw)) * 1e-9
+    v_s = max(0, int(server.get("k_min", 0)) - int(n_warm)) / rate_f
+    wall_s = None if t_sw is None or t_sl is None else (int(t_sl) - int(t_sw)) * 1e-9
+    wall_w = (t_end - int(client["t_resume_ns"])) * 1e-9
+    clock_ok = bool(
+        t_launch_ns <= int(client["t_start_ns"]) <= int(client["t_resume_ns"]) <= t_end <= t_done_ns
+        and (t_sw is None or v <= 0 or int(t_sw) <= t_end)
+    )
+    rtf_c = ratio(v, wall_c)
+    rtf_s = ratio(v_s, wall_s)
+    if clock_ok:
+        wall_e = None if t_sw is None else (t_end - int(t_sw)) * 1e-9
+        rtf_e = ratio(v, wall_e)
+        basis = "end-to-end"
+    else:
+        cands = [x for x in (rtf_s, rtf_c) if x is not None]
+        rtf_e = min(cands) if cands else None
+        wall_e = v / rtf_e if rtf_e else None
+        basis = "min(server, rx client): process clocks not comparable"
+    return {
+        "virtual_s": v,
+        "rtf": rtf_e,
+        "wall_s": wall_e,
+        "rtf_basis": basis,
+        "rtf_rx_client": rtf_c,
+        "wall_rx_client_s": wall_c,
+        "rtf_server": rtf_s,
+        "wall_server_s": wall_s,
+        "virtual_server_s": v_s,
+        "rtf_whole_run": ratio(got_min / rate_f, wall_w),
+        "aggregate_sps": (
+            float(client.get("samples_after_warm_total", 0)) / wall_e if wall_e else None
+        ),
+        "clock_ok": clock_ok,
+    }
+
 
 def _served_state(srv: Any, eng: Any, n_total: int) -> str:
     """Where a served run stood when a client failed (for the error message): per rate
@@ -346,6 +485,19 @@ def _served_state(srv: Any, eng: Any, n_total: int) -> str:
     )
 
 
+def _last_json(text: str) -> dict[str, Any]:
+    lines = text.strip().splitlines()
+    if not lines:
+        raise RuntimeError("ZMQ client printed no result line")
+    out: dict[str, Any] = json.loads(lines[-1])
+    return out
+
+
+def _median(xs: Sequence[float | None]) -> float | None:
+    ys = [x for x in xs if x is not None]
+    return statistics.median(ys) if ys else None
+
+
 def measure_zmq(
     scenario: Mapping[str, Any],
     *,
@@ -356,19 +508,75 @@ def measure_zmq(
     rep_wall_target_s: float = 6.0,
     point_wall_cap_s: float = 240.0,
     rtf_floor: float | None = None,
+    warm_wall_max_s: float = 20.0,
+    pilot_wall_max_s: float = 10.0,
+    inject: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """F5: lockstep served over native ZMQ to a TX client process and an RX client process.
 
-    Each repetition is a fresh served engine whose run lasts exactly ``warmup + dur`` (the
-    clients send/read that many samples per stream; the RX client times only the samples
-    after the warm-up), whatever the scenario's ``run.duration_s``. The recorder of F4 stays
-    attached (cumulative feature sets). With ``rtf_floor`` set and the pilot below it the
-    point is ``below_floor`` (no repetitions); ``counters`` are the transport's worst
-    ``bad_packets`` and ``seq_errors`` over the pilot and the repetitions."""
+    **Metric.** F5 measures the sustained end-to-end rate of the served engine with real
+    client processes: the virtual time after the warm-up that reached the RX client (min
+    over RX streams) divided by the wall time over which those samples were both computed by
+    the server and delivered to the RX client. That span starts at the served engine's
+    warm-up boundary, timestamped on the server (:class:`ServerMarks`: every RX stream has
+    computed its first ``n_warm`` samples; lockstep computes no later sample before it), and
+    ends when the RX client read its last sample, timestamped on the client. Both are
+    ``time.perf_counter_ns()``, which is system-wide (Linux ``CLOCK_MONOTONIC``, Windows
+    ``QueryPerformanceCounter`` since Python 3.10), and every run checks the client's
+    timestamps against the benchmark's own launch and completion times (``clock_shared``).
+
+    The span contains every post-warm-up computation and delivery, so a client cannot shrink
+    it: a client starved before its warm-up completes, whose samples the server keeps
+    computing into the loopback/ZMQ buffers, reads them later in a burst, which can only end
+    the span later. A starvation that delays the last sample lowers the figure (the samples
+    did reach the application that late); one that does not leaves it unchanged. The pre-fix
+    F5 figure, which timed only the RX client's own post-warm-up reads (from the moment it
+    had *read* its warm-up samples), is kept as ``rtf_rx_client`` (diagnostic): it agrees
+    with ``rtf`` for an unstarved client and over-states it when the server ran ahead into
+    the buffers while the client was starved (50x in a WSL2 test with a 3 s pause). The
+    engine-only figure ``rtf_server`` (warm-up boundary to the last computed page, server
+    clock) is recorded too; ``rtf <= min(rtf_server, rtf_rx_client)`` up to clock jitter.
+
+    **Runs.** Each repetition (and the pilot) is a fresh served engine whose run lasts
+    exactly ``warmup + dur`` (the clients send/read that many samples per stream), whatever
+    the scenario's ``run.duration_s``. The recorder of F4 stays attached (cumulative feature
+    sets). The pilot (``min_virtual_s / 3`` after the warm-up, at most ``warm_wall_max_s +
+    pilot_wall_max_s`` of wall time) is measured with the same end-to-end metric (falling
+    back to ``rtf_whole_run`` when its warm-up did not complete within that limit) and sizes
+    ``dur`` as in :func:`measure_lockstep`. With ``rtf_floor`` set and the pilot below it the
+    point is ``below_floor`` (no repetitions).
+
+    **Wall cap.** ``point_wall_cap_s`` bounds the whole point, pilot included. A repetition
+    is estimated as the pilot's wall time plus its extra virtual time at the pilot rate; the
+    repetition count is reduced (then ``dur``, down to ``min_virtual_s``) to fit the cap.
+    Every run also has a hard deadline: the RX client stops reading ``wall_max`` seconds
+    after the resume (``min(remaining cap, max(2 x estimate, estimate + 5 s))``) and the run
+    is then measured over what it delivered (``truncated_by_wall``); a repetition that would
+    start with less than its estimate left is skipped (``reps_skipped_cap``); a client still
+    running ``CLIENT_GRACE_S`` after its deadline is killed and fails the point, as does a
+    truncated run whose RX client was idle for ``STALL_IDLE_S`` before its deadline (stall)
+    or whose TX client failed. ``counters`` are the transport's worst ``bad_packets`` and
+    ``seq_errors`` over the pilot and the repetitions.
+
+    **Client CPUs.** The clients pin themselves to ``$SREMU_CLIENT_CPUS`` when it is set
+    (:func:`bench.pin_client_cpus`; B2 sets it per slot) and report the affinity they ran
+    with (``client_affinity``).
+
+    ``inject`` (tests, stress): ``rx_pause_s`` / ``rx_pause_at`` (the RX client sleeps once
+    after every stream read ``rx_pause_at`` samples; default 0, before its warm-up ends),
+    ``server_page_sleep_s`` (the served engine sleeps after each computed page: a known
+    engine cost), ``rep_server_page_sleep_s`` (the same in the repetitions only: a pilot
+    that over-states the rate)."""
     from bench._scenes import ris_path_check
     from sremu.commands.run import make_recorder
     from sremu.transport.control_server import ControlServer, ServerConfig
 
+    t_point0 = time.perf_counter()
+
+    def left() -> float:
+        return point_wall_cap_s - (time.perf_counter() - t_point0)
+
+    inj = dict(inject or {})
     res = _resolve(scenario)
     d = res.scenario.model_dump(mode="python")
     probe = build_engine(res, "F4", traffic={})
@@ -381,10 +589,11 @@ def measure_zmq(
     rx_ids = [s for s, c in probe.configs.items() if c.direction == "rx"]
     fc = float(next(iter(probe.configs.values())).fc_hz)
     warm = _round_pages(Fraction(warmup_s), page)
+    n_warm = int(warm * rate)
 
-    def one(dur: Fraction) -> dict[str, Any]:
+    def one(dur: Fraction, wall_max_s: float, page_sleep_s: float) -> dict[str, Any]:
+        w_one = time.perf_counter()
         n_total = int((warm + dur) * rate)
-        n_warm = int(warm * rate)
         rec_dir = Path(tempfile.mkdtemp(prefix="sremu_b2_zmq_"))
         # the served run must last as long as the clients stream: with the scenario's
         # run.duration_s (1 s in the bench scenes) a pilot RTF above ~0.16 sized dur past
@@ -399,6 +608,16 @@ def measure_zmq(
             unopened_tx="wait",
             duration_s=warm + dur,
         )
+        marks = ServerMarks(rx_ids, n_warm)
+        eng.on_page(marks)
+        if page_sleep_s > 0:
+            first = rx_ids[0]
+
+            def _load(rx: str, k0: int, k1: int) -> None:
+                if rx == first:
+                    time.sleep(page_sleep_s)
+
+            eng.on_page(_load)
         sink, close_rec = make_recorder(rec_dir, eng, iq=True, events=True, metrics=True)
         eng.add_sink(sink)
         cfg = ServerConfig(
@@ -443,66 +662,171 @@ def measure_zmq(
                 str(n_total),
                 "--warm",
                 str(n_warm),
+                "--wall-max-s",
+                f"{wall_max_s:.3f}",
             ]
-            procs = [
+            if inj.get("rx_pause_s"):
+                rx_cmd += [
+                    "--pause-at",
+                    str(int(inj.get("rx_pause_at", 0))),
+                    "--pause-s",
+                    repr(float(inj["rx_pause_s"])),
+                ]
+            t_launch = time.perf_counter_ns()
+            rx_p, tx_p = (
                 subprocess.Popen(
                     c, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
                 for c in (rx_cmd, tx_cmd)
-            ]
-            c_role = {id(p): r for p, r in zip(procs, ("rx", "tx"), strict=True)}
-            outs = []
+            )
+            tx_res: dict[str, Any] | None = None
             try:
-                for p in procs:
-                    o, e = p.communicate(timeout=max(600.0, point_wall_cap_s * 4))
-                    if p.returncode != 0:
-                        msg = f"ZMQ client failed ({c_role[id(p)]}): {e.strip()[-2000:]}"
-                        for q in procs:  # e.g. an RX timeout caused by a failed TX client
-                            if q is not p and q.poll() not in (None, 0):
-                                eq = q.communicate()[1].strip()[-2000:]
-                                msg += f" [{c_role[id(q)]} client exit {q.returncode}: {eq}]"
-                        raise RuntimeError(f"{msg} [{_served_state(srv, eng, n_total)}]")
-                    outs.append(o)
-            finally:
-                for p in procs:  # never leave a client behind (e.g. blocked on a dead server)
+                try:
+                    o, e = rx_p.communicate(timeout=wall_max_s + CLIENT_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(
+                        f"ZMQ RX client still running {wall_max_s + CLIENT_GRACE_S:.0f} s after "
+                        f"its launch (deadline {wall_max_s:.0f} s after the resume) "
+                        f"[{_served_state(srv, eng, n_total)}]"
+                    ) from None
+                t_done = time.perf_counter_ns()
+
+                def tx_failure() -> str | None:
+                    if tx_p.poll() in (None, 0):
+                        return None
+                    eq = tx_p.communicate()[1].strip()[-2000:]
+                    return f"tx client exit {tx_p.returncode}: {eq}"
+
+                if rx_p.returncode != 0:
+                    msg = f"ZMQ client failed (rx): {e.strip()[-2000:]}"
+                    why = tx_failure()  # e.g. an RX timeout caused by a failed TX client
+                    if why:
+                        msg += f" [{why}]"
+                    raise RuntimeError(f"{msg} [{_served_state(srv, eng, n_total)}]")
+                rx_res = _last_json(o)
+                if rx_res["truncated"]:
+                    why = tx_failure()
+                    if why:
+                        raise RuntimeError(
+                            f"ZMQ client failed (tx) before the RX deadline: {why} "
+                            f"[{_served_state(srv, eng, n_total)}]"
+                        )
+                    if float(rx_res["idle_at_stop_s"]) > STALL_IDLE_S:
+                        raise RuntimeError(
+                            f"ZMQ RX client read nothing during the last "
+                            f"{rx_res['idle_at_stop_s']:.1f} s before its deadline (stall; "
+                            f"got {rx_res['got']} of {n_total}) "
+                            f"[{_served_state(srv, eng, n_total)}]"
+                        )
+                    # the served run ends early: the TX client is killed below
+                else:
+                    try:
+                        o2, e2 = tx_p.communicate(timeout=CLIENT_GRACE_S)
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError(
+                            f"ZMQ TX client still running {CLIENT_GRACE_S:.0f} s after the RX "
+                            f"client completed [{_served_state(srv, eng, n_total)}]"
+                        ) from None
+                    if tx_p.returncode != 0:
+                        raise RuntimeError(
+                            f"ZMQ client failed (tx): {e2.strip()[-2000:]} "
+                            f"[{_served_state(srv, eng, n_total)}]"
+                        )
+                    tx_res = _last_json(o2)
+            finally:  # never leave a client behind (e.g. blocked on a dead server)
+                for p in (rx_p, tx_p):
                     if p.poll() is None:
                         p.kill()
                         p.communicate()
-            rx_res = json.loads(outs[0].strip().splitlines()[-1])
             counters = dict(srv.counters.snapshot())
         finally:
             srv.stop()
             close_rec()
             eng.close()
             shutil.rmtree(rec_dir, ignore_errors=True)
-        virt = float(dur)
-        wall = rx_res["wall_after_warm_s"]
+        k_min, t_last = marks.progress()
+        rates = f5_rates(
+            rx_res,
+            {"t_warm_ns": marks.t_warm_ns, "k_min": k_min, "t_last_ns": t_last},
+            n_warm=n_warm,
+            rate=rate,
+            t_launch_ns=t_launch,
+            t_done_ns=t_done,
+        )
         return {
-            "virtual_s": virt,
-            "rtf": virt / wall if wall > 0 else None,
-            "wall_s": wall,
-            "aggregate_sps": rx_res["samples_after_warm_total"] / wall if wall > 0 else None,
+            **rates,
+            "virtual_s_planned": float(dur),
+            "delivered_virtual_s": int(rx_res["got_min"]) / float(rate),
+            "truncated_by_wall": bool(rx_res["truncated"]),
+            "wall_max_s": wall_max_s,
+            "run_wall_s": time.perf_counter() - w_one,
+            "max_gap_s": rx_res.get("max_gap_s"),
+            "rx_pause_s": rx_res.get("pause_s"),
             "transport_counters": counters,
+            "client_affinity": {
+                "rx": rx_res.get("affinity"),
+                "tx": None if tx_res is None else tx_res.get("affinity"),
+            },
+            "timestamps_ns": {
+                "launch": t_launch,
+                "server_warm": marks.t_warm_ns,
+                "server_last_page": t_last,
+                "client_start": rx_res.get("t_start_ns"),
+                "client_resume": rx_res.get("t_resume_ns"),
+                "client_warm": rx_res.get("t_warm_ns"),
+                "client_end": rx_res.get("t_end_ns"),
+                "done": t_done,
+            },
         }
 
+    sleep_all = float(inj.get("server_page_sleep_s", 0.0))
+    sleep_reps = float(inj.get("rep_server_page_sleep_s", 0.0)) or sleep_all
     pilot_dur = _round_pages(Fraction(min_virtual_s) / 3, page)
-    pilot = one(pilot_dur)
-    rtf_p = pilot["rtf"] or 1e-9
+    pilot_max = max(1.0, min(warm_wall_max_s + pilot_wall_max_s, left()))
+    pilot = one(pilot_dur, pilot_max, sleep_all)
+    pilot_basis = pilot["rtf_basis"]
+    rtf_p = pilot["rtf"]
+    if rtf_p is None:  # warm-up not completed within the pilot's wall limit
+        rtf_p = pilot["rtf_whole_run"]
+        pilot_basis = "whole run (warm-up not completed within the pilot's wall limit)"
+    rtf_p = rtf_p or 1e-9
     below = rtf_floor is not None and rtf_p < rtf_floor
+    min_dur = _round_pages(Fraction(min_virtual_s), page)
     dur_pages = _round_pages(page * target_pages, page)
     dur_wall = _round_pages(Fraction(rtf_p * rep_wall_target_s).limit_denominator(10**6), page)
-    dur = max(min(dur_pages, dur_wall), _round_pages(Fraction(min_virtual_s), page))
+    dur = max(min(dur_pages, dur_wall), min_dur)
+
+    def estimate(dur_: Fraction) -> float:
+        # the pilot's wall time (start-up, warm-up, its own samples, teardown) plus the
+        # virtual time a repetition has beyond what the pilot delivered, at the pilot rate
+        extra = float(warm + dur_) - pilot["delivered_virtual_s"]
+        return float(pilot["run_wall_s"]) + max(0.0, extra) / rtf_p
+
+    est = estimate(dur)
     n_reps = 0 if below else reps
-    while n_reps > 1 and float(dur) / rtf_p * n_reps > point_wall_cap_s:
+    while n_reps > 1 and est * n_reps > left():
         n_reps -= 1
-    out_reps = [one(dur) for _ in range(n_reps)]
-    rtfs = [r["rtf"] for r in out_reps if r["rtf"] is not None]
-    agg = [r["aggregate_sps"] for r in out_reps if r["aggregate_sps"] is not None]
+    if n_reps == 1 and est > left() and dur > min_dur:  # shrink dur so one repetition fits
+        room = (left() - float(pilot["run_wall_s"])) * rtf_p + pilot["delivered_virtual_s"]
+        fit = Fraction(max(0.0, room - float(warm))).limit_denominator(10**6)
+        dur = max(min_dur, min(dur, math.floor(fit / page) * page))
+        est = estimate(dur)
+    out_reps: list[dict[str, Any]] = []
+    skipped = 0
+    for i in range(n_reps):
+        rem = left()
+        if rem < est and (out_reps or rem < 5.0):  # it could not complete within the cap
+            skipped = n_reps - i
+            break
+        out_reps.append(one(dur, max(1.0, min(rem, max(2.0 * est, est + 5.0))), sleep_reps))
+    runs = (pilot, *out_reps)
     # over the pilot too: a below-floor point has no repetitions (max() of nothing raised)
     bad = {
-        k: max(int(r["transport_counters"].get(k, 0)) for r in (pilot, *out_reps))
+        k: max(int(r["transport_counters"].get(k, 0)) for r in runs)
         for k in ("bad_packets", "seq_errors")
     }
+    rtfs = [r["rtf"] for r in out_reps if r["rtf"] is not None]
+    agg = [r["aggregate_sps"] for r in out_reps if r["aggregate_sps"] is not None]
     return {
         "status": "below_floor" if below else "ok",
         "rtf_floor": rtf_floor,
@@ -512,14 +836,26 @@ def measure_zmq(
         "build_s": None,
         "warmup_virtual_s": float(warm),
         "warmup_wall_s": None,
-        "pilot_rtf": pilot["rtf"],
+        "pilot_rtf": rtf_p if pilot["rtf"] is not None or pilot["rtf_whole_run"] else None,
+        "pilot_rtf_basis": pilot_basis,
+        "pilot_rtf_rx_client": pilot["rtf_rx_client"],
+        "pilot_rtf_server": pilot["rtf_server"],
         "pilot_virtual_s": pilot["virtual_s"],
-        "pilot_truncated_by_wall": False,
+        "pilot_wall_s": pilot["run_wall_s"],
+        "pilot_truncated_by_wall": pilot["truncated_by_wall"],
         "reps": len(out_reps),
+        "reps_skipped_cap": skipped,
+        "reps_truncated": sum(1 for r in out_reps if r["truncated_by_wall"]),
+        "est_rep_wall_s": est,
         "rep_virtual_s": float(dur),
+        "rep_virtual_s_measured": [r["virtual_s"] for r in out_reps],
         "rep_pages": int(dur / page),
         "rtf_median": statistics.median(rtfs) if rtfs else None,
         "rtf_reps": rtfs,
+        "rtf_rx_client_median": _median([r["rtf_rx_client"] for r in out_reps]),
+        "rtf_rx_client_reps": [r["rtf_rx_client"] for r in out_reps],
+        "rtf_server_median": _median([r["rtf_server"] for r in out_reps]),
+        "rtf_server_reps": [r["rtf_server"] for r in out_reps],
         "rtf_min_worst": None,
         "aggregate_msps_median": statistics.median(agg) / 1e6 if agg else None,
         "counters": bad,
@@ -528,7 +864,15 @@ def measure_zmq(
         "recorded_bytes": None,
         "ris_check": chk,
         "facts": facts,
-        "rtf_source": "RX client process: virtual time read after warm-up / wall time",
+        "point_wall_s": time.perf_counter() - t_point0,
+        "point_wall_cap_s": point_wall_cap_s,
+        "clock": time.get_clock_info("perf_counter").implementation,
+        "clock_shared": all(r["clock_ok"] for r in runs),
+        "client_cpus_requested": os.environ.get("SREMU_CLIENT_CPUS") or None,
+        "client_affinity": (out_reps[0] if out_reps else pilot)["client_affinity"],
+        "rtf_source": F5_METRIC,
+        "f5_runs": [{"run": "pilot", **pilot}]
+        + [{"run": f"rep{i}", **r} for i, r in enumerate(out_reps)],
     }
 
 

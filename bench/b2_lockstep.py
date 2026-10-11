@@ -7,6 +7,14 @@ Usage::
     # large Linux host (c7i.48xlarge): server plan, one pinned worker process per point
     python -m bench.b2_lockstep --plan server --workers auto --cpus-per-point 16 \\
         --budget-min 150 --out $SREMU_JOB_OUT
+    # re-run part of a plan: only some feature sets and/or explicit point ids
+    python -m bench.b2_lockstep --plan server --features F5 --workers 4 ...
+    python -m bench.b2_lockstep --plan server --points L1_N240_R1_fs1e6_F5,... ...
+
+**Point filter** (``--features``, ``--points``): only the plan's points with those feature
+sets and/or ids run (series pruning still applies within what is left); every plan point
+that the filter removes is listed in ``dropped.csv`` with the reason ``point filter``. An id
+that is not in the plan is an error.
 
 The full product L x N x RIS count x f_s x feature set (8 x 5 x 4 x 4 x 6 = 3840 points;
 section 12.2) is pruned by a plan; every product point that is not run is listed in
@@ -48,9 +56,22 @@ after reserving ``--reserve-cores`` cores of node 0 for the OS and this orchestr
 per point (``python -m bench.b2_lockstep --worker-point ...``), which pins every one of its
 threads to its slot (``sched_setaffinity`` per thread, so the OpenBLAS pool started by
 ``import numpy`` moves too) before numba starts and runs ``--cpus-per-point`` numba threads
-(S6 points: T threads in the same slot); F5 client processes share the slot. Each row
-records its slot, the affinity read back, the CPU masks of all worker threads after the
-point (``all_threads_in_slot``) and how many other points ran concurrently.
+(S6 points: T threads in the same slot). Each row records its slot, the affinity read back,
+the CPU masks of all worker threads after the point (``all_threads_in_slot``) and how many
+other points ran concurrently.
+
+**F5 client processes** (``--f5-clients``): with ``separate`` (default) the TX and RX client
+processes of an F5 point run on CPUs outside every slot and the reserved cores: the free
+whole cores of the slot's NUMA node, divided among that node's slots (shared round-robin
+when there are fewer free cores than slots), else the host's free CPUs; with no free CPU at
+all they fall back to the slot (recorded). A deployment runs its SDR applications on their
+own cores, and the F5 metric is the served engine's end-to-end rate, so the clients must not
+take CPU time from the 16 numba threads of the slot (with ``slot``, the pre-fix placement,
+they do: the F5 - F4 difference then mixes the transport cost with oversubscription of the
+slot). Free CPUs exist when ``--workers`` uses fewer slots than fit, or when a node's cores
+do not divide into whole slots (c7i.48xlarge, 16-CPU slots: cores 41-47 of node 0). Rows of
+F5 points record ``client_affinity_mode``, the CPUs requested (``client_cpus``) and the
+affinity each client process read back (``client_affinity``).
 Concurrent points share the socket's L3 cache, memory bandwidth and power budget, so an
 **isolation check** reruns ``--isolation-check`` reference points alone on one slot after the
 sweep and reports ``rtf_isolated / rtf_parallel`` (``isolation.csv``). On Windows the
@@ -62,7 +83,11 @@ each, shortened so one repetition takes about ``--rep-wall-s`` of wall time and 
 0.3 s of virtual time (two complete 100 ms RTF windows). This deviates from the paced
 protocol of section 12.3 (>= 60 s, >= 1e4 pages): the table states the virtual time and
 pages of every repetition. Every scene with panels asserts a non-zero RIS term on every link
-(:func:`bench._scenes.ris_path_check`); the per-point RIS-minus-LOS power is recorded.
+(:func:`bench._scenes.ris_path_check`); the per-point RIS-minus-LOS power is recorded. F5
+(:func:`bench._engine_point.measure_zmq`) reports the end-to-end RTF (server warm-up
+boundary to the RX client's last sample) as ``rtf_median``, with the RX client's own figure
+(``rtf_rx_client_median``, the pre-fix metric) and the engine-only figure
+(``rtf_server_median``) beside it, and enforces ``--point-cap-s`` with hard per-run deadlines.
 
 **Background load** (sequential mode): before each point the host is sampled for
 ``--point-quiet-window-s``; with ``--point-quiet-wait-s`` > 0 the suite waits (up to that long)
@@ -286,6 +311,69 @@ def make_series(points: Sequence[Point], slot_cpus: int | None = None) -> list[S
     return sorted(groups.values(), key=lambda s: (s.tier, s.order))
 
 
+FILTER_REASON = "point filter (--features/--points)"
+
+
+def filter_points(
+    points: Sequence[Point],
+    features: Sequence[str] | None = None,
+    ids: Sequence[str] | None = None,
+) -> tuple[list[Point], list[Point]]:
+    """``(kept, removed)``: the points whose feature set is in ``features`` and whose id is in
+    ``ids`` (None: no condition), in plan order. Raises ``ValueError`` for an unknown feature
+    set or an id that is not in the plan."""
+    if features is not None:
+        bad = sorted(set(features) - set(FEATURES))
+        if bad:
+            raise ValueError(f"unknown feature set(s) {bad}; one of {list(FEATURES)}")
+    if ids is not None:
+        known = {point_id(p) for p in points}
+        missing = [i for i in ids if i not in known]
+        if missing:
+            raise ValueError(f"point id(s) not in the plan: {missing}")
+    kept: list[Point] = []
+    removed: list[Point] = []
+    for p in points:
+        ok = (features is None or p["F"] in features) and (ids is None or point_id(p) in ids)
+        (kept if ok else removed).append(p)
+    return kept, removed
+
+
+def client_cpu_sets(
+    cores: Sequence[Any], slots: Sequence[Sequence[int]], reserved: Sequence[int]
+) -> list[list[int]]:
+    """CPUs for the F5 client processes of each slot (see the module docstring): the free
+    whole cores (outside every slot and ``reserved``) of the slot's NUMA node, split among
+    that node's slots in contiguous runs (each slot gets at least one core; with fewer free
+    cores than slots, slot ``i`` gets core ``i mod n``), else every free CPU of the host;
+    ``[]`` when the host has no free CPU."""
+    used = {c for s in slots for c in s} | set(reserved)
+    free = [k for k in cores if not used.intersection(k.cpus)]
+    node_of = {c: k.node for k in cores for c in k.cpus}
+    all_free = sorted(c for k in free for c in k.cpus)
+    out: list[list[int]] = [[] for _ in slots]
+    by_node: dict[int, list[int]] = {}
+    for i, s in enumerate(slots):
+        by_node.setdefault(node_of.get(s[0], 0), []).append(i)
+    for node, idx in by_node.items():
+        mine = [k for k in free if k.node == node]
+        if not mine:
+            for i in idx:
+                out[i] = list(all_free)
+            continue
+        if len(mine) < len(idx):
+            for j, i in enumerate(idx):
+                out[i] = sorted(mine[j % len(mine)].cpus)
+            continue
+        per, extra = divmod(len(mine), len(idx))
+        pos = 0
+        for j, i in enumerate(idx):
+            n = per + (1 if j < extra else 0)
+            out[i] = sorted(c for k in mine[pos : pos + n] for c in k.cpus)
+            pos += n
+    return out
+
+
 # =========================================================================== rows
 
 
@@ -357,7 +445,31 @@ def _row(
             "scenario_sha256": r["scenario_sha256"],
         }
     )
+    if "rtf_rx_client_median" in r:  # F5 (bench._engine_point.measure_zmq)
+        row.update({k: r.get(k) for k in F5_ROW_KEYS})
+        row["client_cpus"] = r.get("client_cpus_requested")
     return row
+
+
+F5_ROW_KEYS = (
+    "rtf_rx_client_median",
+    "rtf_rx_client_reps",
+    "rtf_server_median",
+    "rtf_server_reps",
+    "pilot_rtf_basis",
+    "pilot_rtf_rx_client",
+    "pilot_rtf_server",
+    "pilot_wall_s",
+    "reps_truncated",
+    "reps_skipped_cap",
+    "rep_virtual_s_measured",
+    "est_rep_wall_s",
+    "point_wall_cap_s",
+    "clock",
+    "clock_shared",
+    "client_affinity",
+)
+"""Extra point-result fields copied into the rows of F5 points."""
 
 
 def _settings(a: argparse.Namespace) -> dict[str, Any]:
@@ -436,8 +548,16 @@ def worker_main(a: argparse.Namespace) -> int:
 
     cpus = bench.parse_cpu_list(a.cpus) if a.cpus else None
     pin = pin_self(cpus) if cpus else {"applied": False, "note": "unpinned"}
-    if cpus:
+    # F5 client processes (bench._zmq_client pins itself to $SREMU_CLIENT_CPUS): the CPUs the
+    # orchestrator gave this slot's clients, else the slot itself
+    client_mode = a.client_mode
+    if a.client_cpus:
+        os.environ["SREMU_CLIENT_CPUS"] = a.client_cpus
+    elif cpus:
         os.environ["SREMU_CLIENT_CPUS"] = a.cpus
+        client_mode = "slot" if client_mode in (None, "slot") else f"slot ({client_mode}: none)"
+    else:
+        client_mode = "unpinned"
     threads = a.threads or (len(cpus) if cpus else None)
     bench.set_threads(threads)
     import numba
@@ -459,6 +579,11 @@ def worker_main(a: argparse.Namespace) -> int:
         traceback.print_exc()
     wall = time.perf_counter() - t0
     row = _row(p, r, err, wall, numba.get_num_threads())
+    if p["F"] == "F5":
+        row["client_affinity_mode"] = client_mode
+        row.setdefault("client_cpus", os.environ.get("SREMU_CLIENT_CPUS"))
+        if r is not None:
+            out["f5_runs"] = r.get("f5_runs")  # per-run rates and raw timestamps
     # every thread of the worker (numba pool, OpenBLAS pool, recorder) after the point
     masks = bench.thread_affinities()
     out["thread_affinities_end"] = masks
@@ -514,11 +639,15 @@ class ParallelRunner:
         budget_s: float,
         t_start: float,
         point_timeout_s: float,
+        client_cpus: Sequence[Sequence[int]] | None = None,
+        client_mode: str = "slot",
     ) -> None:
         self.run = run
         self.slots = slots
         self.settings = settings
         self.pinned = pinned
+        self.client_cpus = client_cpus
+        self.client_mode = client_mode
         self.budget_s = budget_s
         self.t_start = t_start
         self.point_timeout_s = point_timeout_s
@@ -556,7 +685,10 @@ class ParallelRunner:
         if self.pinned:
             from bench._cpus import format_cpu_list
 
-            cmd += ["--cpus", format_cpu_list(cpus)]
+            cmd += ["--cpus", format_cpu_list(cpus), "--client-mode", self.client_mode]
+            ccpus = self.client_cpus[slot] if self.client_cpus is not None else None
+            if self.client_mode == "separate" and ccpus:
+                cmd += ["--client-cpus", format_cpu_list(ccpus)]
         env = dict(os.environ)
         env["NUMBA_NUM_THREADS"] = str(threads)
         kw: dict[str, Any] = {}
@@ -780,12 +912,30 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
         "--point-quiet-wait-s", type=float, default=0.0, help="max wait for a quiet host per point"
     )
     ap.add_argument("--point-quiet-busy", type=float, default=0.30, help="quiet threshold")
+    ap.add_argument(
+        "--features", default=None, help="run only these feature sets of the plan (e.g. F5)"
+    )
+    ap.add_argument("--points", default=None, help="run only these point ids of the plan")
+    ap.add_argument(
+        "--f5-clients",
+        choices=("separate", "slot"),
+        default="separate",
+        help="CPUs of the F5 client processes (pinned parallel runs): free cores or the slot",
+    )
     # worker mode (internal)
     ap.add_argument("--worker-point", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--worker-out", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--worker-scen-dir", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--cpus", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--client-cpus", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--client-mode", default=None, help=argparse.SUPPRESS)
     return ap.parse_args(argv)
+
+
+def _csv_arg(text: str | None) -> list[str] | None:
+    if text is None:
+        return None
+    return [x.strip() for x in text.split(",") if x.strip()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -826,10 +976,19 @@ def main(argv: list[str] | None = None) -> int:
         default_threads = int(numba.get_num_threads())
     host_cpus = sum(len(k.cpus) for k in cores)
     if a.plan == "server":
-        points = server_points(default_threads, host_cpus if parallel else None, a.quick)
+        plan_pts = server_points(default_threads, host_cpus if parallel else None, a.quick)
     else:
         slices = [s.strip() for s in a.slices.split(",") if s.strip()]
-        points = slice_points(slices, a.quick, max_threads=default_threads)
+        plan_pts = slice_points(slices, a.quick, max_threads=default_threads)
+    feats, ids = _csv_arg(a.features), _csv_arg(a.points)
+    try:
+        points, filtered = filter_points(plan_pts, feats, ids)
+    except ValueError as exc:
+        print(f"bench.b2_lockstep: {exc}", file=sys.stderr)
+        return 2
+    client_cpus = (
+        client_cpu_sets(cores, slots, reserved) if pinned and a.f5_clients == "separate" else None
+    )
     settings = _settings(a)
     iso_k = (6 if parallel else 0) if a.isolation_check is None else a.isolation_check
     timeout_s = a.point_timeout_s or max(600.0, 3 * a.point_cap_s + 120.0)
@@ -840,6 +999,10 @@ def main(argv: list[str] | None = None) -> int:
         "anchors": [list(x) for x in ANCHORS] if a.plan == "server" else None,
         "quick": a.quick,
         "points": [point_id(p) for p in points],
+        "point_filter": None
+        if feats is None and ids is None
+        else {"features": feats, "points": ids, "plan_points": len(plan_pts)},
+        "f5_clients": a.f5_clients if pinned else "unpinned",
         "features": FEATURE_TEXT,
         "settings": settings,
         "budget_min": a.budget_min,
@@ -867,9 +1030,28 @@ def main(argv: list[str] | None = None) -> int:
         ">= 1e4 pages); every point states its virtual time and pages.",
         "The full product is pruned by the plan and by series pruning (see dropped.csv).",
         "SIM benchmark geometry; LOS and RIS paths only (no ground, walls or diffuse).",
-        "F5 RTF is measured by the RX client process (includes transport and clients).",
+        "F5 RTF is end-to-end (served engine's warm-up boundary to the RX client's last "
+        "sample: computation, transport and client delivery); rtf_rx_client_median is the "
+        "RX client's own figure (pre-fix metric, over-states a starved client), "
+        "rtf_server_median the engine-only figure.",
         "below_floor rows carry only a pilot RTF (sizing estimate), not a measured RTF.",
     ]
+    if feats is not None or ids is not None:
+        caveats.append(
+            f"Partial run: point filter features={feats} points={ids} "
+            f"({len(points)} of {len(plan_pts)} plan points; the rest in dropped.csv)."
+        )
+    if any(p["F"] == "F5" for p in points):
+        caveats.append(
+            "F5 client processes ran "
+            + (
+                "on CPUs outside every slot (free cores; see slots.json client_cpus)."
+                if client_cpus is not None
+                else "on the slot's own CPUs."
+                if pinned
+                else "unpinned."
+            )
+        )
     if parallel:
         caveats += [
             f"{len(slots)} points ran concurrently, each pinned to {default_threads} CPUs of "
@@ -897,6 +1079,10 @@ def main(argv: list[str] | None = None) -> int:
                 "reserved": _cpus.format_cpu_list(reserved),
                 "pinned": pinned,
                 "orchestrator_pin": orchestrator_pin,
+                "f5_clients": a.f5_clients if pinned else "unpinned",
+                "client_cpus": None
+                if client_cpus is None
+                else [_cpus.format_cpu_list(c) for c in client_cpus],
                 "cores": [{"node": k.node, "cpus": list(k.cpus)} for k in cores],
             },
         )
@@ -904,16 +1090,35 @@ def main(argv: list[str] | None = None) -> int:
     series = make_series(points, default_threads if parallel else None)
     if parallel:
         rows, extra_dropped, iso_rows = _run_parallel(
-            run, series, slots, cores, settings, pinned, a, t_start, timeout_s, iso_k
+            run,
+            series,
+            slots,
+            cores,
+            settings,
+            pinned,
+            a,
+            t_start,
+            timeout_s,
+            iso_k,
+            client_cpus,
         )
     else:
         rows, extra_dropped = _run_sequential(run, series, settings, default_threads, a, t_start)
         iso_rows = []
     run.write_csv("points.csv", rows)
-    run.write_csv("dropped.csv", dropped_points(points, a.plan) + extra_dropped)
+    filter_dropped = [{**_drop_fields(q), "reason": FILTER_REASON} for q in filtered]
+    run.write_csv("dropped.csv", dropped_points(plan_pts, a.plan) + filter_dropped + extra_dropped)
     if iso_rows:
         run.write_csv("isolation.csv", iso_rows)
-    summary = _summary(rows, points, extra_dropped, iso_rows, a.plan, time.perf_counter() - t_start)
+    summary = _summary(
+        rows,
+        points,
+        extra_dropped,
+        iso_rows,
+        a.plan,
+        time.perf_counter() - t_start,
+        filtered=len(filtered),
+    )
     run.finish(summary)
     print(f"B2 written to {run.dir}")
     return 0 if not summary["points_failed"] else 1
@@ -965,6 +1170,10 @@ def _run_sequential(
                 numba.set_num_threads(default_threads)
                 load = run.load.window_stats(i_load)
                 row = _row(p, r, err, wall, default_threads)
+                if p["F"] == "F5":
+                    env_cpus = os.environ.get("SREMU_CLIENT_CPUS") or None
+                    row["client_affinity_mode"] = "env" if env_cpus else "unpinned"
+                    row.setdefault("client_cpus", env_cpus)
                 row.update(
                     {
                         "bg_busy_before": None if gate is None else gate["last_busy_fraction"],
@@ -1004,6 +1213,7 @@ def _run_parallel(
     t_start: float,
     timeout_s: float,
     iso_k: int,
+    client_cpus: Sequence[Sequence[int]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     pr = ParallelRunner(
         run,
@@ -1013,6 +1223,8 @@ def _run_parallel(
         budget_s=a.budget_min * 60.0,
         t_start=t_start,
         point_timeout_s=timeout_s,
+        client_cpus=client_cpus,
+        client_mode=a.f5_clients,
     )
     shared = [s for s in series if not s.exclusive]
     excl = [s for s in series if s.exclusive]
@@ -1071,6 +1283,8 @@ def _summary(
     iso_rows: list[dict[str, Any]],
     plan: str,
     wall_s: float,
+    *,
+    filtered: int = 0,
 ) -> dict[str, Any]:
     ok = [r for r in rows if r["status"] == "ok"]
     failed = [r for r in rows if r["status"] in ("failed", "timeout")]
@@ -1092,7 +1306,8 @@ def _summary(
         "points_failed": len(failed),
         "points_interrupted": interrupted,
         "failed_point_ids": [r["point_id"] for r in failed],
-        "points_not_in_plan": len(dropped_points(points, plan)),
+        "points_not_in_plan": len(dropped_points(points, plan)) - filtered,
+        "points_filtered": filtered,
         "runtime_dropped": reasons,
         "wall_s": wall_s,
         "base_point_rtf": next(
