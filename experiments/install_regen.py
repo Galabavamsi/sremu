@@ -2,8 +2,8 @@
 into the sremu tree).
 
     python experiments/install_regen.py JOB_OUT [--report REPORT.json] [--apply]
-        [--accept-differences] [--with-latency] [--aws-run-id RUN_ID]
-        [--paper DIR] [--sremu DIR]
+        [--accept-differences] [--with-latency] [--with-ee] [--with-junit]
+        [--aws-run-id RUN_ID] [--paper DIR] [--sremu DIR]
 
 ``JOB_OUT`` is the fetched job output (``<research>/aws/results/<run_id>/out``) of
 ``experiments/regenerate_paper_data.sh``; ``REPORT.json`` (default
@@ -37,6 +37,22 @@ What it copies (and nothing else):
   inputs of F3, F5 and F12 in ``figures/registry.yaml`` (exact string replacement, each
   occurrence count checked first).
 
+* ``--with-ee``: ``JOB_OUT/paper_results/E-E`` into ``paper/sweeps/results/E-E`` (the GNU Radio
+  demonstration; ``E-E-laptop``, the laptop throughput sweeps, is left alone). Needs the
+  report's ``ee`` scope: performed, the export check and the job's ``_regen/ee_check.json``
+  passed, no missing file; differing files need ``--accept-differences`` as above. The
+  hashes of the received IQ and decisions must agree across the job's repetitions; agreement
+  with the replaced laptop run is reported by the comparison, not required.
+* ``--with-junit``: ``JOB_OUT/junit/sremu_paper.xml`` and its sidecar ``sremu_paper.meta.json``
+  into ``paper/generated/junit/`` (replacing the files of the same name). The paper reads every
+  ``*.xml`` there as ONE record (gen_results.py: Table IV counts and ``numJunit*``;
+  check_claims.py: a test skipped in any file is not green), so the Linux junit replaces the
+  Windows one instead of joining it, and any other ``*.xml`` there refuses the install. Needs
+  the report's ``junit`` scope: performed and ok, sidecar = the job's commit and a clean tree.
+  Final builds also require the junit commit to equal ``sremu.lock``: the job's junit names
+  C1; when the lock moves to the results-only commit C2 (validation runs installed into
+  sremu), re-run the Linux junit at C2 (research/analysis/regen_coverage.md procedure).
+
 With ``--aws-run-id``, ``E-B-arc/meta.json`` ``run`` gets the runner's run id and launch
 record (``research/aws/launches.jsonl``). V-LAB is never touched.
 """
@@ -58,6 +74,9 @@ LAUNCHES = SREMU.parent / "research" / "aws" / "launches.jsonl"
 RESULT_DIRS = ("E-A", "E-A-IQ", "E-B1", "E-B2", "E-C", "E-F/ber", "E-B-arc")
 ROOT_FILES = ("summary.json", "meta.json", "manifest.json")
 LATENCY_DIR = "E-F/latency"
+EE_DIR = "E-E"
+JUNIT_NAME = "sremu_paper.xml"  # the job's junit/ and the paper's generated/junit/
+JUNIT_META = "sremu_paper.meta.json"
 STUDIES = {  # study -> (job subdirectory, run name, gen_results constant)
     "V-TANG": ("tang", "vtang", "TANG_RUN"),
     "V-CFO": ("cfo", "vcfo", "CFO_RUN"),
@@ -81,7 +100,9 @@ def _write_text(p: Path, text: str) -> None:
         fh.write(text)
 
 
-def preconditions(rep: dict[str, Any], accept: bool) -> list[str]:
+def preconditions(
+    rep: dict[str, Any], accept: bool, *, with_ee: bool = False, with_junit: bool = False
+) -> list[str]:
     """Reasons to refuse (empty: install allowed)."""
     bad = []
     if rep.get("mode") != "full" or rep.get("new_is_smoke_tree"):
@@ -103,13 +124,55 @@ def preconditions(rep: dict[str, Any], accept: bool) -> list[str]:
             f"{len(rep['failed_files'])} files differ ({rep['failed_files'][:5]}); review them "
             "and pass --accept-differences to install the regenerated values"
         )
+    if with_ee:
+        ee = rep.get("ee") or {}
+        if not ee.get("performed"):
+            bad.append(f"--with-ee: the report has no E-E comparison ({ee.get('reason')})")
+        else:
+            chk = ee.get("check") or {}
+            if not chk.get("ok"):
+                bad.append(f"--with-ee: the E-E export check failed: {chk.get('problems')}")
+            if not (ee.get("job_check") or {}).get("ok"):
+                bad.append("--with-ee: the job's _regen/ee_check.json is missing or failed")
+            if ee.get("missing_files"):
+                bad.append(f"--with-ee: E-E files missing: {ee['missing_files'][:5]}")
+            if ee.get("failed_files") and not accept:
+                bad.append(
+                    f"--with-ee: {len(ee['failed_files'])} E-E files differ "
+                    f"({ee['failed_files'][:5]}); review them and pass --accept-differences"
+                )
+    if with_junit:
+        ju = rep.get("junit") or {}
+        side = ju.get("sidecar") or {}
+        job_commit = (rep.get("code_check") or {}).get("job_commit")
+        if not ju.get("performed"):
+            bad.append(f"--with-junit: the report has no junit ({ju.get('reason')})")
+        elif not ju.get("ok"):
+            bad.append(
+                f"--with-junit: the junit check failed: {(ju.get('check') or {}).get('problems')}"
+            )
+        if ju.get("performed") and (
+            side.get("sremu_commit") != job_commit or side.get("sremu_dirty") is not False
+        ):
+            bad.append(
+                f"--with-junit: the junit sidecar names {side.get('sremu_commit')} (dirty "
+                f"{side.get('sremu_dirty')}), not the job's clean commit {job_commit}"
+            )
     return bad
 
 
-def plan(job: Path, paper: Path, sremu: Path, with_latency: bool) -> dict[str, Any]:
+def plan(
+    job: Path,
+    paper: Path,
+    sremu: Path,
+    with_latency: bool,
+    *,
+    with_ee: bool = False,
+    with_junit: bool = False,
+) -> dict[str, Any]:
     """Everything the install would do, checked against the trees (raises on a problem)."""
     new = job / "paper_results"
-    dirs = [*RESULT_DIRS, *([LATENCY_DIR] if with_latency else [])]
+    dirs = [*RESULT_DIRS, *([LATENCY_DIR] if with_latency else []), *([EE_DIR] if with_ee else [])]
     copies = []
     for d in dirs:
         if not (new / d).is_dir():
@@ -119,6 +182,18 @@ def plan(job: Path, paper: Path, sremu: Path, with_latency: bool) -> dict[str, A
         if not (new / f).is_file():
             raise SystemExit(f"{new / f} missing")
         copies.append((new / f, paper / "sweeps" / "results" / f))
+    if with_junit:
+        gj = paper / "generated" / "junit"
+        others = sorted(p.name for p in gj.glob("*.xml") if p.name != JUNIT_NAME)
+        if others:
+            raise SystemExit(
+                f"{gj} holds other junit files {others}: the paper merges every *.xml there "
+                "(Table IV counts, claim evidence); move them out first"
+            )
+        for name in (JUNIT_NAME, JUNIT_META):
+            if not (job / "junit" / name).is_file():
+                raise SystemExit(f"{job / 'junit' / name} missing")
+            copies.append((job / "junit" / name, gj / name))
     gr = (paper / "tools" / "gen_results.py").read_text(encoding="utf-8")
     runs = []
     renames: dict[str, tuple[str, str]] = {}
@@ -188,17 +263,37 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="write (default: print the plan)")
     ap.add_argument("--accept-differences", action="store_true")
     ap.add_argument("--with-latency", action="store_true", help="also E-F/latency (MEAS)")
+    ap.add_argument("--with-ee", action="store_true", help="also E-E (GNU Radio, Linux)")
+    ap.add_argument(
+        "--with-junit",
+        action="store_true",
+        help="also the job's Linux paper junit into generated/junit (replaces sremu_paper.xml)",
+    )
     ap.add_argument("--aws-run-id", default=None)
     ap.add_argument("--paper", type=Path, default=PAPER)
     ap.add_argument("--sremu", type=Path, default=SREMU)
     a = ap.parse_args(argv)
     job = a.job.resolve()
     rep = _json(a.report or job / "compare_report.json")
-    bad = preconditions(rep, a.accept_differences)
+    bad = preconditions(rep, a.accept_differences, with_ee=a.with_ee, with_junit=a.with_junit)
     if bad:
         print("refusing:\n  " + "\n  ".join(bad))
         return 1
-    p = plan(job, a.paper.resolve(), a.sremu.resolve(), a.with_latency)
+    p = plan(
+        job,
+        a.paper.resolve(),
+        a.sremu.resolve(),
+        a.with_latency,
+        with_ee=a.with_ee,
+        with_junit=a.with_junit,
+    )
+    if a.with_junit:
+        side = (rep.get("junit") or {}).get("sidecar") or {}
+        print(
+            f"note   junit of {side.get('sremu_commit')} on {side.get('host')}: a final build "
+            "needs sremu.lock = that commit; with the lock at a later results-only commit, "
+            "re-run the Linux junit there"
+        )
     for src, dst in p["copies"]:
         print(f"copy   {src} -> {dst}")
     for src, dst in p["runs"]:

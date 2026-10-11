@@ -107,7 +107,12 @@ def test_f5_end_to_end_rtf_is_not_inflated_by_a_starved_rx_client() -> None:
     Windows the whole run waits in the loopback buffers (client-only figure ~400x the
     end-to-end one); on WSL2 either that or part of it still waits in the server's queues
     when the client wakes and arrives ~0.9 s later (TCP zero-window probe backoff; ~4x).
-    Whatever the buffering, the end-to-end figure never exceeds the engine-only one."""
+    Whatever the buffering, the end-to-end figure never exceeds the engine-only one.
+
+    The checks compare wall-clock rates of three runs made one after another, so a busy host
+    (e.g. the full suite with 8 xdist workers on 16 vCPU) can push the unpaused and the 0.8 s
+    figures apart by more than the tolerance. Up to 3 attempts are made; the test passes only
+    if one attempt meets every check, and reports each failed attempt otherwise."""
     sc = _scene("1")
     kw: dict[str, Any] = {
         "reps": 0,
@@ -115,31 +120,58 @@ def test_f5_end_to_end_rtf_is_not_inflated_by_a_starved_rx_client() -> None:
         "min_virtual_s": "0.6",
         "point_wall_cap_s": 60.0,
     }
-    ref = _engine_point.measure_zmq(sc, inject=SLOW_ENGINE, **kw)
-    short = _engine_point.measure_zmq(sc, inject={**SLOW_ENGINE, "rx_pause_s": 0.8}, **kw)
-    long = _engine_point.measure_zmq(sc, inject={**SLOW_ENGINE, "rx_pause_s": 3.0}, **kw)
-    for r in (ref, short, long):
-        assert r["status"] == "ok" and r["reps"] == 0 and r["clock_shared"]
-        assert r["pilot_rtf_basis"] == "end-to-end"
-        assert r["pilot_virtual_s"] == pytest.approx(0.2, rel=0.01)
-        assert 0.03 < r["pilot_rtf_server"] < 0.15  # the injected engine rate
-        assert r["pilot_rtf"] <= 1.02 * r["pilot_rtf_server"]
-    # unstarved: the three figures agree
-    e2e = ref["pilot_rtf"]
-    assert _close(e2e, ref["pilot_rtf_rx_client"], 0.10)
-    assert _close(e2e, ref["pilot_rtf_server"], 0.10)
-    # pause shorter than the run: end-to-end unchanged, client-only inflated
-    assert _close(short["pilot_rtf_server"], ref["pilot_rtf_server"], 0.15)  # premise
-    assert _close(short["pilot_rtf"], e2e, 0.15)
-    assert short["pilot_rtf_rx_client"] > 1.25 * short["pilot_rtf"]
-    # pause longer than the run: end-to-end never above the unpaused value
-    assert long["pilot_rtf"] <= 1.05 * e2e
-    assert long["pilot_rtf_rx_client"] > 2 * long["pilot_rtf"]
-    pilot = long["f5_runs"][0]
-    ts = pilot["timestamps_ns"]
-    assert ts["launch"] <= ts["client_start"] <= ts["client_resume"] <= ts["server_warm"]
-    assert ts["server_warm"] <= ts["server_last_page"] <= ts["client_end"] <= ts["done"]
-    assert pilot["rx_pause_s"] == 3.0 and pilot["max_gap_s"] >= 2.9
+
+    def attempt() -> list[str]:
+        ref = _engine_point.measure_zmq(sc, inject=SLOW_ENGINE, **kw)
+        short = _engine_point.measure_zmq(sc, inject={**SLOW_ENGINE, "rx_pause_s": 0.8}, **kw)
+        long = _engine_point.measure_zmq(sc, inject={**SLOW_ENGINE, "rx_pause_s": 3.0}, **kw)
+        bad: list[str] = []
+        for name, r in (("ref", ref), ("short", short), ("long", long)):
+            if not (r["status"] == "ok" and r["reps"] == 0 and r["clock_shared"]):
+                bad.append(f"{name}: status/reps/clock")
+            if r["pilot_rtf_basis"] != "end-to-end":
+                bad.append(f"{name}: basis {r['pilot_rtf_basis']}")
+            if r["pilot_virtual_s"] != pytest.approx(0.2, rel=0.01):
+                bad.append(f"{name}: pilot_virtual_s {r['pilot_virtual_s']}")
+            if not 0.03 < r["pilot_rtf_server"] < 0.15:  # the injected engine rate
+                bad.append(f"{name}: server rtf {r['pilot_rtf_server']:.4f}")
+            if r["pilot_rtf"] > 1.02 * r["pilot_rtf_server"]:
+                bad.append(f"{name}: end-to-end above engine-only")
+        # unstarved: the three figures agree
+        e2e = ref["pilot_rtf"]
+        if not _close(e2e, ref["pilot_rtf_rx_client"], 0.10):
+            bad.append("ref: end-to-end vs client-only")
+        if not _close(e2e, ref["pilot_rtf_server"], 0.10):
+            bad.append("ref: end-to-end vs engine-only")
+        # pause shorter than the run: end-to-end unchanged, client-only inflated
+        if not _close(short["pilot_rtf_server"], ref["pilot_rtf_server"], 0.15):  # premise
+            bad.append("short: engine-only changed (host load)")
+        if not _close(short["pilot_rtf"], e2e, 0.15):
+            bad.append(f"short: end-to-end {short['pilot_rtf']:.4f} vs {e2e:.4f}")
+        if not short["pilot_rtf_rx_client"] > 1.25 * short["pilot_rtf"]:
+            bad.append("short: client-only not inflated")
+        # pause longer than the run: end-to-end never above the unpaused value
+        if not long["pilot_rtf"] <= 1.05 * e2e:
+            bad.append(f"long: end-to-end {long['pilot_rtf']:.4f} above {e2e:.4f}")
+        if not long["pilot_rtf_rx_client"] > 2 * long["pilot_rtf"]:
+            bad.append("long: client-only not inflated")
+        pilot = long["f5_runs"][0]
+        ts = pilot["timestamps_ns"]
+        if not ts["launch"] <= ts["client_start"] <= ts["client_resume"] <= ts["server_warm"]:
+            bad.append("long: timestamp order (start)")
+        if not ts["server_warm"] <= ts["server_last_page"] <= ts["client_end"] <= ts["done"]:
+            bad.append("long: timestamp order (end)")
+        if not (pilot["rx_pause_s"] == 3.0 and pilot["max_gap_s"] >= 2.9):
+            bad.append("long: pause not observed")
+        return bad
+
+    failures: list[list[str]] = []
+    for _ in range(3):
+        bad = attempt()
+        if not bad:
+            return
+        failures.append(bad)
+    pytest.fail(f"no attempt met every check: {failures}")
 
 
 def test_f5_wall_cap_bounds_repetitions_that_the_pilot_undersized() -> None:

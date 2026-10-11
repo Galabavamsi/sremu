@@ -6,8 +6,11 @@
 # were produced on several commits, partly from dirty trees. This script re-runs all of them
 # from one tree, records one git state for every run directory, collects the WP11 results and
 # the lab-arc E-B run with experiments/finalize.py and leaves the validation runs in their
-# own directory. It never writes to the paper or sremu repository
-# (experiments/install_regen.py does that, after compare_regen.py passed).
+# own directory. On Linux it also runs the E-E GNU Radio demonstration (installing GNU Radio
+# from the Ubuntu archive when it is missing) and the paper junit (tools/tasks.py paper-junit,
+# with the GNU Radio tests and the VA-1 record check on the regenerated VA-1 result). It never
+# writes to the paper or sremu repository (experiments/install_regen.py does that, after
+# compare_regen.py passed).
 #
 #   SREMU_JOB_OUT=/opt/job/out bash experiments/regenerate_paper_data.sh [options]
 #
@@ -29,6 +32,24 @@
 #                     only) when the latency step succeeded. Without it the latency is
 #                     measured into ef_latency/ but not collected. Either way a failed latency
 #                     step is reported (exit 1) but does not stop finalize.
+#   --no-ee           skip E-E (GNU Radio through the raw REQ/REP mode). E-E runs only on Linux
+#                     (elsewhere it is skipped with a note): 2 independent repetitions of the
+#                     11 runs of experiments/ee_gnuradio.py (10 static RIS configurations of
+#                     0.3 s and the switching run), then, after every other experiment, the
+#                     throughput runs at 1, 1.92, 3.84 and 5.76 MS/s (2 s each) on the
+#                     otherwise idle host, exported to paper_results/E-E (the layout of
+#                     paper/sweeps/results/E-E).
+#   --no-junit        skip the paper junit (junit/sremu_paper.xml + .meta.json:
+#                     tools/tasks.py paper-junit --git-state _regen/git_state.json, the CI and
+#                     nightly markers, SREMU_GR_PYTHON set, SREMU_VA1_RECORD = the regenerated
+#                     paper_results/E-A-IQ). In --smoke it runs a subset (the VA-1 record, GNU
+#                     Radio and regeneration-tool tests) unless SREMU_REGEN_JUNIT_FULL=1.
+#                     The paper reads every generated/junit/*.xml as one record, so this Linux
+#                     junit REPLACES the Windows one there (install_regen.py --with-junit);
+#                     adding it beside would double Table IV's counts and leave the GNU Radio
+#                     tests "skipped" (skipped in any file = not green). A final build needs the
+#                     junit of the sremu.lock commit: if the lock moves to the results-only
+#                     commit after install, re-run this junit there on Linux.
 #   --plan            run only the checks (specs, git state, provenance) and print the
 #                     steps; no experiment runs. It writes _regen/, so use a fresh
 #                     SREMU_JOB_OUT for the real run.
@@ -54,10 +75,22 @@
 #                     full run on a dirty tree. The run is then NOT pinned; avoid.
 #   SREMU_REGEN_LATENCY_CAP_S
 #                     time limit of the E-F latency step in s (default 900).
+#   SREMU_GR_PYTHON   the interpreter with GNU Radio (default /usr/bin/python3; Ubuntu 24.04's
+#                     gnuradio 3.10.9.2 with the system numpy 1.26). sremu never runs in it and
+#                     GNU Radio never runs in SREMU_PYTHON (numpy >= 2.2); they meet over
+#                     loopback ZMQ only.
+#   SREMU_REGEN_EE_THREADS
+#                     NUMBA_NUM_THREADS of the served engine in the E-E runs (default 16, the
+#                     thread count of the laptop E-E run; the output does not depend on it).
+#   SREMU_REGEN_JUNIT_FULL=1
+#                     the full paper junit in --smoke too.
+#   SREMU_REGEN_JUNIT_CAP_S
+#                     time limit of the junit step in s (default 2400).
 #
 # Exit status: 0 done; 1 a step failed (finalize is skipped when a WP11 step failed; a failed
 # E-B arc run, validation study, V-LAB check or latency run is reported but does not stop
-# finalize, which then runs without --eb-arc / --with-latency); 2 usage or an existing
+# finalize, which then runs without --eb-arc / --with-latency; a failed GNU Radio install,
+# E-E step, E-E check or junit check is reported the same way); 2 usage or an existing
 # output root; 3 a setup check failed; 4 (full mode) every step ran but compare_regen.py
 # found differences from the reference tree. A
 # smoke run's comparison always shows differences (reduced designs), so it does not change
@@ -87,11 +120,24 @@
 #                                                   scenarios/studies/lab_arc.yaml (447 points)
 #      V-TANG, V-FM, V-CFO   validation/<study>/<UTC>_<name>/   validation/<study>/v*.py
 #                                                   --root (after the sweeps, beside VA-1)
+#      GNU Radio (Linux)     _regen/gnuradio.json   experiments.regen_checks gnuradio --install
+#                                                   auto: apt-get install gnuradio when missing
+#                                                   (background, from the end of step 1)
+#      E-E repetitions       ee/rep1, ee/rep2       experiments.ee_gnuradio run --reps 2 (after
+#                                                   the sweeps, beside VA-1 and E-C; lockstep, so
+#                                                   load changes no value or hash)
 #   4. finalize              paper_results/         experiments.finalize --out ... --eb-arc
 #                                                   eb_arc [--with-latency]
+#      E-E throughput        ee/throughput/         ee_gnuradio run --reps 0 --throughput, alone on
+#                                                   the otherwise idle host (MEAS of this host)
+#      E-E export + check    paper_results/E-E/, _regen/ee_check.json (repetitions bitwise
+#                                                   identical, git state = the job's, D24)
+#      paper junit           junit/sremu_paper.xml  + .meta.json (commit from git_state.json, host);
+#                                                   _regen/junit_check.json (failures, skipped spec
+#                                                   ids, GNU Radio and VA-1 tests, claim evidence)
 #   5. compare               compare_report.json    experiments/compare_regen.py (WP11, E-B
-#                                                   arc, validation runs, code check), only
-#                                                   when a reference tree is available
+#                                                   arc, validation runs, E-E, junit record, code
+#                                                   check), only when a reference tree is available
 #   Provenance and logs:     _regen/ (provenance.json, steps.tsv, logs/, specs/)
 #
 # Not re-run here (research/analysis/regen_coverage.md has the reasons and the procedure):
@@ -116,8 +162,16 @@
 # O(log n) command timeline of 309c633; with the current engine one laptop worker took 1.1 s
 # for an E-B1 point and 7.8-10.8 s for a 2000-packet E-B2 point, about 3 600 CPU-s in all)
 # 2-4 min, bounded by the five sweeps run one after the other; V-CFO 181 s on the laptop
-# with 2 workers (V-TANG 13 s, V-FM 24 s), beside VA-1. Expected job time 30-45 min: use
-# --deadline-min 100 with runner --maxmin 130. Memory: of four E-A points measured on the
+# with 2 workers (V-TANG 13 s, V-FM 24 s), beside VA-1. Linux parts: apt-get install gnuradio
+# about 3-6 min in the background (not measured on AWS; it waits up to 15 min for the dpkg
+# lock); E-E repetitions: 93 s for both in the WSL2 smoke of this script (Ryzen 9 8945H, full
+# E-E design, beside the smoke VA-1 and E-C), 7.5 min in the paper's laptop run (both
+# repetitions + the four throughput runs, run walls 101.5 s + 56.3 s + 26.3 s), so about
+# 2-8 min beside VA-1 on the Xeon and 1-2 min for the throughput runs at the end; the paper
+# junit took 106-112 s in that WSL2 smoke (2125 tests, -n 8) and 82 s on Windows (2017 tests),
+# 2-4 min expected here. The tail after VA-1 (checks, finalize, E-E throughput and export,
+# junit) adds about 5-8 min. Expected job time 35-50 min: use --deadline-min 100 with runner
+# --maxmin 130. Memory: of four E-A points measured on the
 # laptop, the largest peak working set was 0.77 GiB (2.4 GHz, bandit, tau 0.01 s), so 176
 # sweep workers stay well inside the instance's 384 GiB.
 #
@@ -144,6 +198,8 @@ DEADLINE_MIN=0
 MODE=full
 PLAN=0
 COLLECT_LATENCY=0
+RUN_EE=1
+RUN_JUNIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --jobs) JOBS="${2:?--jobs needs a value}"; shift 2 ;;
@@ -152,6 +208,8 @@ while [ $# -gt 0 ]; do
     --deadline-min=*) DEADLINE_MIN="${1#*=}"; shift ;;
     --smoke) MODE=smoke; shift ;;
     --collect-latency) COLLECT_LATENCY=1; shift ;;
+    --no-ee) RUN_EE=0; shift ;;
+    --no-junit) RUN_JUNIT=0; shift ;;
     --plan) PLAN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -182,11 +240,22 @@ SWEEP_JOBS=$(( JOBS - RESERVE ))
 VCFO_JOBS=$(( SWEEP_JOBS < 21 ? SWEEP_JOBS : 21 ))  # V-CFO-4 has 21 points
 T_START=$(date +%s)
 DEADLINE_EPOCH=$(( T_START + DEADLINE_MIN * 60 ))
+# E-E and GNU Radio (Linux only; examples/gnuradio_zmq/README.md)
+GR_PY="${SREMU_GR_PYTHON:-/usr/bin/python3}"
+EE_THREADS="${SREMU_REGEN_EE_THREADS:-16}"
+case "$EE_THREADS" in ''|*[!0-9]*) echo "SREMU_REGEN_EE_THREADS must be an integer" >&2; exit 2 ;; esac
+if [ "$MODE" = smoke ]; then
+  EE_RATES="1e6,5.76e6"; EE_TPUT_S="0.5"  # smoke: two short throughput runs
+else
+  EE_RATES="1e6,1.92e6,3.84e6,5.76e6"; EE_TPUT_S="2"  # the rates and length the paper quotes
+fi
+if [ "$(uname -s)" = Linux ]; then IS_LINUX=1; else IS_LINUX=0; fi
+export HOME="${HOME:-/root}"  # cloud-init may leave HOME unset; GNU Radio keeps prefs there
 
 log() { printf '[regen %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 for d in ea_ref ea_tau ea_iq eb1 eb2_lab eb2_ideal1 ec ef_ber ef_latency _ea_cache \
-         eb_arc validation paper_results _regen; do
+         eb_arc validation paper_results _regen ee junit; do
   if [ -e "$OUT/$d" ]; then
     echo "refusing: $OUT/$d exists (use a fresh SREMU_JOB_OUT)" >&2
     exit 2
@@ -404,6 +473,8 @@ log "mode $MODE, jobs $JOBS (sweep pools $SWEEP_JOBS, reserved $RESERVE), out $O
 REGEN_OUT="$OUT" REGEN_MODE="$MODE" REGEN_SPEC_SRC="$SPEC_SRC" REGEN_JOBS="$JOBS" \
 REGEN_SWEEP_JOBS="$SWEEP_JOBS" REGEN_SCRIPT_SHA="$SCRIPT_SHA" \
 REGEN_DEADLINE_MIN="$DEADLINE_MIN" REGEN_COLLECT_LATENCY="$COLLECT_LATENCY" \
+REGEN_EE="$RUN_EE" REGEN_JUNIT="$RUN_JUNIT" REGEN_IS_LINUX="$IS_LINUX" REGEN_GR_PY="$GR_PY" \
+REGEN_EE_THREADS="$EE_THREADS" REGEN_EE_RATES="$EE_RATES" REGEN_EE_TPUT_S="$EE_TPUT_S" \
 "$PY" - > "$LOGS/setup.log" 2>&1 <<'PYEOF'
 import datetime as dt
 import json
@@ -582,6 +653,7 @@ env_keys = (
     "MKL_NUM_THREADS",
     "SREMU_EAIQ_DURATION_S",
     "SREMU_BUNDLE_SHA256",
+    "SREMU_GR_PYTHON",
 )
 prov = {
     "tool": "experiments/regenerate_paper_data.sh",
@@ -606,12 +678,30 @@ prov = {
     "sweep_jobs": int(os.environ["REGEN_SWEEP_JOBS"]),
     "deadline_min": int(os.environ["REGEN_DEADLINE_MIN"]),
     "collect_latency": os.environ["REGEN_COLLECT_LATENCY"] == "1",
+    "ee": {
+        "enabled": os.environ["REGEN_EE"] == "1",
+        "runs_here": os.environ["REGEN_EE"] == "1" and os.environ["REGEN_IS_LINUX"] == "1",
+        "gr_python": os.environ["REGEN_GR_PY"],
+        "repetitions": 2,
+        "throughput_rates_sps": [float(x) for x in os.environ["REGEN_EE_RATES"].split(",")],
+        "throughput_s": os.environ["REGEN_EE_TPUT_S"],
+        "repetitions_phase": "after the sweeps, beside the VA-1 and E-C processes",
+        "throughput_phase": "after every other experiment, alone on the host",
+    },
+    "junit": {
+        "enabled": os.environ["REGEN_JUNIT"] == "1",
+        "scope": "subset"
+        if mode == "smoke" and os.environ.get("SREMU_REGEN_JUNIT_FULL") != "1"
+        else "full",
+    },
     "thread_settings": {
         "sweep_workers": {"NUMBA_NUM_THREADS": 1, "SREMU_EB_NUMBA_THREADS": 1},
         "eb_arc_workers": {"NUMBA_NUM_THREADS": 1, "threads_per_job": 1},
         "va1_and_ec_processes": {"NUMBA_NUM_THREADS": 4},
         "validation_studies": {"NUMBA_NUM_THREADS": 1},
+        "ee_served_engine": {"NUMBA_NUM_THREADS": int(os.environ["REGEN_EE_THREADS"])},
         "latency": "numba default",
+        "junit": "numba default, pytest -n 8 (tools/tasks.py)",
     },
     "env": {k: os.environ.get(k) for k in env_keys},
     "host": host,
@@ -631,6 +721,14 @@ SPEC_DIR="$(sed -n 's/^SPEC_DIR=//p' "$LOGS/setup.log" | tail -n 1)"
 export SREMU_EXP_GIT_JSON="$REG/git_state.json"
 log "specs verified ($SPEC_DIR); git: $(grep -m 1 '^{' "$LOGS/setup.log")"
 if command -v lscpu > /dev/null 2>&1; then lscpu > "$REG/lscpu.txt" 2>&1; fi
+if [ "$RUN_JUNIT" = 1 ] && [ "$PLAN" != 1 ] && \
+   ! "$PY" -c "import sigmf, jsonschema" > /dev/null 2>&1; then
+  # the optional packages behind IO-05 (official SigMF validator) and IO-01 (jsonschema oracle):
+  # without them those spec ids are skipped and gen_results.py refuses the junit. Versions of
+  # the laptop venv that produced the paper junit; numpy and the other pins stay as they are.
+  run_step junit_deps "$PY" -m pip install --disable-pip-version-check \
+    "SigMF==1.13.0" "jsonschema==4.26.0" || FAILED_AUX+=(junit_deps)
+fi
 "$PY" -m pip freeze > "$REG/pip_freeze.txt" 2>&1 || true
 if [ "$PLAN" = 1 ]; then
   cat <<PLAN
@@ -647,7 +745,12 @@ plan ($MODE; checks passed; provenance in $REG/provenance.json):
      eb_arc         experiments.eb --scenario scenarios/studies/lab_arc.yaml --out $OUT/eb_arc --jobs $SWEEP_JOBS$( [ "$MODE" = smoke ] && echo " --smoke" )
      v_tang, v_fm   validation/{tang/vtang,fm/vfm}.py --root $OUT/validation/<study> (background)
      v_cfo          validation/cfo/vcfo.py --jobs $VCFO_JOBS$( [ "$MODE" = smoke ] && echo " --fast" ) --root $OUT/validation/cfo (background)
+     gr_setup       experiments.regen_checks gnuradio --gr-python $GR_PY --install auto -> $REG/gnuradio.json (background from the end of step 1; $( [ "$IS_LINUX" = 1 ] && echo "Linux" || echo "not Linux: skipped" ))
+     ee_reps        experiments.ee_gnuradio run --root $OUT/ee --reps 2 (background after eb_arc; NUMBA_NUM_THREADS=$EE_THREADS; $( [ "$RUN_EE" = 1 ] && [ "$IS_LINUX" = 1 ] && echo "enabled" || echo "skipped" ))
   4  check_runs, check_aux, finalize --runs $OUT --out $OUT/paper_results --eb-arc $OUT/eb_arc$( [ "$MODE" = smoke ] && echo " --smoke" )$( [ "$COLLECT_LATENCY" = 1 ] && echo " --with-latency (if ef_latency succeeded)" )
+     ee_throughput  experiments.ee_gnuradio run --root $OUT/ee --reps 0 --throughput --rates $EE_RATES --throughput-s $EE_TPUT_S (alone on the host)
+     ee_export      experiments.ee_gnuradio export --root $OUT/ee --dest $OUT/paper_results/E-E; ee_check -> $REG/ee_check.json
+     junit          tools/tasks.py paper-junit $OUT/junit/sremu_paper.xml --git-state $REG/git_state.json ($( [ "$RUN_JUNIT" = 1 ] && echo "enabled" || echo "skipped" ); SREMU_GR_PYTHON=$GR_PY, SREMU_VA1_RECORD=$OUT/paper_results/E-A-IQ); junit_check -> $REG/junit_check.json
   5  compare (when a reference tree exists), provenance
 PLAN
   exit 0
@@ -666,6 +769,25 @@ fg_aux ef_latency env -u NUMBA_NUM_THREADS -u OMP_NUM_THREADS -u OPENBLAS_NUM_TH
   "import sys; from experiments.ef import run_latency; run_latency(sys.argv[1])" \
   "$OUT/ef_latency"
 STEP_CAP_S=0
+
+# GNU Radio for E-E and the junit's GNU Radio tests (Linux): probed in its own interpreter and
+# installed from the Ubuntu archive when missing, in the background from here on (after the
+# latency step, which needs the idle host). Not in BG_PIDS: wait_gr waits for it when needed.
+GR_PID=""
+GR_OK=0
+GR_WAITED=0
+if { [ "$RUN_EE" = 1 ] || [ "$RUN_JUNIT" = 1 ]; } && [ "$IS_LINUX" = 1 ]; then
+  run_step gr_setup "$PY" -m experiments.regen_checks gnuradio --gr-python "$GR_PY" \
+    --install auto --out "$REG/gnuradio.json" &
+  GR_PID=$!
+elif [ "$IS_LINUX" != 1 ]; then
+  log "GNU Radio: not Linux ($(uname -s)); E-E skipped, the junit's GNU Radio tests skip"
+fi
+wait_gr() {
+  if [ "$GR_WAITED" = 1 ] || [ -z "$GR_PID" ]; then return 0; fi
+  GR_WAITED=1
+  if wait "$GR_PID"; then GR_OK=1; else FAILED_AUX+=(gr_setup); fi
+}
 
 # ----------------------------------------------------------------------------- phase 2
 # E-F BER points in parallel with the E-A prebuild
@@ -733,7 +855,37 @@ bg_aux v_fm env NUMBA_NUM_THREADS=1 "$PY" validation/fm/vfm.py --root "$OUT/vali
 if [ "$MODE" = smoke ]; then VCFO_FAST=(--fast); else VCFO_FAST=(); fi
 bg_aux v_cfo env NUMBA_NUM_THREADS=1 "$PY" validation/cfo/vcfo.py --jobs "$VCFO_JOBS" \
   --root "$OUT/validation/cfo" "${VCFO_FAST[@]}"
-log "sweeps done; waiting for VA-1, E-C and the validation studies"
+# E-E repetitions (Linux): after the sweeps, beside VA-1, E-C and the validation studies. The
+# runs are lockstep (virtual time follows the sample exchange), so the load changes no value
+# and no hash; their wall times are not quoted. The throughput runs follow at the end, alone.
+EE_STARTED=0
+EE_NOTE=""
+if [ "$RUN_EE" = 1 ] && [ "$IS_LINUX" = 1 ]; then
+  wait_gr
+  if [ "$GR_OK" = 1 ]; then
+    EE_COMMIT="$("$PY" -c "import json, sys; print(json.load(open(sys.argv[1]))['commit'])" \
+      "$REG/git_state.json" 2>/dev/null)"
+    EE_GRV="$("$PY" -c "import json, sys; print(json.load(open(sys.argv[1]))['gnuradio_version'])" \
+      "$REG/gnuradio.json" 2>/dev/null)"
+    EE_NOTE="pinned regeneration job (experiments/regenerate_paper_data.sh, mode $MODE) at sremu"
+    EE_NOTE="$EE_NOTE $EE_COMMIT on $(hostname) ($(nproc) logical CPUs); GNU Radio $EE_GRV from"
+    EE_NOTE="$EE_NOTE the Ubuntu archive (_regen/gnuradio.json); served engine NUMBA_NUM_THREADS="
+    EE_NOTE="$EE_NOTE$EE_THREADS; repetitions run beside the VA-1 and E-C processes (lockstep:"
+    EE_NOTE="$EE_NOTE values and hashes do not depend on load); throughput runs alone on the"
+    EE_NOTE="$EE_NOTE otherwise idle host after every other experiment (MEAS of this host)"
+    STEP_CAP_S=2700
+    bg_aux ee_reps env NUMBA_NUM_THREADS="$EE_THREADS" SREMU_GR_PYTHON="$GR_PY" \
+      "$PY" -m experiments.ee_gnuradio run --root "$OUT/ee" --reps 2 --gr-python "$GR_PY" \
+      --note "$EE_NOTE"
+    STEP_CAP_S=0
+    EE_STARTED=1
+  else
+    log "E-E not started: GNU Radio is not usable (see $LOGS/gr_setup.log)"
+  fi
+elif [ "$RUN_EE" = 1 ]; then
+  log "E-E skipped: it needs Linux with GNU Radio (this is $(uname -s))"
+fi
+log "sweeps done; waiting for VA-1, E-C, the validation studies$( [ "$EE_STARTED" = 1 ] && echo " and the E-E repetitions")"
 wait_bg
 
 # ----------------------------------------------------------------------------- checks
@@ -769,7 +921,10 @@ if not (out / "ec" / "table8.csv").is_file():
     bad.append("ec: table8.csv missing")
 states = Counter()
 for m in out.rglob("manifest.json"):
-    if "_regen" in m.parts:
+    rel = m.relative_to(out).parts
+    # E-E: the served emulator (sremu.commands.serve) records the git state it reads itself;
+    # experiments.regen_checks ee reports those manifests
+    if "_regen" in rel or rel[0] == "ee" or rel[:2] == ("paper_results", "E-E"):
         continue
     d = json.loads(m.read_text(encoding="utf-8"))
     states[(d.get("git_commit"), d.get("git_dirty"), d.get("dirty_patch_sha256"))] += 1
@@ -876,13 +1031,104 @@ else
   log "finalize skipped: failed steps: ${FAILED[*]}"
 fi
 
-# ----------------------------------------------------------------------------- compare
+# reference tree (paper/sweeps/results) and paper repository, when at hand (not on AWS)
 REF=""
+PAPER_DIR=""
 if [ -n "${SREMU_REGEN_REF:-}" ]; then
   REF="$(to_native "$SREMU_REGEN_REF")"
+  case "${SREMU_REGEN_REF%/}" in
+    */sweeps/results) PAPER_DIR="$(to_native "$(cd "$SREMU_REGEN_REF/../.." && pwd)")" ;;
+  esac
 elif [ -d "$ROOT/../paper/sweeps/results" ]; then
   REF="$(to_native "$(cd "$ROOT/../paper/sweeps/results" && pwd)")"
+  PAPER_DIR="$(to_native "$(cd "$ROOT/../paper" && pwd)")"
 fi
+
+# ----------------------------------------------------------------------------- E-E tail
+# Throughput runs alone on the otherwise idle host (every other experiment has finished), then
+# the export in the layout of paper/sweeps/results/E-E and its check. ee_gnuradio run rewrites
+# ee/host.json (same host, git state and note; its argv becomes the throughput call): the
+# repetitions' record is kept as ee/host_reps.json.
+if [ "$EE_STARTED" = 1 ] && [ -d "$OUT/ee/rep1" ]; then
+  cp "$OUT/ee/host.json" "$OUT/ee/host_reps.json" 2>/dev/null || true
+  NO_DEADLINE=0
+  STEP_CAP_S=900
+  fg_aux ee_throughput env NUMBA_NUM_THREADS="$EE_THREADS" SREMU_GR_PYTHON="$GR_PY" \
+    "$PY" -m experiments.ee_gnuradio run --root "$OUT/ee" --reps 0 --throughput \
+    --rates "$EE_RATES" --throughput-s "$EE_TPUT_S" --gr-python "$GR_PY" --note "$EE_NOTE"
+  STEP_CAP_S=0
+  NO_DEADLINE=1
+  fg_aux ee_export "$PY" -m experiments.ee_gnuradio export --root "$OUT/ee" \
+    --dest "$OUT/paper_results/E-E"
+  EE_REF=()
+  if [ -n "$REF" ] && [ -f "$REF/E-E/summary.json" ]; then EE_REF=(--ref "$REF/E-E"); fi
+  fg_aux ee_check "$PY" -m experiments.regen_checks ee --root "$OUT/ee" \
+    --export "$OUT/paper_results/E-E" --git-state "$REG/git_state.json" --reps 2 \
+    --rates "$EE_RATES" --out "$REG/ee_check.json" "${EE_REF[@]}"
+fi
+
+# ----------------------------------------------------------------------------- junit
+# The paper junit (tools/tasks.py paper-junit: CI + nightly markers, -n 8) on this host after
+# everything else: the git state from _regen/git_state.json (no .git in a job bundle), the
+# GNU Radio tests with SREMU_GR_PYTHON, the VA-1 record test on the regenerated E-A-IQ.
+# The step's own exit code (failing tests) is judged by junit_check (smoke: the VA-1 record
+# of a smoke run is incomplete by design, so that one test may fail).
+if [ "$RUN_JUNIT" = 1 ]; then
+  wait_gr
+  mkdir -p "$OUT/junit"
+  if [ "$MODE" = smoke ] && [ "${SREMU_REGEN_JUNIT_FULL:-0}" != 1 ]; then
+    JUNIT_SCOPE=subset
+    JUNIT_SEL=(tests/validation/test_va1_record.py tests/integration/test_gnuradio_raw.py
+               tests/integration/test_gnuradio_analysis.py tests/unit/test_regen_tools.py)
+  else
+    JUNIT_SCOPE=full
+    JUNIT_SEL=()
+  fi
+  HOST_LABEL="$("$PY" -m experiments.regen_checks host-label --provenance "$REG/provenance.json" \
+    2>/dev/null || echo n/r)"
+  JUNIT_NOTE="tools/tasks.py paper-junit (CI + nightly markers, -n 8) in the pinned regeneration"
+  JUNIT_NOTE="$JUNIT_NOTE job (experiments/regenerate_paper_data.sh, mode $MODE, scope"
+  JUNIT_NOTE="$JUNIT_NOTE $JUNIT_SCOPE) on $HOST_LABEL; git state from _regen/git_state.json;"
+  JUNIT_NOTE="$JUNIT_NOTE SREMU_GR_PYTHON=$GR_PY; SREMU_VA1_RECORD = the job's paper_results/E-A-IQ"
+  # Without a paper repository next to sremu (the AWS bundle), tests/unit/test_eb_arc.py's
+  # paper-spec test would skip, and a skipped test carrying E-B leaves the E-B claims
+  # pending. It reads ../paper/sweeps/eb*.yaml only: give it the job's copies of the paper
+  # sweep specs (_regen/specs, each checked against its pinned SweepSpec hash in setup) for
+  # the junit, and remove them afterwards. An existing ../paper is never touched.
+  PAPER_MIRROR=""
+  if [ ! -e "$ROOT/../paper" ] && [ "$JUNIT_SCOPE" = full ]; then
+    PAPER_MIRROR="$ROOT/../paper"
+    if mkdir -p "$PAPER_MIRROR/sweeps" && cp "$REG/specs/"*.yaml "$PAPER_MIRROR/sweeps/"; then
+      log "junit: $PAPER_MIRROR/sweeps holds the job's hash-checked paper sweep specs (removed after)"
+      JUNIT_NOTE="$JUNIT_NOTE; ../paper/sweeps = the job's hash-checked copies of the paper sweep specs"
+    fi
+  fi
+  NO_DEADLINE=0
+  STEP_CAP_S="${SREMU_REGEN_JUNIT_CAP_S:-2400}"
+  case "$STEP_CAP_S" in ''|*[!0-9]*) STEP_CAP_S=2400 ;; esac
+  run_step junit env -u SREMU_EXP_GIT_JSON -u OMP_NUM_THREADS -u OPENBLAS_NUM_THREADS \
+    -u MKL_NUM_THREADS SREMU_GR_PYTHON="$GR_PY" SREMU_VA1_RECORD="$OUT/paper_results/E-A-IQ" \
+    "$PY" tools/tasks.py paper-junit "$OUT/junit/sremu_paper.xml" \
+    --git-state "$REG/git_state.json" --host "$HOST_LABEL" --note "$JUNIT_NOTE" "${JUNIT_SEL[@]}"
+  log "junit exit $? (judged by junit_check)"
+  STEP_CAP_S=0
+  NO_DEADLINE=1
+  if [ -n "$PAPER_MIRROR" ]; then  # only what was created above
+    rm -f "$PAPER_MIRROR/sweeps/"*.yaml
+    rmdir "$PAPER_MIRROR/sweeps" "$PAPER_MIRROR" 2> /dev/null || log "junit: $PAPER_MIRROR left in place"
+  fi
+  JC_ARGS=()
+  if [ -n "$PAPER_DIR" ] && [ -f "$PAPER_DIR/claims.yaml" ]; then
+    JC_ARGS+=(--claims "$PAPER_DIR/claims.yaml"); fi
+  if [ -n "$PAPER_DIR" ] && [ -f "$PAPER_DIR/generated/junit/sremu_paper.xml" ]; then
+    JC_ARGS+=(--ref-junit "$PAPER_DIR/generated/junit/sremu_paper.xml"); fi
+  if [ "$IS_LINUX" = 1 ]; then JC_GR=yes; else JC_GR=no; fi
+  fg_aux junit_check "$PY" -m experiments.regen_checks junit --xml "$OUT/junit/sremu_paper.xml" \
+    --mode "$MODE" --scope "$JUNIT_SCOPE" --expect-gnuradio "$JC_GR" \
+    --out "$REG/junit_check.json" "${JC_ARGS[@]}"
+fi
+
+# ----------------------------------------------------------------------------- compare
 COMPARE_RC=""
 if [ -n "$REF" ] && [ -f "$OUT/paper_results/summary.json" ]; then
   if [ "$MODE" = smoke ]; then CMP_SMOKE=(--smoke); else CMP_SMOKE=(); fi
@@ -944,13 +1190,18 @@ prov.update(
         "check_runs": rec("check_runs.json"),
         "check_aux": rec("check_aux.json"),
         "vlab_check": rec("vlab_check.json"),
+        "gnuradio": rec("gnuradio.json"),
+        "ee_collected": (out / "paper_results" / "E-E" / "summary.json").is_file(),
+        "ee_check": rec("ee_check.json"),
+        "junit_written": (out / "junit" / "sremu_paper.xml").is_file(),
+        "junit_check": rec("junit_check.json"),
         "ea_cache_files": cache,
     }
 )
 with (reg / "provenance.json").open("w", encoding="utf-8", newline="\n") as fh:
     fh.write(json.dumps(prov, indent=1) + "\n")
 keys = ("wall_s", "failed_steps", "failed_aux_steps", "finalized", "eb_arc_collected",
-        "compare_exit")
+        "ee_collected", "junit_written", "compare_exit")
 print(json.dumps({k: prov[k] for k in keys}))
 PYEOF
 cat "$LOGS/provenance_finish.log"

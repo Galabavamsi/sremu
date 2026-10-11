@@ -6,7 +6,7 @@
 
 ``NEW`` is ``<job out>/paper_results`` of ``experiments/regenerate_paper_data.sh``; ``REF``
 defaults to ``<sremu>/../paper/sweeps/results``. Run it from anywhere; it needs only the
-Python standard library.
+Python standard library (PyYAML optionally, see below).
 
 Scopes:
 
@@ -22,6 +22,23 @@ Scopes:
   and ``dirty.patch``. V-LAB is not re-run (locked protocol); its integrity check from the job
   (``_regen/vlab_check.json``) is reported, and a full comparison fails when that record is
   missing or not ok.
+* **E-E** (``REF/E-E``, when the regeneration holds ``E-E/``): the GNU Radio demonstration
+  (``summary.json``, ``table_ee.csv``, ``meta.json`` and per run ``analysis.json``,
+  ``run.json``, ``events.jsonl``, ``metrics.jsonl``) with the rules below; not compared:
+  the throughput real-time factors and wall times (MEAS of the host: ``sremu_rtf_median``,
+  ``gr_rtf_steady``, ``gr_wall_first_to_last_s``, per-window ``wall_s``/``rtf``), host,
+  ``git``, ``note``, ports, command lines, interpreter versions, wall-clock event stamps and
+  the served engine's thread count; the per-run ``manifest.json`` is provenance. The sha256 of
+  the received IQ, the Costas output and the decisions are reported apart (``ee``): equal
+  across the job's repetitions is required (it is the reproducibility claim), equal to the
+  reference run is reported only (the reference ran on another host and commit; GNU Radio's
+  VOLK kernels and numba's code generation may round differently). The job's ``ee_check``
+  record (``_regen/ee_check.json``) must exist and pass. E-E is a scope of its own: its
+  results never enter ``failed_files`` / ``missing_files`` of the WP11 scopes (an E-E problem
+  does not block installing the rest; ``install_regen.py --with-ee`` checks ``ee``).
+* **junit** (``<job>/junit/sremu_paper.xml`` and ``_regen/junit_check.json``): reported, with
+  the claim evidence re-evaluated against the paper's ``claims.yaml`` when it is at hand; the
+  sidecar must name the job's commit and a clean tree.
 
 What is compared, and how:
 
@@ -69,8 +86,11 @@ regenerated" (not failures), and an unpinned NEW tree or a failed code check is 
 not a failure. Rows present in both trees are compared with the same rules as a full run.
 
 Exit status: 0 when every comparison passes (and NEW is pinned, the code check passes and the
-job's V-LAB check record exists and passes, unless ``--smoke``), 1 otherwise, 2 on a usage
-error.
+job's V-LAB check record exists and passes, unless ``--smoke``; and E-E and the junit pass
+when the job produced them), 1 otherwise, 2 on a usage error. The report's ``core_ok`` is the
+verdict of the WP11, E-B arc and validation scopes alone; ``ee`` and ``junit`` hold theirs.
+The E-E and junit checks are those of ``experiments/regen_checks.py`` (loaded from this
+directory; PyYAML is used for the paper's ``claims.yaml`` when installed).
 """
 
 from __future__ import annotations
@@ -78,11 +98,14 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.util
 import json
 import math
 import re
 import sys
+from collections import Counter
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 HERE = Path(__file__).resolve()
@@ -90,6 +113,7 @@ SREMU_ROOT = HERE.parents[1]
 DEFAULT_REF = HERE.parents[2] / "paper" / "sweeps" / "results"
 
 ARC = "E-B-arc"
+EE = "E-E"
 CSV_KEYS: dict[str, tuple[str, ...]] = {
     "E-A/gains.csv": ("geometry", "controller", "tau_sui_s"),
     "E-A/retention.csv": ("geometry", "tau_sui_s"),
@@ -101,6 +125,7 @@ CSV_KEYS: dict[str, tuple[str, ...]] = {
     "E-C/table8.csv": ("row",),
     "E-C/per_point.csv": ("geometry", "point", "row"),
     "E-F/ber/ber.csv": ("modulation", "ebn0_db"),
+    f"{EE}/table_ee.csv": ("config",),
 }
 for _k in ("E-B1/eb1_points.csv", "E-B1/eb1_traces.csv", "E-B2/eb2_per.csv"):
     CSV_KEYS[f"{ARC}/{_k}"] = CSV_KEYS[_k]
@@ -113,6 +138,8 @@ LIST_KEYS: dict[str, tuple[str, ...]] = {
     "f9b_rows_guard_0p5ms": CSV_KEYS["E-B2/eb2_per.csv"],
     "table8": CSV_KEYS["E-C/table8.csv"],
     "ber": CSV_KEYS["E-F/ber/ber.csv"],
+    "static": CSV_KEYS[f"{EE}/table_ee.csv"],  # E-E summary.json
+    "throughput": ("rate_sps",),  # E-E summary.json throughput rows
 }
 """Table rows copied into ``summary.json`` lists, matched by the same keys."""
 
@@ -199,8 +226,50 @@ records). Everything else is compared: ``experiment``, ``data_classes``, ``descr
 (path, data class, and SHA-256 except for run ``manifest.json`` inputs), and the
 deterministic checks (E-A ``checks_per_geometry``, ``decision_table_checks``; E-A-IQ
 ``complete``, ``missing_rows``, ``all_accept``; ``failed_points``)."""
-META_SKIP_EXTRA = {f"{ARC}/meta.json": frozenset({"run", "host", "sremu"})}
-"""Per-file additions: the E-B arc ``meta.json`` provenance blocks (run, host, git state)."""
+META_SKIP_EXTRA = {
+    f"{ARC}/meta.json": frozenset({"run", "host", "sremu"}),
+    f"{EE}/meta.json": frozenset({"git", "note", "root", "examples_gnuradio_zmq_sha256"}),
+}
+"""Per-file additions: the E-B arc ``meta.json`` provenance blocks (run, host, git state); the
+E-E ``meta.json`` git state, note, run root and example-code hashes (code changes are the
+code check's business)."""
+
+EE_MEAS_FIELDS = frozenset({"sremu_rtf_median", "gr_rtf_steady", "gr_wall_first_to_last_s"})
+"""E-E throughput values: MEAS of the recording host (never compared)."""
+EE_SKIP = (
+    HOST_FIELDS
+    | RUN_FIELDS
+    | EE_MEAS_FIELDS
+    | frozenset(
+        {
+            "sha256",  # reported apart (ee): repetitions must agree, the reference is informative
+            "host",
+            "git",
+            "note",
+            "manifest_example",
+            "threads",  # numba threads of the served engine (a host setting)
+            "serve_cmd",
+            "gr_cmd",
+            "python",
+            "numpy",
+            "t_start_unix",
+            "t_resume_wall_s",
+            "t_gr_done_wall_s",
+            "t_wall_recv_ns",
+            "t_wall_computed_ns",
+            "t_wall_visible_ns",
+        }
+    )
+)
+"""Fields of the E-E files that are not compared (see the module docstring)."""
+EE_REQUIRED_CHECKS = (
+    "all_ok",
+    "all_complete",
+    "all_counters_zero",
+    "all_rx_equal_emulator_record",
+    "all_commands_applied_lateness0",
+    "bitwise_identical_across_repetitions",
+)
 LATENCY_DIR = "E-F/latency"
 _LATENCY_NOTE = "E-F API latency"  # the root meta.json assumption that says whether it is in
 EXPERIMENTS = ("E-A", "E-A-IQ", "E-B1", "E-B2", "E-C", "E-F/ber")
@@ -541,12 +610,13 @@ def _meta_view(d: dict[str, Any], smoke: bool, rel: str = "") -> dict[str, Any]:
     skip = META_SKIP | META_SKIP_EXTRA.get(rel, frozenset())
     out = {k: v for k, v in d.items() if k not in skip}
     inputs = out.get("inputs")
+    ee = rel.startswith(f"{EE}/")  # E-E inputs: every per-run file records wall times or ports
     if isinstance(inputs, list):
         out["inputs"] = [
             {
                 k: v
                 for k, v in i.items()
-                if not (k == "sha256" and str(i.get("path", "")).endswith("manifest.json"))
+                if not (k == "sha256" and (ee or str(i.get("path", "")).endswith("manifest.json")))
             }
             if isinstance(i, dict)
             else i
@@ -575,6 +645,25 @@ def compare_meta(
     return fr
 
 
+def compare_jsonl(
+    rel: str, new_p: Path, ref_p: Path, tol: Tol, smoke: bool, skip: frozenset[str] = HOST_FIELDS
+) -> FileResult:
+    """One JSON object per line (E-E ``events.jsonl``, ``metrics.jsonl``), line by line."""
+    fr = FileResult(rel, "jsonl", skip)
+
+    def rows(p: Path) -> list[Any]:
+        return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    ref, new = rows(ref_p), rows(new_p)
+    fr.rows_ref, fr.rows_new = len(ref), len(new)
+    if len(ref) != len(new):
+        fr.exact_mismatches.append(f"{rel}: {len(new)} lines in new, {len(ref)} in ref")
+    for i, (a, b) in enumerate(zip(new, ref, strict=False)):
+        fr.rows_compared += 1
+        compare_tree(fr, tol, a, b, f"{rel}[{i}]", smoke)
+    return fr
+
+
 def compare_text(rel: str, new_p: Path, ref_p: Path) -> FileResult:
     fr = FileResult(rel, "text")
     a = new_p.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -599,6 +688,8 @@ def compare_file(
         return compare_meta(rel, new_p, ref_p, tol, smoke, skip)
     if suf == ".json":
         return compare_json(rel, new_p, ref_p, tol, smoke, skip)
+    if suf == ".jsonl":
+        return compare_jsonl(rel, new_p, ref_p, tol, smoke, skip)
     return compare_text(rel, new_p, ref_p)
 
 
@@ -644,6 +735,26 @@ def provenance(root: Path, validation: dict[str, Path] | None = None) -> dict[st
             "manifests_git_commit": sh.get("git_commit"),
             "cpu_model": sh.get("cpu_model"),
             "platform": sh.get("platform"),
+            "aws_instance_type": aws.get("type") if isinstance(aws, dict) else None,
+        }
+    if (root / EE / "summary.json").is_file():
+        s = _json(root / EE / "summary.json")
+        g = s.get("git") or {}
+        host = s.get("host") or {}
+        aws = host.get("aws_instance") or {}
+        mans = Counter(
+            str(_json(m).get("git_commit")) for m in sorted((root / EE).rglob("manifest.json"))
+        )
+        per[EE] = {
+            "git_commit": g.get("commit"),
+            "git_dirty": g.get("dirty"),
+            "dirty_patch_sha256": g.get("dirty_patch_sha256"),
+            "src_sremu_tree_sha256": (_json(root / EE / "meta.json").get("code") or {}).get(
+                "src_sremu_tree_sha256"
+            ),
+            "run_manifest_git_commits": dict(mans),  # the served emulator's own record
+            "cpu_model": host.get("cpu_model"),
+            "platform": host.get("platform"),
             "aws_instance_type": aws.get("type") if isinstance(aws, dict) else None,
         }
     for study, d in (validation or {}).items():
@@ -876,6 +987,133 @@ def compare_validation(
     return files, missing, extra
 
 
+def _sibling(name: str) -> ModuleType:
+    """``experiments/<name>.py`` loaded by path (this file runs as a script and as
+    ``experiments.compare_regen``)."""
+    mod = sys.modules.get(f"_compare_regen_{name}")
+    if mod is not None:
+        return mod
+    spec = importlib.util.spec_from_file_location(
+        f"_compare_regen_{name}", HERE.parent / f"{name}.py"
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {name}.py next to {HERE.name}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def compare_ee(
+    new_root: Path, ref_root: Path, tol: Tol, smoke: bool
+) -> tuple[dict[str, FileResult], list[str], list[str]]:
+    """Every file of the reference ``E-E/`` (provenance files excluded) against the
+    regenerated one, with ``EE_SKIP``."""
+    files: dict[str, FileResult] = {}
+    missing: list[str] = []
+    ref_files = _files(ref_root / EE) if (ref_root / EE).is_dir() else []
+    new_files = set(_files(new_root / EE))
+    for rel in ref_files:
+        key = f"{EE}/{rel}"
+        if rel not in new_files:
+            missing.append(key)
+            continue
+        files[key] = compare_file(
+            key, new_root / EE / rel, ref_root / EE / rel, tol.with_hz(None), smoke, EE_SKIP
+        )
+    extra = [f"{EE}/{r}" for r in sorted(new_files - set(ref_files))]
+    return files, missing, extra
+
+
+def ee_scope(
+    new_root: Path, ref_root: Path, job_out: Path, tol: Tol, smoke: bool
+) -> dict[str, Any]:
+    """The E-E scope: file comparison, the export check (``regen_checks.ee_check``, run here
+    again without the D24 part) and the job's own ``_regen/ee_check.json``."""
+    if not (new_root / EE).is_dir():
+        return {"performed": False, "ok": None, "reason": "no E-E/ in the regeneration"}
+    files, missing, extra = compare_ee(new_root, ref_root, tol, smoke)
+    prov_ee = _json(job_out / "_regen" / "provenance.json").get("ee") or {}
+    rates = prov_ee.get("throughput_rates_sps") or [
+        float(r["rate_sps"]) for r in _json(ref_root / EE / "summary.json").get("throughput") or []
+    ]
+    ref_ee = ref_root / EE if (ref_root / EE / "summary.json").is_file() else None
+    chk = _sibling("regen_checks").ee_check(
+        new_root / EE,
+        _json(job_out / "_regen" / "git_state.json"),
+        reps=int(prov_ee.get("repetitions") or 2),
+        rates=[float(r) for r in rates],
+        ref=ref_ee,
+        d24=False,
+    )
+    job_rec = _json(job_out / "_regen" / "ee_check.json") or None
+    failed = [r for r, f in files.items() if f.failed(smoke)]
+    ok = (
+        not failed
+        and (smoke or not missing)
+        and bool(chk["ok"])
+        and (smoke or (job_rec is not None and bool(job_rec.get("ok"))))
+    )
+    return {
+        "performed": True,
+        "ok": ok,
+        "failed_files": failed,
+        "missing_files": missing,
+        "extra_files": extra,
+        "files": {r: f.as_dict(smoke) for r, f in files.items()},
+        "check": chk,
+        "job_check": None
+        if job_rec is None
+        else {k: job_rec.get(k) for k in ("ok", "problems", "d24_violations")},
+    }
+
+
+def junit_scope(job_out: Path, ref_root: Path, smoke: bool) -> dict[str, Any]:
+    """The job's paper junit: its record (``_regen/junit_check.json``), the check again with
+    the paper's ``claims.yaml`` and current junit when at hand, and the sidecar's git state
+    against the job's."""
+    xml = job_out / "junit" / "sremu_paper.xml"
+    if not xml.is_file():
+        return {"performed": False, "ok": None, "reason": f"{xml} not found"}
+    rec = _json(job_out / "_regen" / "junit_check.json") or None
+    side = _json(xml.with_suffix(".meta.json"))
+    gs = _json(job_out / "_regen" / "git_state.json")
+    paper = ref_root.parents[1]
+    rc = _sibling("regen_checks")
+    claims = paper / "claims.yaml" if (paper / "claims.yaml").is_file() else None
+    ref_junit = paper / "generated" / "junit" / "sremu_paper.xml"
+    kw: dict[str, Any] = {
+        "mode": "smoke" if smoke else "full",
+        "scope": (rec or {}).get("scope", "full"),
+        "expect_gnuradio": bool((rec or {}).get("expect_gnuradio", True)),
+        "ref_junit": ref_junit if ref_junit.is_file() else None,
+    }
+    try:
+        chk = rc.junit_check(xml, claims_yaml=claims, **kw)
+    except ImportError:  # no PyYAML: the embedded claim list
+        chk = rc.junit_check(xml, claims_yaml=None, **kw)
+    side_ok = (
+        bool(gs)
+        and side.get("sremu_commit") == gs.get("commit")
+        and side.get("sremu_dirty") is False
+    )
+    ok = (
+        bool(chk["ok"])
+        and (smoke or side_ok)
+        and (smoke or chk["scope"] == "full")
+        and (rec is not None and bool(rec.get("ok")))
+    )
+    return {
+        "performed": True,
+        "ok": ok,
+        "xml": str(xml),
+        "sidecar": side,
+        "sidecar_matches_job_clean": side_ok,
+        "job_check_ok": None if rec is None else rec.get("ok"),
+        "check": chk,
+    }
+
+
 def latency_check(new_root: Path) -> dict[str, Any] | None:
     """E-F latency, when collected: MEAS only, with its host record (values not compared)."""
     d = new_root / LATENCY_DIR
@@ -909,14 +1147,15 @@ def compare(
     missing: list[str] = []
     all_ref = _files(ref_root)
     ref_files = [r for r in all_ref if in_scope(r)]
+    ee_here = (new_root / EE).is_dir()
     out_of_scope = sorted(
         {
             f"{ARC}/host/" if r.startswith(f"{ARC}/host/") else r.split("/")[0] + "/"
             for r in all_ref
-            if not in_scope(r)
+            if not in_scope(r) and not (ee_here and r.startswith(f"{EE}/"))
         }
     )
-    new_files = set(_files(new_root))
+    new_files = {r for r in _files(new_root) if not r.startswith(f"{EE}/")}  # E-E: own scope
     base = tol.with_hz(None)  # atol_hz is for the V-CFO frequencies only
     for rel in ref_files:
         if rel not in new_files:
@@ -949,9 +1188,11 @@ def compare(
     cc = code_check(job_out, repo) if (code and repo is not None) else {"performed": False}
     vlab = _json(job_out / "_regen" / "vlab_check.json") or None
     lat = latency_check(new_root)
+    ee = ee_scope(new_root, ref_root, job_out, tol, smoke)
+    junit = junit_scope(job_out, ref_root, smoke)
     failed = [r for r, f in files.items() if f.failed(smoke)]
     new_is_smoke = bool((_json(new_root / "summary.json").get("meta") or {}).get("smoke"))
-    ok = (
+    core_ok = (
         not failed
         and not missing
         and (prov_new["pinned"] or smoke)
@@ -960,11 +1201,19 @@ def compare(
         and (smoke or (vlab is not None and bool(vlab.get("ok"))))  # a missing record fails too
         and (lat is None or bool(lat["ok"]))
     )
+    ok = (
+        core_ok
+        and (not ee["performed"] or bool(ee["ok"]))
+        and (not junit["performed"] or bool(junit["ok"]))
+    )
     return {
         "new": str(new_root),
         "ref": str(ref_root),
         "mode": "smoke" if smoke else "full",
         "new_is_smoke_tree": new_is_smoke,
+        "core_ok": core_ok,
+        "ee": ee,
+        "junit": junit,
         "tolerances": {
             "rtol": tol.rtol,
             "atol": tol.atol,
@@ -1049,10 +1298,46 @@ def print_report(rep: dict[str, Any]) -> None:
         print("V-LAB check (job): no _regen/vlab_check.json (a full comparison fails)")
     if rep["latency"] is not None:
         print(f"E-F latency (MEAS, values not compared): {rep['latency']}")
+    ee = rep["ee"]
+    if ee["performed"]:
+        c = ee["check"]
+        vr = c.get("vs_reference") or {}
+        print(
+            f"\nE-E: ok {ee['ok']}; files compared {len(ee['files'])}, failed "
+            f"{ee['failed_files'][:5]}, missing {ee['missing_files'][:5]}; export check ok "
+            f"{c['ok']} {c['problems'][:3]}; GNU Radio {c.get('gnuradio_version')}; repetitions "
+            f"identical {all((c.get('identical_across_repetitions') or {'': False}).values())}; "
+            f"hashes equal to the reference {vr.get('all_hashes_equal')}; run manifests record "
+            f"the job commit {c.get('run_manifests_record_job_commit')} "
+            f"{c.get('run_manifest_git_states')}; job record {ee['job_check']}"
+        )
+        for rel in ee["failed_files"][:10]:
+            f = ee["files"][rel]
+            print(f"    [FAIL] {rel}: {f['exact_mismatch_examples'][:3]}")
+            for col, s in f["float_columns"].items():
+                if s["failed"]:
+                    print(f"           {col}: max |d| {_fmt(s['max_abs_dev'])} at {s['at']}")
+    else:
+        print(f"\nE-E: not compared ({ee.get('reason')})")
+    ju = rep["junit"]
+    if ju["performed"]:
+        c = ju["check"]
+        print(
+            f"junit: ok {ju['ok']}; {c['tests']} tests, {c['passed']} passed, {c['failed']} "
+            f"failed, {c['skipped']} skipped (scope {c['scope']}); problems {c['problems'][:3]}; "
+            f"sidecar {ju['sidecar'].get('sremu_commit')} dirty "
+            f"{ju['sidecar'].get('sremu_dirty')} host {ju['sidecar'].get('host')} (matches the "
+            f"job, clean: {ju['sidecar_matches_job_clean']}); target claims junit-green "
+            f"{c['target_claims_junit_green']}; claims not junit-green in all "
+            f"{len(c['claims_not_junit_green'])} of {len(c['claims'])}"
+        )
+    else:
+        print(f"junit: not checked ({ju.get('reason')})")
     if rep["new_is_smoke_tree"]:
         print("\nNEW is a smoke tree (summary.json meta.smoke = true): never paper data")
     print(
-        f"\nRESULT: {'PASS' if rep['ok'] else 'FAIL'}"
+        f"\nRESULT: {'PASS' if rep['ok'] else 'FAIL'} (WP11/arc/validation "
+        f"{'ok' if rep['core_ok'] else 'FAIL'}; E-E {rep['ee']['ok']}; junit {rep['junit']['ok']})"
         + (f" (failed: {rep['failed_files']})" if rep["failed_files"] else "")
     )
 

@@ -20,6 +20,17 @@ when pytest-xdist is installed (D21: a 16-worker run crashed) and pytest's built
 sidecar ``<stem>.meta.json`` next to it: ``{"sremu_commit": <git rev-parse HEAD>,
 "sremu_dirty": <git status --porcelain is non-empty>}``, both read before the tests run.
 These two read-only git calls are the only git use of this script.
+
+A job bundle without ``.git`` (the AWS regeneration job, ``experiments/regenerate_paper_data.sh``)
+passes ``--git-state FILE`` instead: a JSON file with ``commit`` (40 hex) and ``dirty``
+(boolean), the state the job fixed once for every process (``_regen/git_state.json``, from
+the runner's ``$SREMU_GIT_COMMIT`` / ``$SREMU_GIT_DIRTY``); no git process runs, and the
+sidecar also records ``git_state_source``. ``--host TEXT`` and ``--note TEXT`` add ``host``
+(printed in the paper's provenance table, e.g. ``AWS c7i.48xlarge``) and ``note``. Without
+these options the sidecar holds exactly the two keys above.
+
+    python tools/tasks.py paper-junit OUT.xml --git-state _regen/git_state.json \\
+        --host "AWS c7i.48xlarge" [pytest args...]
 """
 
 from __future__ import annotations
@@ -136,6 +147,21 @@ def _git_state(repo: Path = REPO) -> tuple[str, bool]:
     return commit, dirty
 
 
+def _git_state_from_file(path: Path) -> tuple[str, bool]:
+    """``(commit, dirty)`` from a git-state JSON (``commit``: 40 hex, ``dirty``: boolean)."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read {path}: {exc}") from exc
+    commit, dirty = doc.get("commit"), doc.get("dirty")
+    hex_ok = isinstance(commit, str) and set(commit) <= set("0123456789abcdef")
+    if not (hex_ok and len(commit) == 40):
+        raise RuntimeError(f"{path}: commit {commit!r} is not a full 40-hex commit id")
+    if not isinstance(dirty, bool):
+        raise RuntimeError(f"{path}: dirty {dirty!r} is not a boolean")
+    return commit, dirty
+
+
 def meta_path(junit: Path) -> Path:
     """Sidecar of a junit file: ``<stem>.meta.json`` in the same directory."""
     return junit.with_name(f"{junit.stem}.meta.json")
@@ -145,12 +171,24 @@ def task_paper_junit(extra: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="tasks.py paper-junit",
         description="CI + nightly tiers with --junitxml and a {sremu_commit, sremu_dirty} sidecar.",
+        allow_abbrev=False,  # every unknown option goes to pytest unchanged
     )
     parser.add_argument("junit", type=Path, help="junit XML file to write")
+    parser.add_argument(
+        "--git-state",
+        type=Path,
+        default=None,
+        help="JSON with commit/dirty used instead of git (job bundle without .git)",
+    )
+    parser.add_argument("--host", default=None, help="host label stored in the sidecar")
+    parser.add_argument("--note", default=None, help="note stored in the sidecar")
     args, rest = parser.parse_known_args(extra)
     junit = args.junit if args.junit.is_absolute() else Path.cwd() / args.junit
     try:
-        commit, dirty = _git_state(REPO)
+        if args.git_state is not None:
+            commit, dirty = _git_state_from_file(args.git_state)
+        else:
+            commit, dirty = _git_state(REPO)
     except RuntimeError as exc:
         print(f"[tasks] paper-junit: cannot read the sremu commit: {exc}", file=sys.stderr)
         return 1
@@ -160,8 +198,14 @@ def task_paper_junit(extra: list[str]) -> int:
         [f"--junitxml={junit}", *rest],
         BUDGET_S["ci"] + BUDGET_S["nightly"],
     )
-    meta = {"sremu_commit": commit, "sremu_dirty": dirty}
-    meta_path(junit).write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    meta: dict[str, object] = {"sremu_commit": commit, "sremu_dirty": dirty}
+    if args.git_state is not None:
+        meta["git_state_source"] = f"file {args.git_state} (no git process)"
+    for key in ("host", "note"):
+        if getattr(args, key) is not None:
+            meta[key] = getattr(args, key)
+    with meta_path(junit).open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(meta, indent=2) + "\n")
     print(f"[tasks] wrote {junit} and {meta_path(junit)} (commit {commit}, dirty {dirty})")
     return rc
 
