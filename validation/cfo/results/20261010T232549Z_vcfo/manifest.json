@@ -1,0 +1,204 @@
+{
+  "manifest_version": "1.0",
+  "sremu_version": "0.1.0.dev0",
+  "git_commit": "9dca79f37955dc38fa8890110bea0f342eea207d",
+  "git_dirty": true,
+  "dirty_patch_sha256": "81af3aa08ec9060d3ca69033a7a75751954410438f1c83b551f1bbd2e09f4cac",
+  "contract_version": "1.1",
+  "versions": {
+    "python": "3.12.4",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "numba": "0.68.0",
+    "pydantic": "2.14.0",
+    "pyzmq": "27.2.0",
+    "torch": null
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu_model": "AMD Ryzen 9 8945H w/ Radeon 780M Graphics",
+  "logical_cpus": 16,
+  "power_plan_or_governor": "Balanced",
+  "gpu": [
+    "NVIDIA GeForce RTX 4070 Laptop GPU, 581.08, 8188 MiB"
+  ],
+  "aws_instance": null,
+  "scenario_name": "vcfo_link",
+  "scenario_sha256": "c7ccab4ae0d11947023fcf21e8f71fcda69d3124ea745abbbc6a97f93c6b2abf",
+  "inputs": [
+    {
+      "path": "data/states/ideal_antipodal.yaml",
+      "sha256": "25d6aa27f60ac568b554ab415295e62db323c8548cb4bc934dc2aa212db5605c",
+      "data_class": "ANALYTIC"
+    },
+    {
+      "path": "data/validation/cfo/fig2_cfo_estimated_vs_actual.csv",
+      "sha256": "bb3622039b04092fcdbd1b3836ac8b2e877e37fa3096ffe259a7f4af801210cc",
+      "data_class": "DIG"
+    },
+    {
+      "path": "data/validation/cfo/fig2_cfo_stats.json",
+      "sha256": "2a1c4115939361e7267940976d45448176b790fad57c6794dc8bb37927f28ea4",
+      "data_class": "DIG"
+    }
+  ],
+  "assumptions": [
+    "V-CFO SIM link geometry (TX, RX, 16x16 RIS) [ENG]; static, isotropic antennas",
+    "CFO points of V-CFO-4: -1200 ... +1200 Hz in 400 Hz steps [ENG]",
+    "per-sample SNR defined on the 1+1j header (|x|^2 = 2) against k_B T0 F f_s, F = 0 dB"
+  ],
+  "seed": 20261010,
+  "rng_scheme": "philox4x32-10/blake2b-v1",
+  "mode": "lockstep",
+  "coupling": "barrier",
+  "backend": "numba_cpu",
+  "threads": null,
+  "deterministic": true,
+  "numba_disable_svml": true,
+  "page_size": {
+    "rx.rx0": 64
+  },
+  "links": {},
+  "verify_interp_max_rel": null,
+  "richardson_db": null,
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "nondeterministic_inputs": false,
+  "oracle_csi_used": false,
+  "argv": [
+    "validation/cfo/vcfo.py",
+    "--jobs",
+    "2"
+  ],
+  "t_start_utc": "2026-10-10T23:25:56.515638Z",
+  "t_end_utc": "2026-10-10T23:28:50.222097Z",
+  "wall_s": 180.84561910000048,
+  "host_load_samples": [
+    {
+      "t_utc": "2026-10-10T23:25:56.516639Z",
+      "cpu_busy_fraction": 0.9322845417236663,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:33.050732Z",
+      "cpu_busy_fraction": 0.9901934587430525,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:33.588524Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:38.372660Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:38.749995Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:43.692687Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:43.702231Z",
+      "cpu_busy_fraction": null,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:49.384012Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:49.891658Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:54.917669Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:26:55.602589Z",
+      "cpu_busy_fraction": 0.9985795454545454,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:00.677965Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:00.871442Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:05.709406Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:06.021802Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:11.138266Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:11.188519Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:15.717362Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:16.020350Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:22.892094Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:24.154825Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:27:28.246138Z",
+      "cpu_busy_fraction": 1.0,
+      "loadavg_1min": null
+    },
+    {
+      "t_utc": "2026-10-10T23:28:50.222097Z",
+      "cpu_busy_fraction": 0.9994161592812801,
+      "loadavg_1min": null
+    }
+  ]
+}

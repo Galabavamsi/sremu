@@ -1,0 +1,31 @@
+{
+  "sweep": "points",
+  "point_id": "p00056",
+  "index": 56,
+  "params": {
+    "kind": "w3_chunk",
+    "label": "main",
+    "h_m": 4.0,
+    "d0_m": 0.5,
+    "seg_start_m": 0.0,
+    "T_s": "100000/3",
+    "controller": null,
+    "tau_s": null,
+    "w6_batch_s": null,
+    "n_chunks": 20,
+    "chunk": 0,
+    "with_opt": true,
+    "convergence": null,
+    "stale": null,
+    "n_quad": null,
+    "seed": 20261010
+  },
+  "seed": 0,
+  "params_sha256": "9c8352762dc11018a46df3c0f56b6ade54ed76af7ef4ade4a4c3502cae03b8c5",
+  "runner": "vwcl:run_point",
+  "status": "ok",
+  "started_utc": "2026-10-10T23:57:24.760850Z",
+  "error": null,
+  "ended_utc": "2026-10-10T23:59:35.204382Z",
+  "wall_s": 130.44286189999548
+}

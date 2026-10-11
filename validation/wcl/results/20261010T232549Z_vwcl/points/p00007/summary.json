@@ -1,0 +1,71 @@
+{
+  "controller": "WclHeuristic",
+  "tau_s": "1/10",
+  "h_m": 4.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.625017532402388e-05,
+  "oracle_mean_mw": 7.70429671583741e-05,
+  "oracle_engdec_mean_mw": 7.62475081355444e-05,
+  "los_mean_mw": 7.389923605398562e-05,
+  "delta_db": -0.044921538318547505,
+  "delta_engdec_db": 0.0001519164373746662,
+  "decisions_identical_fraction": 0.0,
+  "n_barriers": 10000,
+  "traj_max_abs_dx_m": 5.684341886080802e-14,
+  "iq_lateness_max": 0,
+  "n_applied": 9999,
+  "iq_run_s": 633.2456956999958,
+  "iq_rtf": 1.5791658858329711,
+  "oracle_s": 21.753657099994598,
+  "verify_interp_max_rel": 0.005647405597223848,
+  "t_u_s": "9769/2000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "oracle_csi_used": false,
+  "w6": {
+    "T_s": "1000",
+    "rows": [
+      {
+        "grid": "auto_T_u",
+        "dt_s": "9769/2000000",
+        "snapshot_mean_mw": 7.638254372953751e-05,
+        "iq_mean_mw": 7.625017532402388e-05,
+        "delta_db": -0.007532707647648351,
+        "n_pieces": 214727,
+        "wall_s": 111.47974819999945
+      },
+      {
+        "grid": "5ms",
+        "dt_s": "1/200",
+        "snapshot_mean_mw": 7.638655417072352e-05,
+        "iq_mean_mw": 7.625017532402388e-05,
+        "delta_db": -0.007760726599300938,
+        "n_pieces": 200000,
+        "wall_s": 90.79902370000491
+      },
+      {
+        "grid": "1ms",
+        "dt_s": "1/1000",
+        "snapshot_mean_mw": 7.627542742981078e-05,
+        "iq_mean_mw": 7.625017532402388e-05,
+        "delta_db": -0.001438034022072543,
+        "n_pieces": 1000000,
+        "wall_s": 512.6013759999914
+      }
+    ],
+    "run_batch": {
+      "T_s": "100",
+      "batch_mean_mw": 0.00010553251593446585,
+      "piecewise_5ms_mean_mw": 0.00010553251593446642,
+      "iq_mean_mw": 0.0001053816777059677,
+      "batch_vs_piecewise_rel": -5.440092820663267e-15,
+      "delta_iq_vs_batch_db": -0.006211836229169876,
+      "batch_s": 76.31360290001612,
+      "batch_pieces": 20000
+    }
+  }
+}

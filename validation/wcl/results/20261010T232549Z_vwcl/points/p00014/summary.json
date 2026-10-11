@@ -1,0 +1,38 @@
+{
+  "h_m": 4.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.390257638561226e-05,
+  "coef_mean_mw": 7.390315354114795e-05,
+  "coef_mid_mean_mw": 7.390270517615061e-05,
+  "coef_los_mean_mw": 7.389923085698497e-05,
+  "n_applied": 10000,
+  "config_mismatches": 0,
+  "iq_lateness_max": 0,
+  "iq_run_s": 645.4059239000053,
+  "iq_rtf": 1.5494124906032518,
+  "iq_build_s": 0.48347360000479966,
+  "coef_s": 186.88672000000952,
+  "verify_interp_max_rel": 0.0058174524721660995,
+  "t_u_s": "9769/2000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "w6": null
+}

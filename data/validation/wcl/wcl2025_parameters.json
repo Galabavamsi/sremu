@@ -1,0 +1,39 @@
+{
+  "source": "S. Mishra and A. A. Kherani, \"On the Control of Binary RIS Under User Mobility\", IEEE Wireless Communications Letters 14(4), April 2025, pp. 1139-1143",
+  "source_file_sha256": {
+    "mishra2025_wcl_binary_ris_mobility.pdf": "5c2a91d8f190ed21d204c91ca827643a2524132dbd357c6be3feb933707c6986"
+  },
+  "data_class": "REPORTED",
+  "transcribed": "2026-10-10, by hand from Sec. II-A, III-B and IV-A of the letter (values only; no text or figures copied)",
+  "parameters": {
+    "l_m": 10.0,
+    "fc_hz": 1.0e9,
+    "element_length_k": "lambda/4",
+    "element_width_w": "lambda/4",
+    "n_elements": "floor(l/k) = 133",
+    "v_mps": 1.0,
+    "q": 0.285,
+    "p_t_dbm": 0.0,
+    "g_t": 1.0,
+    "g_r": 1.0,
+    "mobility": "1-D random waypoint, constant speed, no pause (Sec. II-A)",
+    "stationary_pdf": "f_X(x) = -6 x^2/l^3 + 6 x/l^2, 0 < x < l (Eq. 1)",
+    "mean_movement_period_m": "l/3 (Sec. IV)",
+    "urap_p": 0.2,
+    "urap_definition": "p(n, x) = p for all n, x; Eq. (9) is the integral of |S_LOS + sum_n p S_NLOS,n|^2 f_X(x) dx (power of the mean field)",
+    "h_low_m": 4.0,
+    "h_high_m": 6.0,
+    "fig6_geometry": {"l_m": 3.0, "h_m": 2.0, "n_elements": 20},
+    "tau_sui": "State Update Interval: the controller learns the user location every tau_SUI (Sec. IV-D)",
+    "ap_position": "corridor origin, on the user line (Fig. 1)"
+  },
+  "not_stated_in_the_source": [
+    "the URAP redraw period",
+    "the numerical values plotted in Figs. 5, 7 and 8 (no tables)",
+    "which v1 commit the letter's simulator used (H-1)"
+  ],
+  "sremu_deviations": [
+    "AP offset d0 = 0.5 m perpendicular to the user line (DESIGN.md 10.11), along +z in validation/wcl/vwcl.py; sensitivity d0 in {0.3, 1.0} m and an on-line AP with the MU segment starting at c in {0.05, 0.1, 0.2} m",
+    "kernel: area-tied K1 (DESIGN.md 5.3), not the letter's Eq. (2); nothing is stated about Eq. (2) until the letter's authors confirm (DESIGN.md 1.6 rule 6, H-3)"
+  ]
+}

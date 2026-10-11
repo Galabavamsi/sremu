@@ -1,0 +1,30 @@
+{
+  "controller": "ExactOptimum",
+  "tau_s": "10",
+  "h_m": 4.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.392610688838533e-05,
+  "oracle_mean_mw": 7.392623078103322e-05,
+  "oracle_engdec_mean_mw": 7.392623078103322e-05,
+  "los_mean_mw": 7.389923605398562e-05,
+  "delta_db": -7.278328389759281e-06,
+  "delta_engdec_db": -7.278328389759281e-06,
+  "decisions_identical_fraction": 1.0,
+  "n_barriers": 100,
+  "traj_max_abs_dx_m": 5.684341886080802e-14,
+  "iq_lateness_max": 0,
+  "n_applied": 100,
+  "iq_run_s": 477.5421634000086,
+  "iq_rtf": 2.094055931899692,
+  "oracle_s": 14.554672900005244,
+  "verify_interp_max_rel": 0.005870513957843954,
+  "t_u_s": "9769/2000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "oracle_csi_used": false,
+  "w6": null
+}

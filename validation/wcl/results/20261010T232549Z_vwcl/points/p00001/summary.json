@@ -1,0 +1,71 @@
+{
+  "controller": "ExactOptimum",
+  "tau_s": "1/10",
+  "h_m": 4.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.704668674505508e-05,
+  "oracle_mean_mw": 7.70429671583741e-05,
+  "oracle_engdec_mean_mw": 7.70429671583741e-05,
+  "los_mean_mw": 7.389923605398562e-05,
+  "delta_db": 0.00020966962152613178,
+  "delta_engdec_db": 0.00020966962152613178,
+  "decisions_identical_fraction": 1.0,
+  "n_barriers": 10000,
+  "traj_max_abs_dx_m": 5.684341886080802e-14,
+  "iq_lateness_max": 0,
+  "n_applied": 9999,
+  "iq_run_s": 743.6762316000095,
+  "iq_rtf": 1.3446711855352877,
+  "oracle_s": 26.245752500006347,
+  "verify_interp_max_rel": 0.0056419862019883435,
+  "t_u_s": "9769/2000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "oracle_csi_used": false,
+  "w6": {
+    "T_s": "1000",
+    "rows": [
+      {
+        "grid": "auto_T_u",
+        "dt_s": "9769/2000000",
+        "snapshot_mean_mw": 7.722842401362749e-05,
+        "iq_mean_mw": 7.704668674505508e-05,
+        "delta_db": -0.010232049618167594,
+        "n_pieces": 214727,
+        "wall_s": 103.34353600000031
+      },
+      {
+        "grid": "5ms",
+        "dt_s": "1/200",
+        "snapshot_mean_mw": 7.723388358571678e-05,
+        "iq_mean_mw": 7.704668674505508e-05,
+        "delta_db": -0.010539058113600674,
+        "n_pieces": 200000,
+        "wall_s": 104.93438940000487
+      },
+      {
+        "grid": "1ms",
+        "dt_s": "1/1000",
+        "snapshot_mean_mw": 7.7081298805457e-05,
+        "iq_mean_mw": 7.704668674505508e-05,
+        "delta_db": -0.0019505642714960914,
+        "n_pieces": 1000000,
+        "wall_s": 516.4812448000011
+      }
+    ],
+    "run_batch": {
+      "T_s": "100",
+      "batch_mean_mw": 0.00010648179257211648,
+      "piecewise_5ms_mean_mw": 0.00010648179257211612,
+      "iq_mean_mw": 0.00010627387638531438,
+      "batch_vs_piecewise_rel": 3.3306690738754696e-15,
+      "delta_iq_vs_batch_db": -0.008488317309165438,
+      "batch_s": 57.58163749999949,
+      "batch_pieces": 20000
+    }
+  }
+}

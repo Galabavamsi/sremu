@@ -1,0 +1,30 @@
+{
+  "controller": "WclHeuristic",
+  "tau_s": "3",
+  "h_m": 4.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.392580821619786e-05,
+  "oracle_mean_mw": 7.394217159255268e-05,
+  "oracle_engdec_mean_mw": 7.392587637121883e-05,
+  "los_mean_mw": 7.389923605398562e-05,
+  "delta_db": -0.0009611985088824326,
+  "delta_engdec_db": -4.003924551909677e-06,
+  "decisions_identical_fraction": 0.0,
+  "n_barriers": 334,
+  "traj_max_abs_dx_m": 5.684341886080802e-14,
+  "iq_lateness_max": 0,
+  "n_applied": 334,
+  "iq_run_s": 501.03047389999847,
+  "iq_rtf": 1.9958865819399076,
+  "oracle_s": 18.034505699994043,
+  "verify_interp_max_rel": 0.005974934020472562,
+  "t_u_s": "9769/2000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "oracle_csi_used": false,
+  "w6": null
+}

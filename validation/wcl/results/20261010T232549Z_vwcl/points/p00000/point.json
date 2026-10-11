@@ -1,0 +1,31 @@
+{
+  "sweep": "points",
+  "point_id": "p00000",
+  "index": 0,
+  "params": {
+    "kind": "w5_iq",
+    "label": "w5_ExactOptimum_1/100",
+    "h_m": 4.0,
+    "d0_m": 0.5,
+    "seg_start_m": 0.0,
+    "T_s": "1000",
+    "controller": "ExactOptimum",
+    "tau_s": "1/100",
+    "w6_batch_s": "100",
+    "n_chunks": null,
+    "chunk": null,
+    "with_opt": null,
+    "convergence": null,
+    "stale": null,
+    "n_quad": null,
+    "seed": 20261010
+  },
+  "seed": 0,
+  "params_sha256": "1a0336e14c939c8f674cda48494ffd88c06533a44cdbcccddf3d76cad2d07403",
+  "runner": "vwcl:run_point",
+  "status": "ok",
+  "started_utc": "2026-10-10T23:25:58.384762Z",
+  "error": null,
+  "ended_utc": "2026-10-11T00:26:28.968308Z",
+  "wall_s": 3630.583360299992
+}

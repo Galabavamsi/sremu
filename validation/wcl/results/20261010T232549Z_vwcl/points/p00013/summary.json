@@ -1,0 +1,79 @@
+{
+  "h_m": 2.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.39197428169364e-05,
+  "coef_mean_mw": 7.3919681161057e-05,
+  "coef_mid_mean_mw": 7.391977574456287e-05,
+  "coef_los_mean_mw": 7.389923085698497e-05,
+  "n_applied": 10000,
+  "config_mismatches": 0,
+  "iq_lateness_max": 0,
+  "iq_run_s": 1044.1956929000007,
+  "iq_rtf": 0.9576748944661342,
+  "iq_build_s": 0.25604970000858884,
+  "coef_s": 159.51000200002454,
+  "verify_interp_max_rel": 0.015461208143021201,
+  "t_u_s": "9769/4000000",
+  "tiles": {
+    "ris0": [
+      5,
+      1
+    ]
+  },
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "w6": {
+    "T_s": "1000",
+    "rows": [
+      {
+        "grid": "auto_T_u",
+        "dt_s": "9769/4000000",
+        "snapshot_mean_mw": 7.391973440142728e-05,
+        "iq_mean_mw": 7.39197428169364e-05,
+        "delta_db": 4.944293934272537e-07,
+        "n_pieces": 419457,
+        "wall_s": 180.418508200004
+      },
+      {
+        "grid": "5ms",
+        "dt_s": "1/200",
+        "snapshot_mean_mw": 7.391968116105693e-05,
+        "iq_mean_mw": 7.39197428169364e-05,
+        "delta_db": 3.6224178217025838e-06,
+        "n_pieces": 200000,
+        "wall_s": 81.0989949000068
+      },
+      {
+        "grid": "1ms",
+        "dt_s": "1/1000",
+        "snapshot_mean_mw": 7.391976730777851e-05,
+        "iq_mean_mw": 7.39197428169364e-05,
+        "delta_db": -1.4388897184858251e-06,
+        "n_pieces": 1000000,
+        "wall_s": 527.9680637999845
+      }
+    ],
+    "run_batch": {
+      "T_s": "100",
+      "batch_mean_mw": 0.00010279237941275398,
+      "piecewise_5ms_mean_mw": 0.00010279237941275401,
+      "iq_mean_mw": 0.00010279502389637054,
+      "batch_vs_piecewise_rel": -2.220446049250313e-16,
+      "delta_iq_vs_batch_db": 0.00011172714123119931,
+      "batch_s": 86.20856190001359,
+      "batch_pieces": 20000
+    }
+  }
+}

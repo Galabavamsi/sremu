@@ -1,0 +1,36 @@
+{
+  "source": "W. Tang et al., \"Path Loss Modeling and Measurements for Reconfigurable Intelligent Surfaces in the Millimeter-Wave Frequency Band\", IEEE Trans. Commun. 2022; arXiv:2101.08607v2 (Tables III and IV, Fig. 10)",
+  "data_class": "REPORTED",
+  "transcribed": "2026-10-10 (values as used by research/scratch/pm_tang2022_fig10_compare.py, the WP4 oracle tests/oracles/test_oracles_tang.py and the V-TANG-1 test tests/physics/test_vtang1_model_curves.py)",
+  "ris": {
+    "name": "RIS1",
+    "fc_hz": 2.7e10,
+    "n_u": 56,
+    "n_v": 20,
+    "pitch_u_m": 0.0014,
+    "pitch_v_m": 0.0028,
+    "coding_state_used": "0",
+    "gamma_state_0": {"mag": 0.9, "phase_deg": 165.0},
+    "gamma_state_1": {"mag": 0.7, "phase_deg": 0.0},
+    "sremu_table": "tang2022_ris1_27ghz (built-in, src/sremu/physics/tables)"
+  },
+  "link": {
+    "p_t_dbm": 20.0,
+    "gt_gr_gline_db": 24.0,
+    "gt_gr_gline_note": "measured calibration of Table IV (system B); it replaces the nominal horn peak gains",
+    "horn_pattern": "cos^alpha, alpha = 53.8, boresight at the panel centre",
+    "geometry": "Tx at distance d1 and Rx at d2 from the panel centre, both at angle theta from the normal, in the plane of the panel's u axis (specular setup)"
+  },
+  "fig10_panels": {
+    "a": {"d1_m": 1.0, "theta_deg": 10.0},
+    "b": {"d1_m": 2.0, "theta_deg": 10.0},
+    "c": {"d1_m": 1.0, "theta_deg": 45.0},
+    "d": {"d1_m": 2.0, "theta_deg": 45.0}
+  },
+  "fig10_d2_grid_m": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+  "digitizer_x_offset_m": 0.002,
+  "notes": [
+    "The digitized x positions are 1.002 ... 5.002 m; the nominal grid is 1.0 ... 5.0 m in 0.5 m steps (constant +0.002 m axis-calibration offset).",
+    "Measurement uncertainty is not reported in the source for the Fig. 10 points."
+  ]
+}

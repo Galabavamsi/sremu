@@ -1,0 +1,18 @@
+{
+  "sweep": "vcfo4",
+  "point_id": "p00010",
+  "index": 10,
+  "params": {
+    "n_trials": 200,
+    "snr_db": 10.0,
+    "cfo_hz": 0.0
+  },
+  "seed": 0,
+  "params_sha256": "48539dc9e546ae0722682b227901159d13860f7e7ae7c47060457f16417f8317",
+  "runner": "vcfo:run_point",
+  "status": "ok",
+  "started_utc": "2026-10-10T23:26:54.917669Z",
+  "error": null,
+  "ended_utc": "2026-10-10T23:27:00.676965Z",
+  "wall_s": 5.7590962999965996
+}

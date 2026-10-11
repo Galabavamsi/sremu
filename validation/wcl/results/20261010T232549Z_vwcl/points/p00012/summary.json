@@ -1,0 +1,38 @@
+{
+  "h_m": 1.0,
+  "T_s": "1000",
+  "iq_mean_mw": 7.40352431198169e-05,
+  "coef_mean_mw": 7.403404147684583e-05,
+  "coef_mid_mean_mw": 7.403529082002509e-05,
+  "coef_los_mean_mw": 7.389923085698497e-05,
+  "n_applied": 10000,
+  "config_mismatches": 0,
+  "iq_lateness_max": 0,
+  "iq_run_s": 1056.8153492000129,
+  "iq_rtf": 0.9462390953698573,
+  "iq_build_s": 0.2603584999887971,
+  "coef_s": 160.23075350001454,
+  "verify_interp_max_rel": 0.01564558399237457,
+  "t_u_s": "9769/4000000",
+  "tiles": {
+    "ris0": [
+      12,
+      1
+    ]
+  },
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "w6": null
+}

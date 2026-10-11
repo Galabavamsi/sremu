@@ -1,0 +1,163 @@
+schema_version: '1.0'
+name: vwcl_base
+seed: 20261010
+description: 'WCL letter corridor: h = 2.0 m, AP at (0, 0, 0.5) m, MU rwp_1d on [0.0, 10.0] m at 1.0 m/s,
+  N = 133 cells of lambda/4 at 1e+09 Hz'
+numerics:
+  page_target_s: '0.0005'
+  interp_rel_error: 0.001
+  t_u_max_s: '0.01'
+  t_u_s: null
+  fd_error_target_db: -60.0
+  narrowband_phase_rad: 0.05
+  point_max_pitch_wavelengths: 0.5
+  subcell_max_wavelengths: 0.2
+  richardson_tol_db: 0.05
+  deterministic: true
+  backend: numba_cpu
+  verify_interp: true
+environment:
+  ground: null
+  walls: []
+  occluders: []
+  edges: []
+  diffuse: null
+nodes:
+- id: ap
+  position_m:
+  - 0.0
+  - 0.0
+  - 0.5
+  trajectory: null
+  antenna:
+    pattern: isotropic
+    boresight: null
+  streams:
+  - name: tx0
+    direction: tx
+    fc_hz: 1000000000.0
+    rate_sps: '10000'
+    occupied_bw_hz: 100.0
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+- id: mu
+  position_m: null
+  trajectory:
+    model: rwp_1d
+    p0_m:
+    - 0.0
+    - 0.0
+    - 0.0
+    p1_m:
+    - 10.0
+    - 0.0
+    - 0.0
+    speed_mps: 1.0
+    pause_s: '0'
+  antenna:
+    pattern: isotropic
+    boresight: null
+  streams:
+  - name: rx0
+    direction: rx
+    fc_hz: 1000000000.0
+    rate_sps: '10000'
+    occupied_bw_hz: null
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+ris:
+- id: ris0
+  enabled: true
+  pose:
+    center_m:
+    - 4.98404961425
+    - 2.0
+    - 0.0
+    normal:
+    - 0.0
+    - -1.0
+    - 0.0
+    u_axis:
+    - 1.0
+    - 0.0
+    - 0.0
+  grid:
+    n_u: 133
+    n_v: 1
+    pitch_u_m: 0.0749481145
+    pitch_v_m: 0.0749481145
+    cell_model: auto
+  tiles: null
+  states:
+    library: on_off
+    file: null
+    assume_mag: null
+    efficiency: 1.0
+    override_efficiency: false
+  control:
+    granularity: element
+    groups: null
+  initial:
+    fill: 0
+    states: null
+  failures: null
+  transition:
+    model: step
+    duration_s: null
+    classes: single
+  capabilities:
+    reconfiguration_time_s: null
+    max_command_rate_hz: 10000.0
+    static_power_w: null
+controllers:
+- name: urap
+  kind: builtin
+  impl: Urap
+  period_s: '0.1'
+  min_latency_s: '0'
+  latency:
+    fixed_s: '0'
+    jitter: null
+  observation:
+    fields:
+    - rx_power_dbm
+    - ris_state
+    window_s: '0.001'
+    position_delay_s: '0'
+    position_noise_m: 0.0
+  params:
+    p: 0.2
+run:
+  mode: lockstep
+  coupling: barrier
+  duration_s: 100000/3
+  late_policy: apply_on_arrival
+  on_stall: wait
+  stall_timeout_s: 2.0
+  paced:
+    d_lag_s: '0.001'
+    slacks_s:
+    - '0'
+    - '0.001'
+    - '0.005'
+record:
+  iq: false
+  events: true
+  metrics: true
+  snapshots: false
+traffic:
+- stream: ap.tx0
+  generator: tone
+  params:
+    freq_hz: 0.0
+    amplitude: 1.0
