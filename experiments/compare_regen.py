@@ -690,7 +690,44 @@ def compare_file(
         return compare_json(rel, new_p, ref_p, tol, smoke, skip)
     if suf == ".jsonl":
         return compare_jsonl(rel, new_p, ref_p, tol, smoke, skip)
+    if suf == ".parquet":
+        return compare_parquet(rel, new_p, ref_p, tol, smoke, skip)
+    try:
+        new_p.read_bytes().decode("utf-8")
+        ref_p.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return compare_bytes(rel, new_p, ref_p)
     return compare_text(rel, new_p, ref_p)
+
+
+def compare_parquet(
+    rel: str, new_p: Path, ref_p: Path, tol: Tol, smoke: bool, skip: frozenset[str] = HOST_FIELDS
+) -> FileResult:
+    """Parquet: compare the table values like a CSV (writer metadata is not compared). The
+    sweep writes parquet only where pyarrow is installed and always writes the same rows to the
+    sibling ``index.csv``, which is compared; without pyarrow this file is reported as not
+    compared instead of failing."""
+    import tempfile
+
+    try:
+        import pyarrow.csv as pacsv
+        import pyarrow.parquet as pq
+    except ImportError:
+        return FileResult(rel, "parquet (not compared: no pyarrow; sibling index.csv compared)")
+    with tempfile.TemporaryDirectory() as td:
+        a = Path(td) / "new.csv"
+        b = Path(td) / "ref.csv"
+        pacsv.write_csv(pq.read_table(new_p), a)
+        pacsv.write_csv(pq.read_table(ref_p), b)
+        return compare_csv(rel, a, b, tol, smoke, skip)
+
+
+def compare_bytes(rel: str, new_p: Path, ref_p: Path) -> FileResult:
+    """Binary files other than parquet: byte equality."""
+    fr = FileResult(rel, "binary")
+    if new_p.read_bytes() != ref_p.read_bytes():
+        fr.exact_mismatches.append("binary content differs")
+    return fr
 
 
 # =========================================================================== provenance

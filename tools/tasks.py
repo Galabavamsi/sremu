@@ -68,6 +68,13 @@ HANG_DUMP_S = 300
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     env.setdefault("NUMBA_DISABLE_INTEL_SVML", "1")
+    # every xdist worker starts numba's default pool (one thread per logical CPU): on a 192-CPU
+    # host 8 workers ran 1536 threads and timing floors failed (AWS regeneration junits). Cap
+    # each worker at max(16, CPUs // workers), so hosts with <= 16 CPUs keep the default and the
+    # thread-invariance tests (1/4/16 threads) keep their coverage.
+    if "NUMBA_NUM_THREADS" not in env:
+        n = os.cpu_count() or 1
+        env["NUMBA_NUM_THREADS"] = str(min(n, max(16, n // XDIST_WORKERS)))
     return env
 
 
