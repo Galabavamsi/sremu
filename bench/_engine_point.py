@@ -976,8 +976,10 @@ def measure_paced(
     """One paced repetition (section 12.3): warm-up then ``measure_s`` measured seconds.
 
     Headless (in-process TX generators; RX pages delivered to the engine's RX history; no
-    transport). Sustainable (section 12.1) = miss rate < 1e-3 at 1 ms slack and zero
-    ``late_samples``/``overflow_pages`` over the measured window."""
+    transport), so the engine keeps the lockstep render driver threshold
+    (``render_min_work``: ``Emulator.render_parallel_min_work``). Sustainable (section 12.1)
+    = miss rate < 1e-3 at 1 ms slack and zero ``late_samples``/``overflow_pages`` over the
+    measured window."""
     from bench._scenes import ris_path_check
 
     res = _resolve(scenario)
@@ -997,6 +999,7 @@ def measure_paced(
         hist = None if pacer is None else pacer.stats.latency.to_dict()
         decisions = _decisions(eng)
         threading_rec = threading_record()
+        min_work = eng.render_parallel_min_work  # headless paced: the lockstep threshold
     finally:
         eng.close()
     wall = time.perf_counter() - w0
@@ -1033,4 +1036,5 @@ def measure_paced(
         "facts": facts,
         "decisions": decisions,
         "threading": threading_rec,
+        "render_min_work": min_work,
     }

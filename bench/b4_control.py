@@ -44,7 +44,8 @@ measured (commands issued during the warm-up are excluded). Reported: lateness d
 (samples) per RX, command visible latency ``t_wall_visible - t_wall_recv`` percentiles,
 statuses, client round-trip percentiles, deadline misses and page latency of the paced run.
 The paced part sets ``OMP_WAIT_POLICY=PASSIVE`` (``--omp-wait-policy``; an explicit
-environment setting wins): its pages render serially (``render_numba.PACED_PARALLEL_MIN_WORK``)
+environment setting wins): its served pages render serially
+(``render_numba.PACED_PARALLEL_MIN_WORK``, ``Emulator.set_served``)
 and the few parallel regions (noise blocks) left the OpenMP workers spinning for milliseconds
 beside the control and transport threads (WSL2, 1 ms pages: compute p50 261 vs 203 us, round
 trip p99 12.8 vs 4.6 ms, miss rate at 5 ms 1.5 % vs 0.05 %).
@@ -646,6 +647,7 @@ def paced_point(
         "pacer_t0_ns": None if pacer is None else pacer.t0_ns,
         "d_lag_ns": None if pacer is None else pacer.d_lag_ns,
         "threading": th_rec,
+        "render_min_work": eng.render_parallel_min_work,  # served paced: 2**18
         "client": client,
         "pages": paced.get("pages"),
         "miss_rate": paced.get("miss_rate"),

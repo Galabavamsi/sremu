@@ -8,8 +8,8 @@ Source of truth: `docs/model_card.yaml` (DESIGN.md section 5.15 (validity domain
 
 | Component | Model | Validity domain | Evidence | Default | Spec | Status |
 |---|---|---|---|---|---|---|
-| LOS | Friis + patterns + explicit V | Far field of the antennas | PH-01 | On | §5.2 | spec |
-| RIS | K1, `point` | Cell in the far field of Tx and Rx (r ≥ 3λ); pitch ≤ λ/2; scalar co-pol | PH-02–07, G1–3, V-TANG | auto | §5.3, 5.4 | spec |
+| LOS | Friis + patterns + explicit V | Far field of the antennas; occluders act on LOS (and ground/wall image legs), never on RIS hops | PH-01 | On | §5.2 | spec |
+| RIS | K1, `point` | Point-scatterer regime of Tx and Rx (r ≥ 3λ); pitch ≤ λ/2; scalar co-pol | PH-02–07, G1–3, V-TANG | auto | §5.3, 5.4 | spec |
 | RIS | K1, `po_patch` | As above; uniform-patch PO; Richardson-converged | PH-04, PH-26 | Pitch > λ/2 | §5.4 | spec |
 | Γ tables | Complex-linear LUT | Inside the grid; band ≤ validity bandwidth; reciprocal | PH-28, PH-31 | — | §5.5 | spec |
 | Ground | Flat-earth image + Fresnel | Smooth, flat; no curvature (P.526 experimental) | PH-10, PH-32, G8 | Off | §5.7 | spec |
@@ -19,5 +19,5 @@ Source of truth: `docs/model_card.yaml` (DESIGN.md section 5.15 (validity domain
 | Mobility/Doppler | Chord delay + exact phase + tiles | ε_rel ≤ 1e-3 (bound plus `verify_interp`) | PH-17–19 | Auto | §4.4, 5.10 | spec |
 | Wideband | FD Kaiser 8/16/32 | B ≤ 0.8 f_s; ≤ −60 dB in band | PH-20 | Auto | §4.5 | spec |
 | Noise | `kT_0 F f_s` per RX | — | PH-21, G5 | On | §5.12 | spec |
-| Non-idealities | Pipeline (§5.6) | Tables, failures, efficiency; coupling via tables only | PH-13–15, PH-25, PH-30 | — | §5.6 | spec |
+| Non-idealities | Pipeline (§5.6) | Per-state tables, failures, efficiency; coupling not modelled beyond what a per-state table measured with identical neighbours contains (coupling hook implemented as no coupling) | PH-13–15, PH-25, PH-30 | — | §5.6 | spec |
 | Transitions | Per-class g_c, complex-linear Γ path | [ENG] until measured | RT-12 | Step | §4.7 | spec |

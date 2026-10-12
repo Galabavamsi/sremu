@@ -33,7 +33,7 @@ def omp_wait_policy(policy: str | None) -> str | None:
     """Set ``OMP_WAIT_POLICY`` for numba's OpenMP threading layer before numba is imported
     (the runtime reads it when it starts): ``passive`` puts idle OpenMP workers to sleep at
     once instead of letting them spin for milliseconds after every parallel region. A served
-    paced engine runs few, short parallel regions (paced pages render serially below
+    paced engine runs few, short parallel regions (served paced pages render serially below
     ``render_numba.PACED_PARALLEL_MIN_WORK``); spinning workers then compete for the engine's
     CPUs with the control and transport threads. An explicit environment setting wins, and
     nothing is set once numba is imported. Returns the policy in effect (None: runtime

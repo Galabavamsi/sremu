@@ -95,7 +95,7 @@ def _scenario_mode(scenario: Path) -> str | None:
 
 
 def _passive_omp_for_paced() -> None:
-    """A paced server runs few, short OpenMP regions (paced pages render serially below
+    """A paced server runs few, short OpenMP regions (served paced pages render serially below
     ``render_numba.PACED_PARALLEL_MIN_WORK``); with the runtime's default wait policy the idle
     workers spin for milliseconds after each region beside the control and transport threads.
     Set ``OMP_WAIT_POLICY=PASSIVE`` before numba starts, as the B4 and E-B3 suites measure it

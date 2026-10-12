@@ -15,8 +15,14 @@ command semantics of :mod:`.commands`, the barriers of :mod:`.barriers` and the 
   with stall detection (``stall_timeout_s`` wall; ``on_stall: wait | zero_fill``).
 * **Paced (4.10).** :meth:`Emulator.run_paced` releases each page at
   ``R_j = t0 + k1/f + D_lag``, zero-fills missing TX data (``UNDERFLOW``,
-  ``underflow_slip_samples``) and counts deadline misses per slack. A paced ``numba_cpu``
-  engine renders with the paced driver threshold (``render_numba.PACED_PARALLEL_MIN_WORK``).
+  ``underflow_slip_samples``) and counts deadline misses per slack.
+* **Render driver threshold.** A served paced ``numba_cpu`` engine (marked by its server
+  with :meth:`Emulator.set_served`; the control server does so before its engine driver
+  starts) renders with the paced driver threshold
+  (``render_numba.PACED_PARALLEL_MIN_WORK``); every other engine (lockstep, served or not,
+  and headless paced: ``Emulator.run_paced`` without a server, B3, ``sremu run``) keeps
+  ``render_numba.PARALLEL_MIN_WORK`` (:attr:`Emulator.render_parallel_min_work`). The
+  threshold picks a render driver only: both drivers are bitwise identical.
 * **Heap freeze.** Before a paced loop (:meth:`Emulator.run_paced`) and before the served
   lockstep loop (:meth:`Emulator.start`) the engine runs ``gc.collect(); gc.freeze()``, so
   the cyclic collector no longer walks the objects that exist at that point; a served
@@ -298,18 +304,22 @@ class _RxWaiter:
 
 
 def _render_fn(
-    backend: BackendName, paced: bool = False
+    backend: BackendName, served_paced: bool = False
 ) -> Callable[[SegmentJob, NDArray[np.complex128]], None]:
-    """The backend's render function; a paced ``numba_cpu`` engine uses the paced driver
-    threshold (``render_numba.PACED_PARALLEL_MIN_WORK``: one page per release, short
-    parallel regions cost more than they save). The threshold picks a driver, never a value."""
+    """The backend's render function. A served paced ``numba_cpu`` engine
+    (``served_paced``: paced mode and :meth:`Emulator.set_served`) uses the paced driver
+    threshold (``render_numba.PACED_PARALLEL_MIN_WORK``: one page per release beside the
+    server's control and transport threads, short parallel regions cost more than they
+    save); every other ``numba_cpu`` engine, headless paced included, uses the default
+    ``render_numba.PARALLEL_MIN_WORK`` (read at each call). The threshold picks a driver,
+    never a value."""
     if backend == "numpy_ref":
         from sremu.channel import render_numpy
 
         return render_numpy.render
     from sremu.channel import render_numba
 
-    if paced:
+    if served_paced:
         return functools.partial(
             render_numba.render, parallel_min_work=render_numba.PACED_PARALLEL_MIN_WORK
         )
@@ -470,7 +480,8 @@ class Emulator:
         self._group_of_rx = {r: g for g in self.groups for r in g.rx}
         # ---------------------------------------------------------- scheduler pieces
         self.snaps = SnapshotManager(model, t_u=self.t_u, block_s=block_s)
-        self._render = _render_fn(cfg.backend, paced=cfg.mode == "paced")
+        self._served = False  # driven by a server (set_served): picks the render threshold
+        self._render = _render_fn(cfg.backend)
         self.builder = JobBuilder(
             model,
             self.snaps,
@@ -1357,6 +1368,43 @@ class Emulator:
     _stop_evt: threading.Event | None = None
     _kicks: int = 0
 
+    @property
+    def served(self) -> bool:
+        """Whether a server drives this engine (:meth:`set_served`)."""
+        return self._served
+
+    def set_served(self, served: bool = True) -> None:
+        """Mark the engine as served (driven by a server: the control server with its
+        control and transport threads) or headless (the default). The control server calls
+        it before its engine driver starts; call it before the run starts. The flag selects
+        the render driver threshold of a paced ``numba_cpu`` engine
+        (:attr:`render_parallel_min_work`): a served paced engine renders below
+        ``render_numba.PACED_PARALLEL_MIN_WORK`` serially, so it starts few short parallel
+        regions beside the server's threads; a headless paced engine keeps the lockstep
+        threshold, which was faster there [MEASURED, DESIGN 4.10]. Lockstep engines use the
+        lockstep threshold either way. It changes no computed sample (the drivers are
+        bitwise identical); a call during a run takes effect from the next segment."""
+        with self._lock:
+            self._served = bool(served)
+            self._render = _render_fn(
+                self.cfg.backend, served_paced=self._served and self.cfg.mode == "paced"
+            )
+            self.builder.render_fn = self._render
+
+    @property
+    def render_parallel_min_work(self) -> int | None:
+        """The ``numba_cpu`` render driver threshold of this engine (work units per segment
+        below which a segment renders serially): ``render_numba.PACED_PARALLEL_MIN_WORK``
+        for a served paced engine (:meth:`set_served`), ``render_numba.PARALLEL_MIN_WORK``
+        otherwise (lockstep, headless paced); None for ``numpy_ref``."""
+        if self.cfg.backend != "numba_cpu":
+            return None
+        from sremu.channel import render_numba
+
+        if self._served and self.cfg.mode == "paced":
+            return render_numba.PACED_PARALLEL_MIN_WORK
+        return render_numba.PARALLEL_MIN_WORK
+
     def freeze_heap(self) -> None:
         """Collect, then freeze the heap (see :func:`_gc_freeze`) until the served or paced
         loop ends or the engine is closed (:meth:`_thaw_heap`); idempotent. The loops call it
@@ -1655,7 +1703,9 @@ class Emulator:
 
     def manifest_info(self) -> dict[str, Any]:
         """Run facts for the manifest (section 3.6): mode, backend, page sizes, per-link
-        decisions, snapshot policy, ``verify_interp_max_rel``, counters and flags."""
+        decisions, snapshot policy, ``verify_interp_max_rel``, counters and flags, whether a
+        server drove the engine (``served``) and its render driver threshold
+        (``render_parallel_min_work``)."""
         pol = self.policy.to_manifest()
         pol["t_u_s_used"] = (
             None if self.t_u is None else f"{self.t_u.numerator}/{self.t_u.denominator}"
@@ -1677,6 +1727,8 @@ class Emulator:
             "nondeterministic_inputs": self.nondeterministic_inputs,
             "oracle_csi_used": self.oracle_csi_used,
             "ris_event_reference": self.cfg.ris_event_reference,
+            "served": self._served,
+            "render_parallel_min_work": self.render_parallel_min_work,
         }
 
     def close(self) -> None:

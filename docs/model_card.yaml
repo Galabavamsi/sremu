@@ -26,7 +26,7 @@ rows:
   - id: los
     component: LOS
     model: Friis + patterns + explicit V
-    validity_domain: Far field of the antennas
+    validity_domain: Far field of the antennas; occluders act on LOS (and ground/wall image legs), never on RIS hops
     evidence: [PH-01]
     default: "On"
     spec_section: "5.2"
@@ -34,8 +34,8 @@ rows:
   - id: ris_point
     component: RIS
     model: K1, `point`
-    validity_domain: Cell in the far field of Tx and Rx (r ≥ 3λ); pitch ≤ λ/2; scalar co-pol
-    validity_domain_tex: 'Cell in the far field of Tx and Rx ($r \geq 3\lambda$); pitch $\leq \lambda/2$; scalar co-pol'
+    validity_domain: Point-scatterer regime of Tx and Rx (r ≥ 3λ); pitch ≤ λ/2; scalar co-pol
+    validity_domain_tex: 'Point-scatterer regime of Tx and Rx ($r \geq 3\lambda$); pitch $\leq \lambda/2$; scalar co-pol'
     evidence: [PH-02, PH-03, PH-04, PH-05, PH-06, PH-07, G1, G2, G3, V-TANG]
     default: auto
     spec_section: "5.3, 5.4"
@@ -122,7 +122,7 @@ rows:
     component: Non-idealities
     model: Pipeline (§5.6)
     model_tex: 'Ordered pipeline: command, quantizer, failures, table, efficiency, coupling hook, transition'
-    validity_domain: Tables, failures, efficiency; coupling via tables only
+    validity_domain: Per-state tables, failures, efficiency; coupling not modelled beyond what a per-state table measured with identical neighbours contains (coupling hook implemented as no coupling)
     evidence: [PH-13, PH-14, PH-15, PH-25, PH-30]
     default: "—"
     spec_section: "5.6"

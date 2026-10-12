@@ -52,7 +52,11 @@ timed RX starts late; with ``exit_when_done`` it never holds once a consumer has
 so the run reaches its end and the server exits) and to capture an engine exception
 (reported as ``sim.stall`` with an ``error`` and in ``stats.get``) instead of losing it in
 a thread. Paced mode runs ``run_paced`` in a driver thread. Engines without a ``start``
-method (e.g. the synchronous ``FakeEngine``) compute on demand.
+method (e.g. the synchronous ``FakeEngine``) compute on demand. Before its driver starts the
+server marks the engine as served (``Emulator.set_served``): a served paced ``numba_cpu``
+engine renders with the served driver threshold (``render_numba.PACED_PARALLEL_MIN_WORK``,
+few short OpenMP regions beside the control and transport threads), while the same engine run
+headless keeps the lockstep threshold (DESIGN 4.10).
 """
 
 from __future__ import annotations
@@ -648,6 +652,12 @@ class ControlServer:
         add_sink = getattr(self.engine, "add_sink", None)
         if callable(add_sink):
             add_sink(_PubSink(self))
+        # this server drives the engine, marked before any server thread starts: a paced
+        # numba_cpu engine then renders with the served driver threshold
+        # (render_numba.PACED_PARALLEL_MIN_WORK; Emulator.set_served)
+        set_served = getattr(self.engine, "set_served", None)
+        if callable(set_served):
+            set_served(True)
         self._register_scenario_controllers()
         if cfg.raw_peers:
             from sremu.transport.rawreqrep import RawPeer

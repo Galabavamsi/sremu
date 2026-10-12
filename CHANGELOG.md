@@ -5,11 +5,29 @@ contract has its own version (`sremu.contracts.CONTRACT_VERSION`).
 
 ## [Unreleased] - 0.1.0.dev0
 
+### Changed (paced render threshold: served engines only; 2026-10-12)
+
+- `render_numba.PACED_PARALLEL_MIN_WORK` (2**18) now applies only to served paced engines:
+  the control server marks the engine it drives with the new `Emulator.set_served()` before
+  any server thread starts (`Emulator.served`). Headless paced engines (`Emulator.run_paced`
+  without a server: B3, `sremu run`) are back to the lockstep `PARALLEL_MIN_WORK` (2**16), as
+  at 81f2735. The higher threshold, meant to keep a served engine from starting short
+  parallel regions beside its control and transport threads, hurt headless runs, which have
+  one OpenMP pool and no such threads: on AWS c7i.8xlarge (B3, 1 MS/s, 1 ms pages, 240 cells)
+  page latency p50 rose from 90-97 to 128 us (1 link) and from 162-168 to 226 us (2 links),
+  ~9-12 ms page latency maxima reappeared (81f2735: ~0.5-2 ms), and the largest sustainable
+  link count fell from 8 to 1. The drivers are bitwise identical; no sample changes.
+- `Emulator.render_parallel_min_work` (also in `manifest_info()`, with `served`) reports an
+  engine's threshold; `render_numba.driver_stats()` (manifests' `threading.render`) adds
+  `calls_by_min_work`, the driver calls per threshold used. B3 rows carry `render_min_work`,
+  B4 paced records `render_min_work`.
+
 ### Changed (served and paced runs: OpenMP pools, pacer wait, GC, B4 validity; 2026-10-12)
 
 - Paced `numba_cpu` engines render with `render_numba.PACED_PARALLEL_MIN_WORK` (2**18; lockstep
   keeps `PARALLEL_MIN_WORK` = 2**16): one page per release, so short parallel regions cost
-  more than they save. The drivers are bitwise identical; only timing changes.
+  more than they save. The drivers are bitwise identical; only timing changes. (Since
+  narrowed to served paced engines, see above.)
 - `render_numba.driver_stats()` (calls per driver, threads that ran the parallel driver) and
   `sysinfo.threading_info()` (threading layer in use, threads, render drivers); manifests carry
   the latter as the optional `threading` field, benchmark rows (B2, B3, B4) per point.

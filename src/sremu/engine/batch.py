@@ -18,9 +18,10 @@ their time averages. It uses the **same** ``PropagationModel``, panel command se
 * **Weights.** Each piece holds its left-point value; it is weighted by its duration, or,
   with ``rate``, by ``count(t_i, t_{i+1}, rate)`` RX samples (R4), which matches a sampled
   receiver exactly (VA-4).
-* **Agreement contract (4.11).** Noise off, paired trajectories: IQ time-averaged tone power
-  vs batch within 0.02 dB (VA-1); noise on: within the 95 % CI of batch means; tau_SUI -> 0
-  with an in-process controller: equal to batch at 1e-9 (VA-4).
+* **Agreement contract (4.11).** tau_SUI -> 0 with an in-process controller: equal to batch at
+  1e-9 (VA-4). Under mobility the left-point rule differs from the IQ time average by up to
+  ~0.09 dB (VA-1 rows at tau_SUI = 0.1 s); the 0.02 dB VA-1 contract is met by the E-A
+  experiment evaluator (``experiments/ea.py``, midpoint rule), not by this function.
 * **Observations** for controllers carry ``rx_power_dbm`` from the channel itself
   (``10 log10(sum_l P_tx,l |h_l|**2 / 1 mW)``, averaged over ``window_s``; the batch path
   has no noise), positions, oracle CSI and the RIS state.

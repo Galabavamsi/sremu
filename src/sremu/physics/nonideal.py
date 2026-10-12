@@ -285,8 +285,10 @@ class CouplingHook(Protocol):
 
     ``delta(state)`` returns (N,) complex ``delta Gamma_n`` added to every cell's Gamma for
     the configuration ``state``; ``combine`` adds ``sum_n C[r, n] delta Gamma_n`` (separable
-    tables only). Coupling otherwise enters only through measured or simulated
-    per-configuration tables (ETSI GR RIS 003 section 5.1.3).
+    tables only). No implementation other than :class:`NoCoupling` ships. Response tables are
+    per state (Gamma(S, F, T, T)); a table measured in an array of identical neighbours
+    contains the locally periodic coupling (ETSI GR RIS 003 section 5.1.3), and no
+    configuration-dependent coupling is modelled.
     """
 
     def delta(self, state: np.ndarray) -> np.ndarray: ...

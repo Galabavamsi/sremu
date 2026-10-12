@@ -47,17 +47,20 @@ Same prepared inputs as ``render_numpy`` (shared ``prepare_segment``), evaluated
 * **Parallelism** over blocks with ``prange`` (never over a summation index, D-3) when the
   estimated work ``(k1 - k0)*units`` reaches :data:`PARALLEL_MIN_WORK`; smaller segments run
   the same block function serially, which avoids the parallel-region launch (about 10 us on
-  the development laptop) on small pages. Paced engines pass the higher
-  :data:`PACED_PARALLEL_MIN_WORK` (``render(..., parallel_min_work=...)``): they compute one
-  page per release, the worker threads have gone to sleep (or must be woken) by the next
-  page, and a short parallel region costs more than it saves. The parallel driver splits the
-  blocks into ``numba.get_num_threads()`` contiguous runs, one ``prange`` iteration and one
-  private scratch slot each. Every block starts from its own anchors and both drivers execute
-  identical floating-point operations, so the output does not depend on the thread count,
-  the split or the driver (I2a). The renderer never changes the thread count: changing it
-  between calls re-sizes the OpenMP team, which cost more than it saved; a run should fix it
-  once. :func:`driver_stats` counts the calls of each driver and names the threads that ran
-  the parallel one (with numba's OpenMP layer every such thread keeps its own worker pool).
+  the development laptop) on small pages. Served paced engines (driven by the control server,
+  ``Emulator.set_served``) pass the higher :data:`PACED_PARALLEL_MIN_WORK`
+  (``render(..., parallel_min_work=...)``): they compute one page per release beside the
+  server's control and transport threads, the worker threads have gone to sleep (or must be
+  woken) by the next page, and a short parallel region costs more than it saves. Headless
+  paced engines keep :data:`PARALLEL_MIN_WORK` (the higher one measured slower there on AWS).
+  The parallel driver splits the blocks into ``numba.get_num_threads()`` contiguous runs, one
+  ``prange`` iteration and one private scratch slot each. Every block starts from its own
+  anchors and both drivers execute identical floating-point operations, so the output does
+  not depend on the thread count, the split or the driver (I2a). The renderer never changes
+  the thread count: changing it between calls re-sizes the OpenMP team, which cost more than
+  it saved; a run should fix it once. :func:`driver_stats` counts the calls of each driver
+  (also per threshold used) and names the threads that ran the parallel one (with numba's
+  OpenMP layer every such thread keeps its own worker pool).
 * **No fastmath** (D-4).
 * **Caches.** Each memoized ``LinkStatic`` carries its packed kernel arrays (built once);
   link sets with several links are concatenated once per tuple of statics (LRU). Polyphase
@@ -110,15 +113,21 @@ Lockstep computes pages back to back, so the worker threads are still spinning f
 previous region when the next one starts."""
 
 PACED_PARALLEL_MIN_WORK: Final[int] = 1 << 18
-"""[MEASURED] The same threshold for paced engines (one page per release). With a 1 ms gap
+"""[MEASURED] The same threshold for served paced engines (one page per release, beside the
+control server's control and transport threads; ``Emulator.set_served``). With a 1 ms gap
 between calls the parallel driver was slower than the serial one below about 1.5e5 work on
 WSL2 (OpenMP, 12 threads) and 7e4 on Windows (MS OpenMP, 16 threads), and in paced runs
-(served and headless, OpenMP) the serial driver gave the lower compute time per page up to
-1.5e5 and about the same at 2.9e5 (1 MS/s pages of 1024 samples with 4 links per RX:
-724 vs 752 us); at 2.9e5 with 2048-sample pages the parallel one won (320 vs 506 us). A
-parallel region after a sleep wakes the pool (tens to hundreds of microseconds), and the
-pool's threads then spin on the engine's CPUs while the serial parts of the page and the
-served engine's control and transport threads run."""
+(OpenMP) the serial driver gave the lower compute time per page up to 1.5e5 and about the
+same at 2.9e5 (1 MS/s pages of 1024 samples with 4 links per RX: 724 vs 752 us); at 2.9e5
+with 2048-sample pages the parallel one won (320 vs 506 us). A parallel region after a sleep
+wakes the pool (tens to hundreds of microseconds), and the pool's threads then spin on the
+engine's CPUs while the serial parts of the page and the served engine's control and
+transport threads run. Headless paced engines (no server threads) keep
+:data:`PARALLEL_MIN_WORK`: on AWS c7i.8xlarge (B3, 1 MS/s, 1 ms pages, 240 cells) this
+threshold raised the page latency p50 from 90-97 to 128 us (1 link) and from 162-168 to
+226 us (2 links) and cut the largest sustainable link count from 8 to 1 (the WSL2
+development laptop, 12 OpenMP threads, shows the opposite headless: serial 238 vs parallel
+280 us at 2 links; paced numbers come from the AWS host)."""
 
 _SPLITTER = 134217729.0
 
@@ -806,31 +815,43 @@ def clear_caches() -> None:
 
 _drv_lock = threading.Lock()
 _drv_calls = {"serial": 0, "parallel": 0}
+_drv_by_min_work: dict[int, dict[str, int]] = {}  # chosen driver per threshold used
 _drv_threads: dict[threading.Thread, None] = {}  # threads that ran the parallel driver
 
 
-def _count_driver(parallel: bool) -> None:
+def _count_driver(parallel: bool, min_work: int | None = None) -> None:
+    """Count one render call (``min_work``: the threshold that chose the driver; None when
+    the caller forced it)."""
+    key = "parallel" if parallel else "serial"
     with _drv_lock:
-        if not parallel:
-            _drv_calls["serial"] += 1
-            return
-        _drv_calls["parallel"] += 1
-        _drv_threads.setdefault(threading.current_thread(), None)
+        _drv_calls[key] += 1
+        if min_work is not None:
+            per = _drv_by_min_work.get(min_work)
+            if per is None:
+                per = _drv_by_min_work[min_work] = {"serial": 0, "parallel": 0}
+            per[key] += 1
+        if parallel:
+            _drv_threads.setdefault(threading.current_thread(), None)
 
 
 def driver_stats() -> dict[str, object]:
     """Render driver choices of this process so far (diagnostic, for manifests and benchmark
-    records): the two thresholds, the number of calls of each driver, and the names of the
-    threads that ran the parallel driver, with those still alive. With numba's OpenMP
-    threading layer every thread that runs a parallel region keeps its own worker pool while
-    it lives, so two live names mean two pools competing for the same CPUs."""
+    records): the two thresholds, the number of calls of each driver, the same per threshold
+    that chose the driver (``calls_by_min_work``, keyed by the threshold as a string: shows
+    which threshold the process's engines used, e.g. ``"262144"`` for a served paced engine),
+    and the names of the threads that ran the parallel driver, with those still alive. With
+    numba's OpenMP threading layer every thread that runs a parallel region keeps its own
+    worker pool while it lives, so two live names mean two pools competing for the same
+    CPUs."""
     with _drv_lock:
         threads = list(_drv_threads)
         calls = dict(_drv_calls)
+        by_min_work = {str(k): dict(v) for k, v in sorted(_drv_by_min_work.items())}
     return {
         "parallel_min_work": PARALLEL_MIN_WORK,
         "paced_parallel_min_work": PACED_PARALLEL_MIN_WORK,
         "calls": calls,
+        "calls_by_min_work": by_min_work,
         "parallel_threads": [t.name for t in threads],
         "parallel_threads_alive": [t.name for t in threads if t.is_alive()],
     }
@@ -872,17 +893,19 @@ def render_prepared(
             o += pl.x.shape[0]
     bank = _bank  # read after packing: contains every table the pack refers to
     work = seg.n * pk.units
+    threshold: int | None = None
     if parallel is None:
-        parallel = work >= (PARALLEL_MIN_WORK if min_work is None else min_work)
+        threshold = PARALLEL_MIN_WORK if min_work is None else int(min_work)
+        parallel = work >= threshold
     if not parallel:
-        _count_driver(False)
+        _count_driver(False, threshold)
         _call(_kernel_ser, seg, out, pk, X_i, xc, bank)
         return
     if n_chunks is None:
         n_chunks = nb.get_num_threads()
     if n_chunks < 1:
         raise ConfigurationError(f"n_chunks must be >= 1, got {n_chunks}")
-    _count_driver(True)
+    _count_driver(True, threshold)
     _call(_kernel_par, seg, out, pk, X_i, xc, bank, int(n_chunks))
 
 
@@ -930,8 +953,8 @@ def render(
 ) -> None:
     """``numba_cpu`` render: add the segment's received signal into ``out`` (section 3.4).
 
-    ``parallel_min_work``: driver threshold (default :data:`PARALLEL_MIN_WORK`; paced engines
-    pass :data:`PACED_PARALLEL_MIN_WORK`). It selects a driver only, never a value."""
+    ``parallel_min_work``: driver threshold (default :data:`PARALLEL_MIN_WORK`; served paced
+    engines pass :data:`PACED_PARALLEL_MIN_WORK`). It selects a driver only, never a value."""
     if not isinstance(out, np.ndarray) or out.dtype != np.complex128 or out.ndim != 1:
         raise ConfigurationError("out must be a 1-D complex128 accumulator")
     if out.shape[0] != int(job.k1) - int(job.k0):
