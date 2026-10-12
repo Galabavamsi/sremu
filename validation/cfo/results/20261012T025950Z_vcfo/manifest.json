@@ -1,0 +1,230 @@
+{
+  "manifest_version": "1.0",
+  "sremu_version": "0.1.0.dev0",
+  "git_commit": "bf0826812891043b8ce5d76acb9595d06307d4c4",
+  "git_dirty": false,
+  "dirty_patch_sha256": null,
+  "contract_version": "1.1",
+  "versions": {
+    "python": "3.12.3",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "numba": "0.68.0",
+    "pydantic": "2.14.0",
+    "pyzmq": "27.2.0",
+    "torch": null
+  },
+  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8488C",
+  "logical_cpus": 192,
+  "power_plan_or_governor": null,
+  "gpu": [],
+  "aws_instance": {
+    "type": "c7i.48xlarge",
+    "id": "i-08e220489c936dc18"
+  },
+  "scenario_name": "vcfo_link",
+  "scenario_sha256": "c7ccab4ae0d11947023fcf21e8f71fcda69d3124ea745abbbc6a97f93c6b2abf",
+  "inputs": [
+    {
+      "path": "data/states/ideal_antipodal.yaml",
+      "sha256": "25d6aa27f60ac568b554ab415295e62db323c8548cb4bc934dc2aa212db5605c",
+      "data_class": "ANALYTIC"
+    },
+    {
+      "path": "data/validation/cfo/fig2_cfo_estimated_vs_actual.csv",
+      "sha256": "bb3622039b04092fcdbd1b3836ac8b2e877e37fa3096ffe259a7f4af801210cc",
+      "data_class": "DIG"
+    },
+    {
+      "path": "data/validation/cfo/fig2_cfo_stats.json",
+      "sha256": "2a1c4115939361e7267940976d45448176b790fad57c6794dc8bb37927f28ea4",
+      "data_class": "DIG"
+    }
+  ],
+  "assumptions": [
+    "V-CFO SIM link geometry (TX, RX, 16x16 RIS) [ENG]; static, isotropic antennas",
+    "CFO points of V-CFO-4: -1200 ... +1200 Hz in 400 Hz steps [ENG]",
+    "per-sample SNR defined on the 1+1j header (|x|^2 = 2) against k_B T0 F f_s, F = 0 dB"
+  ],
+  "seed": 20261010,
+  "rng_scheme": "philox4x32-10/blake2b-v1",
+  "mode": "lockstep",
+  "coupling": "barrier",
+  "backend": "numba_cpu",
+  "threads": null,
+  "deterministic": true,
+  "numba_disable_svml": true,
+  "page_size": {
+    "rx.rx0": 64
+  },
+  "links": {},
+  "verify_interp_max_rel": null,
+  "richardson_db": null,
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "nondeterministic_inputs": false,
+  "oracle_csi_used": false,
+  "argv": [
+    "validation/cfo/vcfo.py",
+    "--jobs",
+    "21",
+    "--root",
+    "/opt/job/out/validation/cfo"
+  ],
+  "t_start_utc": "2026-10-12T02:59:50.984275Z",
+  "t_end_utc": "2026-10-12T03:00:29.153122Z",
+  "wall_s": 38.17944767800003,
+  "host_load_samples": [
+    {
+      "t_utc": "2026-10-12T02:59:50.984613Z",
+      "cpu_busy_fraction": 0.09268292682926829,
+      "loadavg_1min": 82.646484375
+    },
+    {
+      "t_utc": "2026-10-12T02:59:54.596443Z",
+      "cpu_busy_fraction": 0.1694275802254987,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:54.658508Z",
+      "cpu_busy_fraction": 0.17424242424242425,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:54.939444Z",
+      "cpu_busy_fraction": 0.17022858204794647,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:54.990030Z",
+      "cpu_busy_fraction": 0.16563146997929606,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.016447Z",
+      "cpu_busy_fraction": 0.16699410609037327,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.026510Z",
+      "cpu_busy_fraction": 0.1518324607329843,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.042125Z",
+      "cpu_busy_fraction": 0.1476510067114094,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.042389Z",
+      "cpu_busy_fraction": 0.36363636363636365,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.048536Z",
+      "cpu_busy_fraction": 0.13274336283185842,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.048822Z",
+      "cpu_busy_fraction": 0.0,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.050241Z",
+      "cpu_busy_fraction": 0.17857142857142858,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.054601Z",
+      "cpu_busy_fraction": 0.1111111111111111,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.056983Z",
+      "cpu_busy_fraction": 0.10869565217391304,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.058389Z",
+      "cpu_busy_fraction": 0.16666666666666666,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.064626Z",
+      "cpu_busy_fraction": 0.10344827586206896,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.064859Z",
+      "cpu_busy_fraction": 0.0,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.067782Z",
+      "cpu_busy_fraction": 0.10714285714285714,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.068465Z",
+      "cpu_busy_fraction": 0.07692307692307693,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.074805Z",
+      "cpu_busy_fraction": 0.09166666666666666,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.076085Z",
+      "cpu_busy_fraction": 0.08,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:55.080493Z",
+      "cpu_busy_fraction": 0.10465116279069768,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T03:00:29.153016Z",
+      "cpu_busy_fraction": 0.07281375665428363,
+      "loadavg_1min": 49.45654296875
+    }
+  ],
+  "threading": {
+    "layer": "omp",
+    "layer_config": "default",
+    "num_threads": 1,
+    "omp_wait_policy": null,
+    "os_threads": 2,
+    "render": {
+      "parallel_min_work": 65536,
+      "paced_parallel_min_work": 262144,
+      "calls": {
+        "serial": 2280,
+        "parallel": 0
+      },
+      "calls_by_min_work": {
+        "65536": {
+          "serial": 2280,
+          "parallel": 0
+        }
+      },
+      "parallel_threads": [],
+      "parallel_threads_alive": []
+    }
+  }
+}

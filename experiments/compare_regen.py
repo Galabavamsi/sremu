@@ -897,6 +897,12 @@ def validation_code_hashes(repo: Path) -> dict[str, str]:
     return out
 
 
+NON_PRODUCERS: frozenset[str] = frozenset(
+    {"experiments/compare_regen.py", "experiments/install_regen.py"}
+)
+"""Experiment-directory scripts that check or install results but produce none."""
+
+
 def code_check(job_out: Path, repo: Path) -> dict[str, Any]:
     """The job's git state and code hashes against the local checkout ``repo``."""
     gs = _json(job_out / "_regen" / "git_state.json")
@@ -909,8 +915,12 @@ def code_check(job_out: Path, repo: Path) -> dict[str, Any]:
     job_files = {
         k: v for k, v in (job_code.get("files") or {}).items() if not k.startswith("paper/")
     }
+    # the comparison and installation tools produce no result: a fix to them after the job
+    # does not make the job's results stale
+    loc_files = {k: v for k, v in local["files"].items() if k not in NON_PRODUCERS}
+    job_files = {k: v for k, v in job_files.items() if k not in NON_PRODUCERS}
     differ = sorted(
-        k for k in set(job_files) | set(local["files"]) if job_files.get(k) != local["files"].get(k)
+        k for k in set(job_files) | set(loc_files) if job_files.get(k) != loc_files.get(k)
     )
     job_val = prov.get("validation_code")
     loc_val = validation_code_hashes(repo)
@@ -929,19 +939,15 @@ def code_check(job_out: Path, repo: Path) -> dict[str, Any]:
         "src_sremu_tree_sha256_job": job_code.get("src_sremu_tree_sha256"),
         "src_sremu_tree_sha256_local": local["src_sremu_tree_sha256"],
         "src_equal": job_code.get("src_sremu_tree_sha256") == local["src_sremu_tree_sha256"],
-        "files_compared": len(set(job_files) | set(local["files"])),
+        "files_compared": len(set(job_files) | set(loc_files)),
         "files_differing": differ,
         "validation_code_compared": None if job_val is None else len(set(job_val) | set(loc_val)),
         "validation_code_differing": val_differ,
         "clean_tree": "not checked here (no git process): run git status in the checkout",
     }
-    res["ok"] = bool(
-        res["head_equals_job_commit"]
-        and res["src_equal"]
-        and not differ
-        and val_differ is not None
-        and not val_differ
-    )
+    # content decides: the local checkout may be a later commit (e.g. tool fixes) as long as
+    # src/sremu, every result-producing script and the validation code are byte-identical
+    res["ok"] = bool(res["src_equal"] and not differ and val_differ is not None and not val_differ)
     return res
 
 

@@ -1,0 +1,142 @@
+schema_version: '1.0'
+name: vtang
+seed: 1
+description: Tang 2022 Fig. 10 geometry d1 = 1.0 m, d2 = 1.0 m, theta = 10.0 deg
+numerics:
+  page_target_s: '0.0005'
+  interp_rel_error: 0.001
+  t_u_max_s: '0.01'
+  t_u_s: null
+  fd_error_target_db: -60.0
+  narrowband_phase_rad: 0.05
+  point_max_pitch_wavelengths: 0.5
+  subcell_max_wavelengths: 0.2
+  richardson_tol_db: 0.05
+  deterministic: true
+  backend: numba_cpu
+  verify_interp: true
+environment:
+  ground: null
+  walls: []
+  occluders: []
+  edges: []
+  diffuse: null
+nodes:
+- id: tx
+  position_m:
+  - -0.17364817766693033
+  - 0.0
+  - 0.984807753012208
+  trajectory: null
+  antenna:
+    pattern:
+      cos_power:
+        alpha: 53.8
+    boresight:
+    - 0.17364817766693036
+    - -0.0
+    - -0.9848077530122081
+  streams:
+  - name: tx0
+    direction: tx
+    fc_hz: 27000000000.0
+    rate_sps: '1000000'
+    occupied_bw_hz: 100000.0
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+- id: rx
+  position_m:
+  - 0.17364817766693033
+  - 0.0
+  - 0.984807753012208
+  trajectory: null
+  antenna:
+    pattern:
+      cos_power:
+        alpha: 53.8
+    boresight:
+    - -0.17364817766693036
+    - -0.0
+    - -0.9848077530122081
+  streams:
+  - name: rx0
+    direction: rx
+    fc_hz: 27000000000.0
+    rate_sps: '1000000'
+    occupied_bw_hz: null
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+ris:
+- id: ris1
+  enabled: true
+  pose:
+    center_m:
+    - 0.0
+    - 0.0
+    - 0.0
+    normal:
+    - 0.0
+    - 0.0
+    - 1.0
+    u_axis:
+    - 1.0
+    - 0.0
+    - 0.0
+  grid:
+    n_u: 56
+    n_v: 20
+    pitch_u_m: 0.0014
+    pitch_v_m: 0.0028
+    cell_model: auto
+  tiles: null
+  states:
+    library: tang2022_ris1_27ghz
+    file: null
+    assume_mag: null
+    efficiency: 1.0
+    override_efficiency: false
+  control:
+    granularity: element
+    groups: null
+  initial:
+    fill: 0
+    states: null
+  failures: null
+  transition:
+    model: step
+    duration_s: null
+    classes: single
+  capabilities:
+    reconfiguration_time_s: null
+    max_command_rate_hz: 10000.0
+    static_power_w: null
+controllers: []
+run:
+  mode: lockstep
+  coupling: barrier
+  duration_s: '0.001'
+  late_policy: apply_on_arrival
+  on_stall: wait
+  stall_timeout_s: 2.0
+  paced:
+    d_lag_s: '0.001'
+    slacks_s:
+    - '0'
+    - '0.001'
+    - '0.005'
+record:
+  iq: false
+  events: true
+  metrics: true
+  snapshots: false
+traffic: []

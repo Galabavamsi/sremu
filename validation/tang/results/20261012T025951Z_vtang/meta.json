@@ -1,0 +1,142 @@
+{
+  "study": "V-TANG",
+  "run_dir": "/opt/job/out/validation/tang/20261012T025951Z_vtang",
+  "sremu_commit": "bf0826812891043b8ce5d76acb9595d06307d4c4",
+  "sremu_dirty": false,
+  "dirty_patch_sha256": null,
+  "git_state_source": "$SREMU_EXP_GIT_JSON (/opt/job/out/_regen/git_state.json)",
+  "seed": 1,
+  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8488C",
+  "logical_cpus": 192,
+  "power_plan_or_governor": null,
+  "t_start_utc": "2026-10-12T02:59:51.388912Z",
+  "t_end_utc": "2026-10-12T02:59:52.314119Z",
+  "wall_s": 0.9361378660000241,
+  "timings_s": {
+    "engine_points": 0.9224677779999979
+  },
+  "host_cpu_busy_fraction_samples": [
+    0.09004739336492891,
+    0.1572469087008074
+  ],
+  "host_cpu_busy_fraction_summary": {
+    "n": 2,
+    "min": 0.09004739336492891,
+    "median": 0.12364715103286816,
+    "mean": 0.12364715103286816,
+    "max": 0.1572469087008074
+  },
+  "resumed_from": [],
+  "inputs": [
+    {
+      "path": "data/validation/tang2022/tang2022_fig10_vector.json",
+      "sha256": "cf8793e9f9ed5a799d9aad4eff799278b8cf0a9d26af9bbe7e3c736cc6f03a20",
+      "data_class": "DIG"
+    },
+    {
+      "path": "data/validation/tang2022/tang2022_parameters.json",
+      "sha256": "aab055816fa417634ee11009695d5b578d7e2af191012d6d64de9c7974d49bf0",
+      "data_class": "REPORTED"
+    }
+  ],
+  "assumptions": [
+    "library tang2022_ris1_27ghz: measurement uncertainty is not reported in the source table; sigma_mag_db = sigma_phase_deg = 0 [ENG]",
+    "library tang2022_ris1_27ghz: used as an angle-independent (separable) response [ENG]",
+    "library tang2022_ris1_27ghz: validity_bw_hz = 1 GHz [ENG]; the source table gives no bandwidth",
+    "Tang Fig. 10 x positions snapped from 1.002 ... 5.002 m to the nominal 0.5 m grid",
+    "link budget: P_T + G_t G_r G_line (measured, 24.0 dB) - nominal horn gains + |h_RIS|"
+  ],
+  "data_classes": [
+    "DIG",
+    "REPORTED",
+    "SIM-sremu"
+  ],
+  "acceptance": {
+    "V-TANG-1_max_abs_le_0.05dB": true,
+    "V-TANG-2_rmse_regression_1.05_pm_0.05dB": true,
+    "cell_model_auto_resolved": [
+      "point"
+    ]
+  },
+  "numbers": {
+    "n_points": 36,
+    "vtang1_max_abs_db": 0.01208454465381692,
+    "vtang1_mean_abs_db": 0.007951394909399766,
+    "vtang1_rmse_db": 0.00835973054204204,
+    "vtang2_measured_minus_engine": {
+      "n": 36,
+      "bias": 0.9770486050906008,
+      "sd": 0.38017763624890344,
+      "rmse": 1.0464913519600032,
+      "mae": 0.9770486050906008,
+      "max_abs": 1.5904903104524735
+    },
+    "vtang2_measured_minus_published": {
+      "n": 36,
+      "bias": 0.9850000000000007,
+      "sd": 0.3808674310045417,
+      "rmse": 1.0541610671788046,
+      "mae": 0.9850000000000007,
+      "max_abs": 1.6000000000000014
+    },
+    "per_panel": {
+      "a": {
+        "max_abs_engine_minus_published_db": 0.011976159224971639,
+        "measured_minus_engine": {
+          "n": 9,
+          "bias": 0.7907141193609158,
+          "sd": 0.37009240369787977,
+          "rmse": 0.8642791771958728,
+          "mae": 0.7907141193609158,
+          "max_abs": 1.4781945349731274
+        }
+      },
+      "b": {
+        "max_abs_engine_minus_published_db": 0.012034177596603968,
+        "measured_minus_engine": {
+          "n": 9,
+          "bias": 1.1504099275229547,
+          "sd": 0.3894711449841674,
+          "rmse": 1.2075912293253943,
+          "mae": 1.1504099275229547,
+          "max_abs": 1.5904903104524735
+        }
+      },
+      "c": {
+        "max_abs_engine_minus_published_db": 0.01208454465381692,
+        "measured_minus_engine": {
+          "n": 9,
+          "bias": 1.0567532599704417,
+          "sd": 0.2928678700225888,
+          "rmse": 1.0922311409046035,
+          "mae": 1.0567532599704417,
+          "max_abs": 1.4818814902141284
+        }
+      },
+      "d": {
+        "max_abs_engine_minus_published_db": 0.011267612495394985,
+        "measured_minus_engine": {
+          "n": 9,
+          "bias": 0.9103171135080912,
+          "sd": 0.41579422793996323,
+          "rmse": 0.9911370543313062,
+          "mae": 0.9103171135080912,
+          "max_abs": 1.4020837978853606
+        }
+      }
+    },
+    "vtang1_bound_for_wording_db": 0.02,
+    "vtang2_measured_minus_published_bias_exact": "197/200",
+    "wording_bias_rounding": "exact decimal mean, half-even to 0.01 dB",
+    "wording": "The kernel reproduces Tang et al.'s published model curves within 0.02 dB. Their digitized chamber measurements lie +0.98 dB (SD 0.38 dB, n = 36) above that published model.",
+    "wording_note": "Template of DESIGN.md 10.8 filled from this run (curve: max |engine - published| rounded up to 0.01 dB; bias/SD: measured - published Eq. 9 curve, bias as the exact decimal mean rounded half-even). Not presented as sremu accuracy."
+  },
+  "figure": "F3(b): vtang_points.csv (published_eq9_dbm, engine_dbm, measured_dbm)",
+  "outputs": {
+    "manifest.json": "e39a2c89d97838b07240780d88570a64930ec36811b9bc1a1da1458a83a4b045",
+    "scenario.resolved.yaml": "8d7ee6e0a7d6ee01f98112cd949bdbe7ab25d18bcbeb064fb74251c99243af6c",
+    "vtang_points.csv": "41dc5cdc8f4b7d148e67404c9aa3fffe3cc45f8b419306e359dac3bc760b4646",
+    "vtang_summary.json": "4862b556a481c2569470cf515573068f62f978a59224a8a8f75c623036e5883a"
+  }
+}

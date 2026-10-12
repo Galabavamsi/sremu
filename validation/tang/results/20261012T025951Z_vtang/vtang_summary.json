@@ -1,0 +1,80 @@
+{
+  "acceptance": {
+    "V-TANG-1_max_abs_le_0.05dB": true,
+    "V-TANG-2_rmse_regression_1.05_pm_0.05dB": true,
+    "cell_model_auto_resolved": [
+      "point"
+    ]
+  },
+  "n_points": 36,
+  "vtang1_max_abs_db": 0.01208454465381692,
+  "vtang1_mean_abs_db": 0.007951394909399766,
+  "vtang1_rmse_db": 0.00835973054204204,
+  "vtang2_measured_minus_engine": {
+    "n": 36,
+    "bias": 0.9770486050906008,
+    "sd": 0.38017763624890344,
+    "rmse": 1.0464913519600032,
+    "mae": 0.9770486050906008,
+    "max_abs": 1.5904903104524735
+  },
+  "vtang2_measured_minus_published": {
+    "n": 36,
+    "bias": 0.9850000000000007,
+    "sd": 0.3808674310045417,
+    "rmse": 1.0541610671788046,
+    "mae": 0.9850000000000007,
+    "max_abs": 1.6000000000000014
+  },
+  "per_panel": {
+    "a": {
+      "max_abs_engine_minus_published_db": 0.011976159224971639,
+      "measured_minus_engine": {
+        "n": 9,
+        "bias": 0.7907141193609158,
+        "sd": 0.37009240369787977,
+        "rmse": 0.8642791771958728,
+        "mae": 0.7907141193609158,
+        "max_abs": 1.4781945349731274
+      }
+    },
+    "b": {
+      "max_abs_engine_minus_published_db": 0.012034177596603968,
+      "measured_minus_engine": {
+        "n": 9,
+        "bias": 1.1504099275229547,
+        "sd": 0.3894711449841674,
+        "rmse": 1.2075912293253943,
+        "mae": 1.1504099275229547,
+        "max_abs": 1.5904903104524735
+      }
+    },
+    "c": {
+      "max_abs_engine_minus_published_db": 0.01208454465381692,
+      "measured_minus_engine": {
+        "n": 9,
+        "bias": 1.0567532599704417,
+        "sd": 0.2928678700225888,
+        "rmse": 1.0922311409046035,
+        "mae": 1.0567532599704417,
+        "max_abs": 1.4818814902141284
+      }
+    },
+    "d": {
+      "max_abs_engine_minus_published_db": 0.011267612495394985,
+      "measured_minus_engine": {
+        "n": 9,
+        "bias": 0.9103171135080912,
+        "sd": 0.41579422793996323,
+        "rmse": 0.9911370543313062,
+        "mae": 0.9103171135080912,
+        "max_abs": 1.4020837978853606
+      }
+    }
+  },
+  "vtang1_bound_for_wording_db": 0.02,
+  "vtang2_measured_minus_published_bias_exact": "197/200",
+  "wording_bias_rounding": "exact decimal mean, half-even to 0.01 dB",
+  "wording": "The kernel reproduces Tang et al.'s published model curves within 0.02 dB. Their digitized chamber measurements lie +0.98 dB (SD 0.38 dB, n = 36) above that published model.",
+  "wording_note": "Template of DESIGN.md 10.8 filled from this run (curve: max |engine - published| rounded up to 0.01 dB; bias/SD: measured - published Eq. 9 curve, bias as the exact decimal mean rounded half-even). Not presented as sremu accuracy."
+}

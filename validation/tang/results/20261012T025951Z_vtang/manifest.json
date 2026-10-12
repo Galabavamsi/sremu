@@ -1,0 +1,110 @@
+{
+  "manifest_version": "1.0",
+  "sremu_version": "0.1.0.dev0",
+  "git_commit": "bf0826812891043b8ce5d76acb9595d06307d4c4",
+  "git_dirty": false,
+  "dirty_patch_sha256": null,
+  "contract_version": "1.1",
+  "versions": {
+    "python": "3.12.3",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "numba": "0.68.0",
+    "pydantic": "2.14.0",
+    "pyzmq": "27.2.0",
+    "torch": null
+  },
+  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8488C",
+  "logical_cpus": 192,
+  "power_plan_or_governor": null,
+  "gpu": [],
+  "aws_instance": {
+    "type": "c7i.48xlarge",
+    "id": "i-08e220489c936dc18"
+  },
+  "scenario_name": "vtang",
+  "scenario_sha256": "ec6b264e0ec182fc722be562bc51870dc66944da3159895a6dae09ac9dd24624",
+  "inputs": [
+    {
+      "path": "data/states/tang2022_ris1_27ghz.yaml",
+      "sha256": "1ac9c06990548e32aebe3a4a8bdc459c9c909dd34065939d024f3e52217b7c43",
+      "data_class": "REPORTED"
+    },
+    {
+      "path": "data/validation/tang2022/tang2022_fig10_vector.json",
+      "sha256": "cf8793e9f9ed5a799d9aad4eff799278b8cf0a9d26af9bbe7e3c736cc6f03a20",
+      "data_class": "DIG"
+    },
+    {
+      "path": "data/validation/tang2022/tang2022_parameters.json",
+      "sha256": "aab055816fa417634ee11009695d5b578d7e2af191012d6d64de9c7974d49bf0",
+      "data_class": "REPORTED"
+    }
+  ],
+  "assumptions": [
+    "library tang2022_ris1_27ghz: measurement uncertainty is not reported in the source table; sigma_mag_db = sigma_phase_deg = 0 [ENG]",
+    "library tang2022_ris1_27ghz: used as an angle-independent (separable) response [ENG]",
+    "library tang2022_ris1_27ghz: validity_bw_hz = 1 GHz [ENG]; the source table gives no bandwidth",
+    "Tang Fig. 10 x positions snapped from 1.002 ... 5.002 m to the nominal 0.5 m grid",
+    "link budget: P_T + G_t G_r G_line (measured, 24.0 dB) - nominal horn gains + |h_RIS|"
+  ],
+  "seed": 1,
+  "rng_scheme": "philox4x32-10/blake2b-v1",
+  "mode": "lockstep",
+  "coupling": "barrier",
+  "backend": "numba_cpu",
+  "threads": null,
+  "deterministic": true,
+  "numba_disable_svml": true,
+  "page_size": {
+    "rx.rx0": 512
+  },
+  "links": {},
+  "verify_interp_max_rel": null,
+  "richardson_db": null,
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "nondeterministic_inputs": false,
+  "oracle_csi_used": false,
+  "argv": [
+    "validation/tang/vtang.py",
+    "--root",
+    "/opt/job/out/validation/tang"
+  ],
+  "t_start_utc": "2026-10-12T02:59:51.388912Z",
+  "t_end_utc": "2026-10-12T02:59:52.314119Z",
+  "wall_s": 0.9361378660000241,
+  "host_load_samples": [
+    {
+      "t_utc": "2026-10-12T02:59:51.389307Z",
+      "cpu_busy_fraction": 0.09004739336492891,
+      "loadavg_1min": 77.38916015625
+    },
+    {
+      "t_utc": "2026-10-12T02:59:52.314062Z",
+      "cpu_busy_fraction": 0.1572469087008074,
+      "loadavg_1min": 77.38916015625
+    }
+  ],
+  "threading": {
+    "layer": "omp",
+    "layer_config": "default",
+    "num_threads": 1,
+    "omp_wait_policy": null,
+    "os_threads": 1,
+    "render": null
+  }
+}
