@@ -1,0 +1,63 @@
+{
+  "name": "vcfo4",
+  "description": "V-CFO-4 noisy trials (validation/cfo/vcfo.py)",
+  "runner": "vcfo:run_point",
+  "spec_sha256": "f49c731a4b2430a7c97d55385bd5b83ca61938d6dbd015f85a78aaad7fa09af3",
+  "spec_path": null,
+  "spec": {
+    "base": {
+      "n_trials": 200
+    },
+    "grid": {
+      "snr_db": [
+        0.0,
+        10.0,
+        20.0
+      ],
+      "cfo_hz": [
+        -1200.0,
+        -800.0,
+        -400.0,
+        0.0,
+        400.0,
+        800.0,
+        1200.0
+      ]
+    },
+    "zip": {},
+    "seeds": [
+      0
+    ]
+  },
+  "n_points": 21,
+  "jobs": 21,
+  "environment": {
+    "sremu_version": "0.1.0.dev0",
+    "contract_version": "1.1",
+    "versions": {
+      "python": "3.12.3",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1",
+      "numba": "0.68.0",
+      "pydantic": "2.14.0",
+      "pyzmq": "27.2.0",
+      "torch": null
+    },
+    "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8488C",
+    "logical_cpus": 192,
+    "power_plan_or_governor": null,
+    "gpu": [],
+    "aws_instance": "type='c7i.48xlarge' id='i-0b61314ac0dcfeb18'"
+  },
+  "argv": [
+    "validation/cfo/vcfo.py",
+    "--jobs",
+    "21",
+    "--root",
+    "/opt/job/out/validation/cfo"
+  ],
+  "t_start_utc": "2026-10-12T00:04:48.780249Z",
+  "t_end_utc": "2026-10-12T00:04:52.414562Z",
+  "n_failed": 0
+}

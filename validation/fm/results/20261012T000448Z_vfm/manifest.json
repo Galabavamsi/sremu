@@ -1,0 +1,108 @@
+{
+  "manifest_version": "1.0",
+  "sremu_version": "0.1.0.dev0",
+  "git_commit": "4ec4c2b6ed06f8f85fd04a350959053fbb3f6f24",
+  "git_dirty": false,
+  "dirty_patch_sha256": null,
+  "contract_version": "1.1",
+  "versions": {
+    "python": "3.12.3",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "numba": "0.68.0",
+    "pydantic": "2.14.0",
+    "pyzmq": "27.2.0",
+    "torch": null
+  },
+  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8488C",
+  "logical_cpus": 192,
+  "power_plan_or_governor": null,
+  "gpu": [],
+  "aws_instance": {
+    "type": "c7i.48xlarge",
+    "id": "i-0b61314ac0dcfeb18"
+  },
+  "scenario_name": "vfm_lateral",
+  "scenario_sha256": "07e0573aee26ffda0736f97830fe768b2688fdec513be38f8fcc4699be2956b6",
+  "inputs": [
+    {
+      "path": "data/states/ideal_antipodal.yaml",
+      "sha256": "25d6aa27f60ac568b554ab415295e62db323c8548cb4bc934dc2aa212db5605c",
+      "data_class": "ANALYTIC"
+    },
+    {
+      "path": "tests/oracles/data/physics_model_checks.json",
+      "sha256": "b77bccd58b012fc861aa5d420a9ecaf492f381c32ddcf3651fe60ab2aa3043f9",
+      "data_class": "ANALYTIC"
+    }
+  ],
+  "assumptions": [
+    "model-based dimensioning, not validated (DESIGN 10.12)",
+    "lateral RIS placement with the normal on the horizontal bisector [ENG]",
+    "ridge: horizontal knife edge 400 m long, 2 km from the RX (0.5, 5 km sensitivity) [ENG]",
+    "ground eps_r = 15, sigma = 1e-3 S/m, H pol (P.526 module defaults) [ASSUMED]",
+    "A_req by coherent-aperture scaling of the focused 56.25 m^2 panel [DERIVED]",
+    "RIS legs are not diffracted (release 1); the geometry keeps them clear of the ridge",
+    "x axis: knife-edge loss of the ridge on the LOS ray, -20 log10 |F(nu)| (exact F)",
+    "four-ray knife-edge direct path (TX/RX ground images, F(nu) per ray): [ENG] model-form sensitivity row, not sremu's model"
+  ],
+  "seed": 1,
+  "rng_scheme": "philox4x32-10/blake2b-v1",
+  "mode": "lockstep",
+  "coupling": "barrier",
+  "backend": "numba_cpu",
+  "threads": null,
+  "deterministic": true,
+  "numba_disable_svml": true,
+  "page_size": {
+    "rx.rx0": 512
+  },
+  "links": {},
+  "verify_interp_max_rel": null,
+  "richardson_db": null,
+  "counters": {
+    "late_samples": 0,
+    "underflow_slip_samples": 0,
+    "overflow_pages": 0,
+    "bad_packets": 0,
+    "schema_errors": 0,
+    "seq_errors": 0,
+    "rec_dropped": 0,
+    "stall_zero_samples": 0,
+    "late_commands": 0,
+    "rejected_commands": 0,
+    "rate_limited_commands": 0,
+    "deadline_misses": 0
+  },
+  "nondeterministic_inputs": false,
+  "oracle_csi_used": false,
+  "argv": [
+    "validation/fm/vfm.py",
+    "--root",
+    "/opt/job/out/validation/fm"
+  ],
+  "t_start_utc": "2026-10-12T00:04:48.209219Z",
+  "t_end_utc": "2026-10-12T00:04:51.348684Z",
+  "wall_s": 3.1499536229999876,
+  "host_load_samples": [
+    {
+      "t_utc": "2026-10-12T00:04:48.209584Z",
+      "cpu_busy_fraction": 0.07960199004975124,
+      "loadavg_1min": 80.04248046875
+    },
+    {
+      "t_utc": "2026-10-12T00:04:51.348620Z",
+      "cpu_busy_fraction": 0.17120920029249484,
+      "loadavg_1min": 75.07421875
+    }
+  ],
+  "threading": {
+    "layer": "omp",
+    "layer_config": "default",
+    "num_threads": 1,
+    "omp_wait_policy": null,
+    "os_threads": 1,
+    "render": null
+  }
+}

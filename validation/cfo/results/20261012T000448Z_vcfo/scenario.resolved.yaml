@@ -1,0 +1,135 @@
+schema_version: '1.0'
+name: vcfo_link
+seed: 20261010
+description: 'V-CFO SIM link: TX (5,2,5), RX (15,8,5), RIS at (10,0,5) facing +y'
+numerics:
+  page_target_s: '0.0005'
+  interp_rel_error: 0.001
+  t_u_max_s: '0.01'
+  t_u_s: null
+  fd_error_target_db: -60.0
+  narrowband_phase_rad: 0.05
+  point_max_pitch_wavelengths: 0.5
+  subcell_max_wavelengths: 0.2
+  richardson_tol_db: 0.05
+  deterministic: true
+  backend: numba_cpu
+  verify_interp: true
+environment:
+  ground: null
+  walls: []
+  occluders: []
+  edges: []
+  diffuse: null
+nodes:
+- id: tx
+  position_m:
+  - 5.0
+  - 2.0
+  - 5.0
+  trajectory: null
+  antenna:
+    pattern: isotropic
+    boresight: null
+  streams:
+  - name: tx0
+    direction: tx
+    fc_hz: 2399996950.0
+    rate_sps: '5880'
+    occupied_bw_hz: 1176.0
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+- id: rx
+  position_m:
+  - 15.0
+  - 8.0
+  - 5.0
+  trajectory: null
+  antenna:
+    pattern: isotropic
+    boresight: null
+  streams:
+  - name: rx0
+    direction: rx
+    fc_hz: 2399996950.0
+    rate_sps: '5880'
+    occupied_bw_hz: null
+    full_scale_dbm: 0.0
+    gain_db: 0.0
+    noise_figure_db: 0.0
+    lo:
+      cfo_hz: 0.0
+      linewidth_hz: 0.0
+    adc_clip: false
+ris:
+- id: ris0
+  enabled: true
+  pose:
+    center_m:
+    - 10.0
+    - 0.0
+    - 5.0
+    normal:
+    - 0.0
+    - 1.0
+    - 0.0
+    u_axis:
+    - 1.0
+    - 0.0
+    - 0.0
+  grid:
+    n_u: 16
+    n_v: 16
+    pitch_u_m: 0.06
+    pitch_v_m: 0.06
+    cell_model: auto
+  tiles: null
+  states:
+    library: ideal_antipodal
+    file: null
+    assume_mag: null
+    efficiency: 1.0
+    override_efficiency: false
+  control:
+    granularity: element
+    groups: null
+  initial:
+    fill: 0
+    states: null
+  failures: null
+  transition:
+    model: step
+    duration_s: null
+    classes: single
+  capabilities:
+    reconfiguration_time_s: null
+    max_command_rate_hz: 10000.0
+    static_power_w: null
+controllers: []
+run:
+  mode: lockstep
+  coupling: barrier
+  duration_s: 2389/5880
+  late_policy: apply_on_arrival
+  on_stall: wait
+  stall_timeout_s: 2.0
+  paced:
+    d_lag_s: '0.001'
+    slacks_s:
+    - '0'
+    - '0.001'
+    - '0.005'
+record:
+  iq: false
+  events: true
+  metrics: true
+  snapshots: false
+traffic:
+- stream: tx.tx0
+  generator: bpsk
+  params: {}
