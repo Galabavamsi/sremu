@@ -1,8 +1,12 @@
 # sremu
 
 **Smart Radio Environment EMUlator**: a software-only, IQ-level radio-environment emulator
-for reconfigurable intelligent surfaces (RIS). It is meant to be released as open source
-once a licence is agreed (see [Licence](#licence)).
+for reconfigurable intelligent surfaces (RIS), released under the MIT licence.
+
+**Preprint (draft):** [Timed RIS Control in the Loop: A Sample-Accurate IQ-Level Emulator with
+Characterized Timing](docs/preprint/sremu-preprint-draft.pdf), Galaba Vamsi. Not yet on arXiv;
+the paper sources and the pipeline that builds it from recorded results are in
+[sremu-paper](https://github.com/Galabavamsi/sremu-paper).
 
 - RIS configuration is a **timestamped runtime command from an external controller**,
   applied at an **exact, logged sample** on every receiver.
@@ -11,8 +15,12 @@ once a licence is agreed (see [Licence](#licence)).
 
 sremu is not a digital twin, a ray tracer, a UHD drop-in or a hard-real-time emulator.
 
-An earlier in-house simulator by the authors was used in [Mishra & Kherani 2025a, 2025b];
-sremu is an independent new implementation.
+sremu grows out of the author's earlier emulator for smart radio environments
+([RIS-SIM](https://github.com/Galabavamsi/RIS-SIM), written during a 2025 research internship
+at IIT Bhilai, and its rewrite [RIM-SIM-V2](https://github.com/Galabavamsi/RIM-SIM-V2)), which was
+used in [Mishra & Kherani 2025a, 2025b]; sremu is an independent new implementation. It was
+written with substantial assistance from Anthropic's Claude (Claude Code) under the author's
+direction; see the preprint's acknowledgment.
 
 - [Mishra & Kherani 2025a] S. Mishra and A. A. Kherani, "On the control of binary RIS
   under user mobility: structural results and implications," IEEE Wireless Commun. Lett.,
@@ -23,7 +31,7 @@ sremu is an independent new implementation.
 
 ## Status
 
-**Pre-release (0.1.0.dev0). Licence pending. The repository is private.** Interfaces may
+**Pre-release (0.1.0.dev0), MIT licence.** Interfaces may
 still change through contract change requests (`docs/contracts_changelog.md`).
 
 What exists:
@@ -126,6 +134,5 @@ commit the results came from. It does not run `tests/experimental`.
 
 ## Licence
 
-Not yet chosen. See `LICENSE-PENDING.md`. The repository stays private until all authors
-and IIT Bhilai agree on a licence. Third-party data under `data/` and `validation/` keep
+MIT (see `LICENSE`), copyright 2026 Galaba Vamsi. Third-party data under `data/` and `validation/` keep
 their own terms, recorded in their provenance files.

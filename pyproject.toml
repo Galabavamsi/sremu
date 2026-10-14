@@ -8,7 +8,7 @@ version = "0.1.0.dev0"
 description = "Smart Radio Environment EMUlator: a software-only, IQ-level radio-environment emulator with timed RIS control"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "LicenseRef-Pending" }
+license = { text = "MIT" }
 authors = [{ name = "Galaba Vamsi" }]
 keywords = ["RIS", "reconfigurable intelligent surface", "emulator", "SDR", "IQ", "wireless"]
 classifiers = [

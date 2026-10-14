@@ -24,7 +24,7 @@ change request (CCR).
 
 | Area | Owner |
 |---|---|
-| `pyproject.toml`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE-PENDING.md`, `.gitignore`, `.gitattributes`, `.github/` | WP0 |
+| `pyproject.toml`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `.gitignore`, `.gitattributes`, `.github/` | WP0 |
 | `src/sremu/{__init__,units,timebase,contracts,errors,cli,sysinfo}.py`, `py.typed`, `testing/` | WP0 |
 | `tools/tasks.py`, `tests/conftest.py`, `tests/_prop.py`, `tests/unit/test_{timebase*,layering,cli,units,contracts*,packaging,sysinfo,fake_*}.py`, `docs/contracts_changelog.md` | WP0 |
 | `src/sremu/commands/<name>.py` | the owner of command `<name>` (DESIGN.md 2.5, D12) |

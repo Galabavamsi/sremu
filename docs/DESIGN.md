@@ -177,7 +177,7 @@ The contribution is **integration plus validation**, not a new capability class.
 - `D:\projects\ris\sremu`: new git repo, package `sremu`, Python ≥ 3.12, src layout.
   - Before the first commit, set the git identity to the real author (RQ-07). The "Anamikarajesh" issue must not recur.
   - Tag the legacy repos `v1-legacy` (03697a6) and `v2-legacy` (8abd671) for internal record only. **Amended by D24:** the README does not state a lineage; it says "sremu is an independent new implementation".
-  - **Licence is an ADMIN gate** (RQ-100: MIT per the existing metadata, or Apache-2.0). The repo stays private and `LICENSE-PENDING.md` stands in until all six authors and IIT Bhilai agree. pyproject uses `license = {text = "LicenseRef-Pending"}`.
+  - **Licence (amended 2026-10-15): MIT, repository public, sole author Galaba Vamsi** (advisor's decision). Original text: **Licence is an ADMIN gate** (RQ-100: MIT per the existing metadata, or Apache-2.0). The repo stays private and `LICENSE-PENDING.md` stands in until all six authors and IIT Bhilai agree. pyproject uses `license = {text = "LicenseRef-Pending"}`.
 - `D:\projects\ris\paper`: separate git repo, IEEEtran journal, pinned to an sremu commit by `sremu.lock`.
 
 ### 2.2 Tree and file ownership

@@ -66,11 +66,12 @@ def test_build_system_and_metadata_section_2_1_and_2_4():
     assert "setuptools>=70" in bs["requires"]
     proj = PYPROJECT["project"]
     assert proj["name"] == "sremu"
-    assert proj["license"] == {"text": "LicenseRef-Pending"}
+    assert proj["license"] == {"text": "MIT"}
     assert proj["requires-python"] == ">=3.12"
     assert proj["scripts"]["sremu"] == "sremu.cli:app"
-    assert (REPO / "LICENSE-PENDING.md").is_file()
-    assert not (REPO / "LICENSE").exists()  # licence is an open ADMIN gate (H-2)
+    assert (REPO / "LICENSE").is_file()  # MIT, released 2026-10-15 (H-2 closed)
+    assert "MIT License" in (REPO / "LICENSE").read_text(encoding="utf-8")
+    assert not (REPO / "LICENSE-PENDING.md").exists()
 
 
 def test_core_dependencies_equal_section_2_4():
@@ -131,12 +132,12 @@ def test_readme_states_independence_d24():
     assert "## Lineage" not in text and "v1-legacy" not in text and "v2-legacy" not in text
 
 
-def test_public_metadata_is_neutral_while_the_licence_is_pending():
-    """Licence gate H-2 is open (LICENSE-PENDING.md), so the package metadata and docstring
-    do not call sremu open source yet; the README says it is *meant* to be released as such."""
+def test_public_metadata_is_neutral():
+    """The package metadata and docstring describe what sremu is; the licence (MIT) is stated
+    by LICENSE, pyproject and the README, not by marketing words in the description."""
     import sremu
 
-    assert (REPO / "LICENSE-PENDING.md").is_file()
+    assert (REPO / "LICENSE").is_file()
     description = PYPROJECT["project"]["description"]
     assert description.startswith("Smart Radio Environment EMUlator: a software-only")
     for text in (description, sremu.__doc__ or ""):
