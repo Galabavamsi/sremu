@@ -112,7 +112,7 @@ rows:
   - id: noise
     component: Noise
     model: '`k_B T_0 F f_s` per RX'
-    model_tex: '$k T_0 F f_s$ per RX'
+    model_tex: '$k_B T_0 F f_s$ per RX'
     validity_domain: "—"
     evidence: [PH-21, G5]
     default: "On"
