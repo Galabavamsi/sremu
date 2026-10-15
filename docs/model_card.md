@@ -18,6 +18,6 @@ Source of truth: `docs/model_card.yaml` (DESIGN.md section 5.15 (validity domain
 | Diffuse | Additive SoS | Statistical background only | ST-02, G6 | Off | §5.11 | spec |
 | Mobility/Doppler | Chord delay + exact phase + tiles | ε_rel ≤ 1e-3 (bound plus `verify_interp`) | PH-17–19 | Auto | §4.4, 5.10 | spec |
 | Wideband | FD Kaiser 8/16/32 | B ≤ 0.8 f_s; ≤ −60 dB in band | PH-20 | Auto | §4.5 | spec |
-| Noise | `kT_0 F f_s` per RX | — | PH-21, G5 | On | §5.12 | spec |
+| Noise | `k_B T_0 F f_s` per RX | — | PH-21, G5 | On | §5.12 | spec |
 | Non-idealities | Pipeline (§5.6) | Per-state tables, failures, efficiency; coupling not modelled beyond what a per-state table measured with identical neighbours contains (coupling hook implemented as no coupling) | PH-13–15, PH-25, PH-30 | — | §5.6 | spec |
 | Transitions | Per-class g_c, complex-linear Γ path | [ENG] until measured | RT-12 | Step | §4.7 | spec |

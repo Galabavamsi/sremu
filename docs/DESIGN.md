@@ -945,7 +945,7 @@ Every legacy item raises unless called with `allow_nonphysical=True` or an expli
 | Diffuse | Additive SoS | Statistical background only | ST-02, G6 | Off |
 | Mobility/Doppler | Chord delay + exact phase + tiles | ε_rel ≤ 1e-3 (bound plus `verify_interp`) | PH-17–19 | Auto |
 | Wideband | FD Kaiser 8/16/32 | B ≤ 0.8 f_s; ≤ −60 dB in band | PH-20 | Auto |
-| Noise | `kT_0 F f_s` per RX | — | PH-21, G5 | On |
+| Noise | `k_B T_0 F f_s` per RX | — | PH-21, G5 | On |
 | Non-idealities | Pipeline (§5.6) | Per-state tables, failures, efficiency; coupling not modelled beyond what a per-state table measured with identical neighbours contains (coupling hook implemented as no coupling) | PH-13–15, 25, 30 | — |
 | Transitions | Per-class g_c, complex-linear Γ path | [ENG] until measured | RT-12 | Step |
 
